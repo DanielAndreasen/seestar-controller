@@ -11,3 +11,4 @@ Ticket status log. Updated as tickets complete. Dates are commit dates.
 ## Other specs
 
 - Not started. Order: catalog, project-store, ui-shell, observing, image-enhance, photometry, period-analysis.
+- 2026-11-19: **02 PEM key management** — implemented `9665b2e`, marked `a996183`. Review verdict: APPROVE (81 tests). Follow-up nits (low): F1 write-then-chmod window in keys.save_key (prefer chmod-after-open or temp+rename); F2 CLI extract-key should catch OSError for clean error line; F3 warn on world-readable key file; F4 add no-key-material-in-logs test.
