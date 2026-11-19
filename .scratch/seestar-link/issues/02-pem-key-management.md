@@ -4,9 +4,9 @@
 
 **Blocked by:** 01 (transport must exist to know what the key signs)
 
-**Status:** ready-for-agent
+**Status:** implemented in 9665b2e
 
-- [ ] Client loads the key from the configured path and uses it for the handshake
-- [ ] Missing/invalid key produces an actionable error message naming the extraction step
-- [ ] CLI helper extracts the key from the official app and writes it to the config path
-- [ ] Tests: handshake signing with a test key; error path when key file is absent
+- [x] Client loads the key from the configured path and uses it for the handshake
+- [x] Missing/invalid key produces an actionable error message naming the extraction step
+- [x] CLI helper extracts the key from the official app and writes it to the config path
+- [x] Tests: handshake signing with a test key; error path when key file is absent
