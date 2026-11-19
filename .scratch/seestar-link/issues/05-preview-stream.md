@@ -4,9 +4,9 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 7943822
 
-- [ ] Frames from :4800 and :4804 are decoded (format per protocol) into image arrays
-- [ ] Callback receives frames without blocking the socket reader
-- [ ] Stream can be started/stopped independently of the control connection
-- [ ] Tests: mock scope streams N frames, client receives all N decoded correctly
+- [x] Frames from :4800 and :4804 are decoded (format per protocol) into image arrays
+- [x] Callback receives frames without blocking the socket reader
+- [x] Stream can be started/stopped independently of the control connection
+- [x] Tests: mock scope streams N frames, client receives all N decoded correctly
