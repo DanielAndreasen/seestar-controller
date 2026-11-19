@@ -4,10 +4,10 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 9b05bd5
 
-- [ ] `connect(ip)` returns a connected facade with live state
-- [ ] `state()` reflects the mock scope's mode/target/progress
-- [ ] `goto(ra, dec)` sends the slew and reports arrival via event or state
-- [ ] `park()` shuts the scope down
-- [ ] Facade-level tests run entirely against the mock scope
+- [x] `connect(ip)` returns a connected facade with live state
+- [x] `state()` reflects the mock scope's mode/target/progress
+- [x] `goto(ra, dec)` sends the slew and reports arrival via event or state
+- [x] `park()` shuts the scope down
+- [x] Facade-level tests run entirely against the mock scope
