@@ -389,3 +389,99 @@ def test_remove_callback_and_on_frame_decorator(jpeg_scope):
 def test_wait_for_frames_times_out(jpeg_scope):
     stream = _stream(jpeg_scope)
     assert stream.wait_for_frames(1, timeout=0.2) is False
+
+
+def _alive_dispatchers() -> list[threading.Thread]:
+    return [
+        t
+        for t in threading.enumerate()
+        if t.name == "preview-dispatch" and t.is_alive()
+    ]
+
+
+def test_slow_callback_stop_restart_leaves_one_dispatcher(keypair):
+    """Regression (review F1): with a slow callback the queue drains slower
+    than the old 2 s join timeout, so the dispatcher used to survive stop()
+    and a later start() revived it via the shared stop event -> duplicate
+    dispatchers and callbacks after stop() returned.
+
+    Now each start() gets its own stop event and the dispatcher exits
+    immediately on stop (dropping the remaining queue), so after stop()
+    returns no dispatcher of that generation is alive and no callback runs;
+    after a restart exactly one dispatcher thread is alive.
+    """
+    scope = _jpeg_scope(
+        keypair, frame_count=None, frame_interval=0.005, tele_resolution=(16, 12)
+    )
+    try:
+
+        def slow(pf: PreviewFrame) -> None:
+            time.sleep(0.3)  # slow, but bounded, callback
+
+        collector = Collector()
+        stream = _stream(scope, queue_size=16)
+        stream.add_callback(slow)
+        stream.add_callback(collector)
+        stream.start(tele=True)
+        try:
+            assert stream.wait_for_frames(2, timeout=5.0)
+            # let the bounded queue fill up behind the slow callback (the
+            # reader streams ~200 fps, so this drains for > 2 s if the
+            # dispatcher keeps draining on stop)
+            time.sleep(0.3)
+            assert stream._queue.qsize() >= 8
+        finally:
+            stream.stop()
+        # stop() returned: this generation's dispatcher must be gone and no
+        # callback may run anymore
+        assert _alive_dispatchers() == []
+        count_after_stop = len(collector)
+        time.sleep(0.4)
+        assert len(collector) == count_after_stop  # no callbacks after stop
+        # restart: exactly one dispatcher thread alive
+        stream.start(tele=True)
+        try:
+            assert stream.wait_for_frames(2, timeout=5.0)
+            assert len(_alive_dispatchers()) == 1
+        finally:
+            stream.stop()
+        assert _alive_dispatchers() == []
+    finally:
+        scope.stop()
+
+
+def test_mock_streams_more_than_256_frames(keypair):
+    """Regression (review F2): the frame header's id field is a uint8, so the
+    mock must wrap the counter (id = seq % 256) — it used to die with a
+    struct.error once seq passed 255, cutting the stream short."""
+    _private_pem, public_pem = keypair
+    scope = MockScope(
+        "127.0.0.1",
+        0,
+        0,
+        0,
+        public_pem=public_pem,
+        frame_format="raw",
+        frame_count=300,
+        frame_interval=0.001,
+        frame_size=64,
+        tele_resolution=(8, 8),
+    )
+    scope.start()
+    try:
+        collector = Collector()
+        stream = _stream(scope, queue_size=512)
+        stream.add_callback(collector)
+        stream.start(tele=True)
+        try:
+            assert stream.wait_for_frames(300, timeout=15.0)
+        finally:
+            stream.stop()
+        frames = collector.snapshot()
+        assert len(frames) == 300
+        assert stream.frames_read["tele"] == 300
+        # wire ids wrap at 256 (uint8 field), in order
+        assert [pf.frame.id for pf in frames] == [i % 256 for i in range(300)]
+        assert all(pf.image.shape == (8, 8) for pf in frames)
+    finally:
+        scope.stop()

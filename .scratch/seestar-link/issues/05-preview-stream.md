@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** implemented in 7943822
+**Status:** implemented in 7943822; review fixes applied (per-generation dispatcher stop event, mock frame id wraps at 256)
 
 - [x] Frames from :4800 and :4804 are decoded (format per protocol) into image arrays
 - [x] Callback receives frames without blocking the socket reader

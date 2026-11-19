@@ -180,7 +180,10 @@ class PreviewStream:
         self._queue: queue.Queue[PreviewFrame] = queue.Queue(maxsize=queue_size)
         self._lock = threading.Lock()
         self._callbacks: list[PreviewCallback] = []
-        self._stop = threading.Event()
+        #: stop event of the *current* generation (created fresh in start() so
+        #: a straggler thread of an older generation can never be revived by a
+        #: later start()); None while stopped
+        self._stop: threading.Event | None = None
         self._running = False
         self._threads: dict[str, threading.Thread] = {}
         self._socks: dict[str, socket.socket] = {}
@@ -229,19 +232,27 @@ class PreviewStream:
                     except OSError:
                         pass
                 raise
-            self._stop.clear()
+            # Per-generation stop event: every thread of this start() holds a
+            # reference to it, so stop() can never be "undone" for them by a
+            # later start() (which creates a fresh event instead of clearing
+            # a shared one).
+            stop_event = threading.Event()
+            self._stop = stop_event
             self._running = True
             self._read = {source: 0 for source, _ in sources}
             self._delivered = {source: 0 for source, _ in sources}
             self._socks = socks
             self._dispatcher = threading.Thread(
-                target=self._dispatch_loop, name="preview-dispatch", daemon=True
+                target=self._dispatch_loop,
+                args=(stop_event,),
+                name="preview-dispatch",
+                daemon=True,
             )
             self._dispatcher.start()
             for source, _port in sources:
                 thread = threading.Thread(
                     target=self._reader_loop,
-                    args=(source, socks[source]),
+                    args=(source, socks[source], stop_event),
                     name=f"preview-{source}",
                     daemon=True,
                 )
@@ -257,10 +268,19 @@ class PreviewStream:
 
     def stop(self) -> None:
         """Stop the Preview stream: close the image sockets and stop the
-        reader/dispatcher threads. Idempotent; safe to call before start()."""
+        reader/dispatcher threads. Idempotent; safe to call before start().
+
+        The dispatcher exits as soon as its stop event is set (dropping any
+        frames still queued) and is joined without a timeout, so when
+        ``stop()`` returns no callback of this generation is running or will
+        run anymore.
+        """
         with self._lock:
             self._running = False
-            self._stop.set()
+            stop_event = self._stop
+            self._stop = None
+            if stop_event is not None:
+                stop_event.set()
             socks = list(self._socks.values())
             self._socks.clear()
             threads = list(self._threads.values())
@@ -277,13 +297,14 @@ class PreviewStream:
             except OSError:
                 pass
         current = threading.current_thread()
-        for thread in [*threads, dispatcher]:
-            if (
-                thread is not None
-                and thread is not current
-                and thread.is_alive()
-            ):
+        for thread in threads:
+            if thread is not current and thread.is_alive():
                 thread.join(timeout=2.0)
+        if dispatcher is not None and dispatcher is not current and dispatcher.is_alive():
+            # No timeout: the dispatcher checks its (now set) stop event
+            # before every queue get and exits right after the in-flight
+            # callback, so this join cannot outlive one callback.
+            dispatcher.join()
         logger.info("preview stream stopped")
 
     def __enter__(self) -> "PreviewStream":
@@ -365,15 +386,22 @@ class PreviewStream:
 
     # -- internals ---------------------------------------------------------------
 
-    def _reader_loop(self, source: str, sock: socket.socket) -> None:
-        """Read frames from one image socket, throttle, decode, enqueue."""
+    def _reader_loop(
+        self, source: str, sock: socket.socket, stop_event: threading.Event
+    ) -> None:
+        """Read frames from one image socket, throttle, decode, enqueue.
+
+        ``stop_event`` is this generation's stop event (created in
+        :meth:`start`), never a shared one, so a late-exiting reader of an
+        old generation cannot disturb a newer one.
+        """
         throttle = FrameThrottle(self.max_fps)
         try:
-            while not self._stop.is_set():
+            while not stop_event.is_set():
                 try:
                     frame = image.read_frame(sock)
                 except (ValueError, OSError) as exc:
-                    if not self._stop.is_set():
+                    if not stop_event.is_set():
                         logger.warning(
                             "preview %s: frame read failed: %s", source, exc
                         )
@@ -402,10 +430,20 @@ class PreviewStream:
                 except queue.Full:
                     pass  # dispatcher busy: drop, keep reading the socket
         finally:
+            # Generation-safe cleanup: only remove the entries that still
+            # belong to *this* thread/socket — a newer generation may already
+            # have replaced them in the shared dicts.
+            current = threading.current_thread()
             with self._lock:
-                self._threads.pop(source, None)
-                self._socks.pop(source, None)
-                if not self._threads and not self._stop.is_set():
+                if self._threads.get(source) is current:
+                    self._threads.pop(source, None)
+                if self._socks.get(source) is sock:
+                    self._socks.pop(source, None)
+                if (
+                    self._stop is stop_event
+                    and not self._threads
+                    and not stop_event.is_set()
+                ):
                     # every source ended (EOF): the stream is no longer running
                     self._running = False
             try:
@@ -413,9 +451,15 @@ class PreviewStream:
             except OSError:
                 pass
 
-    def _dispatch_loop(self) -> None:
-        """Deliver queued frames to the callbacks (never blocks the readers)."""
-        while not (self._stop.is_set() and self._queue.empty()):
+    def _dispatch_loop(self, stop_event: threading.Event) -> None:
+        """Deliver queued frames to the callbacks (never blocks the readers).
+
+        Exits as soon as ``stop_event`` is set, dropping frames still queued:
+        a slow callback must not keep the dispatcher (and thus stop())
+        alive, and a straggler of an old generation must never consume
+        frames of a newer one.
+        """
+        while not stop_event.is_set():
             try:
                 preview_frame = self._queue.get(timeout=0.1)
             except queue.Empty:

@@ -700,7 +700,9 @@ class MockScope:
                 else:
                     payload = make_frame_payload(seq, self.frame_size)
                 blob = image.encode_frame(
-                    payload, code=0, id=seq, width=width, height=height
+                    # the header's id field is a uint8: wrap the counter
+                    # instead of letting struct.pack fail at seq > 255
+                    payload, code=0, id=seq % 256, width=width, height=height
                 )
                 self._send_blob(sock, blob)
                 seq += 1
