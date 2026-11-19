@@ -5,7 +5,9 @@
 - :mod:`.keys` — PEM key management (config path, load/save 0600, extraction)
 - :mod:`.transport` — client transport (connect, RPC correlation, events, heartbeat)
 - :mod:`.stacking` — stacking wire contract (methods, Stack event, param ranges)
-- :mod:`.device` — device facade (connect, state, goto, stack, park, event callbacks)
+- :mod:`.frames` — frame-download wire contract (list_frames/get_frame), atomic
+  .fits + .json sidecar writes, :func:`~.frames.download_frames`
+- :mod:`.device` — device facade (connect, state, goto, stack, park, downloads, events)
 - :mod:`.image` — binary image frames on :4800 (tele) / :4804 (wide)
 - :mod:`.preview` — Preview stream: decoded live frames from :4800/:4804
 - :mod:`.mock_scope` — mock Scope test double speaking the same protocol
@@ -15,7 +17,7 @@
 ``python -m seestar_controller.link.device`` / ``...preview``.
 """
 
-from . import auth, image, keys, protocol, stacking
+from . import auth, frames, image, keys, protocol, stacking
 from .keys import (
     InvalidKeyError,
     KeyExtractionError,
@@ -51,6 +53,7 @@ def __getattr__(name: str):
 __all__ = [
     "auth",
     "device",
+    "frames",
     "image",
     "keys",
     "preview",

@@ -21,6 +21,12 @@ parked, ``ScopePark`` event pushed), and stacking control:
 stacking, then pushes ``Stack`` progress events with frame count + elapsed
 until stopped) and ``iscope_stop_stacking`` (mode -> idle, final ``Stack``
 event). Invalid stacking params are rejected with a non-zero reply code.
+Every stacked sub-frame and the final Stack are recorded in a frame store
+(:meth:`MockScope.add_frame`, FITS bytes generated with astropy.io.fits and
+a ``DATE-OBS`` header) and served over the wire as ``list_frames`` /
+``get_frame`` (FITS bytes base64-encoded) — the frame-download RPCs the
+facade's :meth:`~seestar_controller.link.device.Device.download_frames`
+uses.
 
 The image sockets stream the **Preview** (GLOSSARY): each accepted
 connection gets a loop pushing synthetic frames at :attr:`frame_interval`
@@ -42,6 +48,7 @@ Run standalone: ``uv run python -m seestar_controller.link.mock_scope``
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import io
 import json
@@ -52,13 +59,14 @@ import socket
 import struct
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
 from PIL import Image
 
-from . import auth, image, protocol, stacking
+from . import auth, frames, image, protocol, stacking
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +82,44 @@ def make_frame_payload(seq: int, size: int) -> bytes:
     payload = bytearray(FRAME_MAGIC + struct.pack(">I", seq))
     payload.extend(b"\x00" * max(0, size - len(payload)))
     return bytes(payload[:size])
+
+
+def make_fits_bytes(
+    *,
+    when: datetime,
+    exposure: float,
+    gain: int,
+    target: Mapping[str, Any] | None = None,
+    seed: int = 0,
+    size: tuple[int, int] = (16, 16),
+) -> bytes:
+    """Generate a small valid FITS file (astropy.io.fits) for one frame.
+
+    The primary HDU carries a deterministic synthetic image (seeded by
+    ``seed``) and the headers the metadata sidecar mirrors: ``DATE-OBS``
+    (the observation time, ISO-8601 UTC), ``EXPTIME`` (sub-frame exposure in
+    seconds), ``GAIN``, and ``OBJECT``/``RA``/``DEC`` when a target is set.
+    """
+    from astropy.io import fits as pyfits
+
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    rng = np.random.default_rng(seed)
+    data = rng.integers(100, 900, size=size).astype(np.int16)
+    hdu = pyfits.PrimaryHDU(data=data)
+    hdu.header["DATE-OBS"] = frames.iso_utc(when)
+    hdu.header["EXPTIME"] = float(exposure)
+    hdu.header["GAIN"] = int(gain)
+    if target:
+        if "name" in target:
+            hdu.header["OBJECT"] = str(target["name"])
+        if "ra" in target:
+            hdu.header["RA"] = float(target["ra"])
+        if "dec" in target:
+            hdu.header["DEC"] = float(target["dec"])
+    buf = io.BytesIO()
+    pyfits.HDUList([hdu]).writeto(buf)
+    return buf.getvalue()
 
 
 def make_jpeg_payload(seq: int, width: int, height: int, quality: int = 95) -> bytes:
@@ -273,6 +319,13 @@ class MockScope:
         self.last_stack_params: dict[str, Any] | None = None
         self._stack_stop = threading.Event()
         self._stack_thread: threading.Thread | None = None
+
+        # -- frame store (what list_frames / get_frame serve) -----------------
+        self._frames_lock = threading.Lock()
+        #: frame records in insertion order; each holds the FITS bytes under
+        #: "fits" plus the public metadata fields (id/kind/time/epoch/...)
+        self._frames: list[dict[str, Any]] = []
+        self._frame_seq = 0
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -528,6 +581,8 @@ class MockScope:
                 progress["lapse_ms"] += self.subframe_ms
                 frames = progress["frames"]
                 lapse_ms = progress["lapse_ms"]
+            # every stacked sub-frame lands in the frame store (downloadable)
+            self._record_stacked_subframe()
             self.push_event(
                 {
                     "Event": stacking.STACK_EVENT,
@@ -557,6 +612,13 @@ class MockScope:
             self._scope_state["mode"] = "idle"
             self._scope_state["stacking"]["state"] = "idle"
             final = dict(self._scope_state["stacking"])
+        # stopping the Stack produces the downloadable Stack FITS
+        stack_params = self.last_stack_params or {}
+        self.add_frame(
+            frames.KIND_STACK,
+            exposure=final["lapse_ms"] / 1000.0,
+            gain=int(stack_params.get("gain", 0) or 0),
+        )
         self.push_event(
             {
                 "Event": stacking.STACK_EVENT,
@@ -571,6 +633,104 @@ class MockScope:
             "lapse_ms": final["lapse_ms"],
             "frames": final["frames"],
         }
+
+    # -- frame store: add_frame / list_frames / get_frame ---------------------
+
+    @staticmethod
+    def _public_frame_record(record: Mapping[str, Any]) -> dict[str, Any]:
+        """A frame record without the raw FITS bytes (for list_frames)."""
+        return {key: value for key, value in record.items() if key != "fits"}
+
+    def add_frame(
+        self,
+        kind: str,
+        *,
+        exposure: float = 10.0,
+        gain: int = 80,
+        target: Mapping[str, Any] | None = None,
+        when: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Record one frame (sub-frame or Stack) in the frame store and
+        return its public record (no FITS bytes).
+
+        ``kind`` is "sub" or "stack"; ``exposure`` is the sub-frame exposure
+        in seconds, ``gain`` the sensor gain. ``target`` defaults to the
+        Scope's current target; ``when`` defaults to now (UTC). The FITS
+        bytes are generated with astropy (:func:`make_fits_bytes`) with a
+        ``DATE-OBS`` header. Test knob — also called automatically for every
+        stacked sub-frame and for the final Stack when stacking stops.
+        """
+        kind = frames.normalize_kind(kind)
+        if when is None:
+            when = datetime.now(timezone.utc)
+        elif when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if target is None:
+            with self._scope_state_lock:
+                target = copy.deepcopy(self._scope_state["target"])
+        with self._frames_lock:
+            self._frame_seq += 1
+            seq = self._frame_seq
+            frame_id = f"{kind}-{seq:04d}"
+            fits_bytes = make_fits_bytes(
+                when=when, exposure=exposure, gain=gain, target=target, seed=seq
+            )
+            record = {
+                "id": frame_id,
+                "kind": kind,
+                "time": frames.iso_utc(when),
+                "epoch": when.timestamp(),
+                "exposure": float(exposure),
+                "gain": int(gain),
+                "target": copy.deepcopy(target) if target is not None else None,
+                "size": len(fits_bytes),
+                "fits": fits_bytes,
+            }
+            self._frames.append(record)
+            return self._public_frame_record(record)
+
+    def list_frames(
+        self, kind: str | None = None, since: Any = None
+    ) -> list[dict[str, Any]]:
+        """Public frame records (no FITS bytes), sorted by time.
+
+        ``kind`` filters to "sub"/"stack" (None = all kinds); ``since``
+        (epoch seconds) keeps only frames taken at/after that time.
+        Raises ``ValueError`` on a bad kind or since.
+        """
+        if kind is not None:
+            kind = frames.normalize_kind(kind)
+        if since is not None:
+            try:
+                since = float(since)
+            except (TypeError, ValueError):
+                raise ValueError(f"since must be epoch seconds, got {since!r}") from None
+        with self._frames_lock:
+            records = [self._public_frame_record(r) for r in self._frames]
+        records.sort(key=lambda r: (r["epoch"], r["id"]))
+        if kind is not None:
+            records = [r for r in records if r["kind"] == kind]
+        if since is not None:
+            records = [r for r in records if r["epoch"] >= since]
+        return records
+
+    def get_frame(self, frame_id: Any) -> dict[str, Any]:
+        """One frame record *with* the FITS bytes under ``"fits"``.
+
+        Raises ``KeyError`` for an unknown id.
+        """
+        with self._frames_lock:
+            for record in self._frames:
+                if record["id"] == str(frame_id):
+                    return dict(record)
+        raise KeyError(f"unknown frame id {frame_id!r}")
+
+    def _record_stacked_subframe(self) -> None:
+        """Record one sub-frame per stacked sub-frame (stack loop hook)."""
+        params = self.last_stack_params or {}
+        exposure_s = float(params.get("exp_ms", self.subframe_ms)) / 1000.0
+        gain = int(params.get("gain", 0) or 0)
+        self.add_frame(frames.KIND_SUB, exposure=exposure_s, gain=gain)
 
     def handle_scope_command(
         self, method: str, params: Mapping[str, Any]
@@ -607,6 +767,24 @@ class MockScope:
                 return True, self.stop_stacking(), 0
             except ValueError as exc:
                 return True, {"error": str(exc)}, -1
+        if method == frames.LIST_FRAMES_METHOD:
+            try:
+                result = {
+                    "frames": self.list_frames(
+                        kind=params.get("kind"), since=params.get("since")
+                    )
+                }
+            except (TypeError, ValueError) as exc:
+                return True, {"error": f"invalid list_frames params: {exc}"}, -1
+            return True, result, 0
+        if method == frames.GET_FRAME_METHOD:
+            try:
+                record = self.get_frame(params.get("id"))
+            except (KeyError, TypeError, ValueError) as exc:
+                return True, {"error": f"cannot get frame: {exc}"}, -1
+            public = self._public_frame_record(record)
+            public["fits_b64"] = base64.b64encode(record["fits"]).decode("ascii")
+            return True, public, 0
         return False, None, 0
 
     # -- internals -----------------------------------------------------------

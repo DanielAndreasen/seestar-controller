@@ -17,7 +17,11 @@ operations in GLOSSARY vocabulary:
   into a Stack on the current target (``iscope_start_stacking`` /
   ``iscope_stop_stacking``) with per-target exposure / gain / mosaic
   framing; progress arrives as pushed ``Stack`` events;
-- :meth:`Device.park` — park the Scope (``scope_park``, mode -> parked).
+- :meth:`Device.park` — park the Scope (``scope_park``, mode -> parked);
+- :meth:`Device.download_frames` — download **sub-frames** or **Stacks**
+  (GLOSSARY) into a caller-given directory as ``.fits`` + ``.json`` metadata
+  sidecar, written atomically (``list_frames`` / ``get_frame`` RPCs, see
+  :mod:`seestar_controller.link.frames`).
 
 Pushed events from the Scope are surfaced through registered callbacks
 (:meth:`Device.add_event_handler` / :meth:`Device.on_event`), reusing the
@@ -37,12 +41,15 @@ from __future__ import annotations
 
 import argparse
 import logging
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from . import stacking
+from . import frames, stacking
 from .protocol import Event
 from .stacking import START_STACK_METHOD, STACK_EVENT, STOP_STACK_METHOD
 from .transport import COMMAND_PORT, EventHandler, LinkTransport
@@ -310,6 +317,31 @@ class Device:
         self._transport.request(STOP_STACK_METHOD, timeout=timeout)
         return self.state()
 
+    # -- frame downloads -----------------------------------------------------
+
+    def download_frames(
+        self,
+        dest_dir: str | Path,
+        kind: str = frames.KIND_SUB,
+        *,
+        since: datetime | str | float | None = None,
+        timeout: float | None = None,
+    ) -> list[frames.DownloadedFrame]:
+        """Download sub-frames or Stacks from the Scope into ``dest_dir``.
+
+        ``kind`` is ``"sub"`` (sub-frames, GLOSSARY) or ``"stack"`` (Stacks);
+        ``since`` optionally limits the download to frames taken at/after
+        that time — a :class:`~datetime.datetime`, an ISO-8601 string, or
+        epoch seconds. Each frame is written as ``<id>.fits`` plus a
+        ``<id>.json`` metadata sidecar (time, exposure, gain, target), both
+        atomically (temp file + rename), so an interrupted download never
+        leaves a partial file. Returns the downloaded frames (path, sidecar,
+        metadata) in time order. See :mod:`seestar_controller.link.frames`.
+        """
+        return frames.download_frames(
+            self._transport, dest_dir, kind=kind, since=since, timeout=timeout
+        )
+
     def add_stacking_progress_handler(
         self, handler: Callable[[StackingProgress], None]
     ) -> None:
@@ -383,7 +415,8 @@ def connect(ip: str, port: int = COMMAND_PORT, **kwargs: Any) -> Device:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Demo against a local mock Scope: connect -> state -> goto -> stack -> park."""
+    """Demo against a local mock Scope: connect -> state -> goto -> stack ->
+    download frames -> park."""
     parser = argparse.ArgumentParser(
         description="Device facade demo against a local mock Scope"
     )
@@ -423,6 +456,16 @@ def main(argv: list[str] | None = None) -> None:
               device.start_stack(10.0, 80, (2.0, 2.0)))
         time.sleep(args.stack_watch)
         print("stop_stack() ->", device.stop_stack())
+        with tempfile.TemporaryDirectory(prefix="seestar-frames-") as dest:
+            for kind in (frames.KIND_SUB, frames.KIND_STACK):
+                downloaded = device.download_frames(dest, kind=kind)
+                print(f"download_frames(kind={kind!r}) -> {len(downloaded)} frame(s)")
+                for d in downloaded:
+                    print(
+                        f"  {d.meta.id}: {d.path.name} + {d.sidecar.name} "
+                        f"(time={d.meta.time} exposure={d.meta.exposure}s "
+                        f"gain={d.meta.gain} target={d.meta.target})"
+                    )
         print("park() ->", device.park())
         device.disconnect()
     finally:
