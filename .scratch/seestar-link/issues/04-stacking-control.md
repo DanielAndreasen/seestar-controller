@@ -4,10 +4,10 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** implemented in 5d3b33d
 
-- [ ] `start_stack(exposure, gain, mosaic)` begins stacking on the mock scope
-- [ ] `stop_stack()` ends it cleanly
-- [ ] Progress events (frames stacked, elapsed) reach the caller
-- [ ] Invalid parameter values are rejected with a clear error
-- [ ] Tests against the mock scope cover start/progress/stop
+- [x] `start_stack(exposure, gain, mosaic)` begins stacking on the mock scope
+- [x] `stop_stack()` ends it cleanly
+- [x] Progress events (frames stacked, elapsed) reach the caller
+- [x] Invalid parameter values are rejected with a clear error
+- [x] Tests against the mock scope cover start/progress/stop
