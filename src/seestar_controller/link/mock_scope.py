@@ -22,6 +22,7 @@ Run standalone: ``uv run python -m seestar_controller.link.mock_scope``
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import secrets
 import socket
@@ -281,6 +282,18 @@ class MockScope:
             except OSError:
                 pass
 
+    def send_raw(self, data: bytes) -> None:
+        """Write raw bytes to every connected command-channel client (test hook,
+        e.g. to inject a malformed JSON line)."""
+        with self._clients_lock:
+            clients = list(self._clients)
+        for client in clients:
+            try:
+                with client.write_lock:
+                    client.sock.sendall(data)
+            except OSError:
+                pass
+
     def canned_result(self, method: str, params: Mapping[str, Any]) -> Any:
         """Canned results for well-known methods; echo otherwise."""
         canned = {
@@ -323,7 +336,20 @@ class MockScope:
                 data = sock.recv(65536)
                 if not data:
                     break
-                for message in decoder.feed(data):
+                # A malformed JSON line must not kill this handler thread:
+                # feed() consumes the bad line before raising, so re-scan the
+                # remaining buffer and keep serving the good lines.
+                while True:
+                    try:
+                        messages = decoder.feed(data)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "skipping malformed JSON line from client %s", address
+                        )
+                        data = b""  # re-scan whatever is still buffered
+                        continue
+                    break
+                for message in messages:
                     decoded = protocol.classify(message)
                     if isinstance(decoded, protocol.Request):
                         client.handle(decoded)

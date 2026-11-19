@@ -4,8 +4,9 @@
 Scope: it performs the firmware >= 7.18 PEM-signed handshake on connect,
 correlates requests/replies by ``id`` (concurrent requests are supported),
 dispatches pushed events to registered handlers, and keeps the connection
-alive with the ``test_connection`` heartbeat — detecting a dropped
-heartbeat as a lost connection.
+alive with the ``test_connection`` heartbeat — liveness is tracked via the
+last inbound activity, so only socket EOF or total silence is a lost
+connection.
 
 NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
 this transport is exercised against the mock Scope
@@ -15,6 +16,7 @@ this transport is exercised against the mock Scope
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 import socket
 import threading
@@ -47,7 +49,15 @@ class RpcError(Exception):
 
 
 class ConnectionLostError(Exception):
-    """The Link dropped (socket EOF or missed heartbeat)."""
+    """The Link dropped (socket EOF, protocol error, or dead link)."""
+
+
+class RequestTimeoutError(TimeoutError):
+    """A request got no reply within its own timeout.
+
+    The link itself may still be up (busy but healthy) — this is *not* a
+    connection loss and does not affect other pending requests.
+    """
 
 
 class LinkTransport:
@@ -62,7 +72,7 @@ class LinkTransport:
         pem: bytes | None = None,
         pem_path: str | Path | None = None,
         heartbeat_interval: float = 3.0,
-        heartbeat_timeout: float = 6.0,
+        heartbeat_timeout: float = 30.0,
         request_timeout: float = 10.0,
         connect_timeout: float = 5.0,
     ) -> None:
@@ -93,7 +103,8 @@ class LinkTransport:
         self._connected = False
         self._link_up = False  # socket open and not known-lost (set before handshake)
         self._verified = False
-        self._last_heartbeat_reply: float | None = None
+        #: monotonic time of the last inbound bytes — the liveness signal
+        self._last_activity: float = 0.0
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -106,12 +117,33 @@ class LinkTransport:
         self._sock = sock
         self._link_up = True
         self._stop.clear()
-        self._reader_thread = threading.Thread(
+        self._last_activity = time.monotonic()
+        reader = threading.Thread(
             target=self._reader_loop, name="link-reader", daemon=True
         )
-        self._reader_thread.start()
+        self._reader_thread = reader
+        reader.start()
         # Firmware >= 7.18 (incl. 9.75): signed handshake before anything else.
-        auth.signed_handshake(self.request_raw, self._private_key)
+        try:
+            auth.signed_handshake(self.request_raw, self._private_key)
+        except BaseException:
+            # Handshake failed: tear the socket and reader thread down so a
+            # failed connect() leaks nothing and the transport stays reusable.
+            self._stop.set()
+            self._link_up = False
+            with self._state_lock:
+                self._connected = False
+                self._verified = False
+            self._sock = None
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sock.close()
+            if reader.is_alive():
+                reader.join(timeout=2.0)
+            self._reader_thread = None
+            raise
         with self._state_lock:
             self._connected = True
             self._verified = True
@@ -122,7 +154,12 @@ class LinkTransport:
         logger.info("connected to scope at %s:%s (signed handshake ok)", self.host, self.port)
 
     def disconnect(self) -> None:
-        """Close the Link and stop the IO threads."""
+        """Close the Link and stop the IO threads.
+
+        Safe to call from any thread, including a connection-lost handler
+        running on the reader/heartbeat thread itself (never joins the
+        calling thread).
+        """
         self._stop.set()
         with self._state_lock:
             self._connected = False
@@ -135,8 +172,13 @@ class LinkTransport:
                 pass
             sock.close()
         self._fail_pending(ConnectionLostError("disconnected"))
+        current = threading.current_thread()
         for thread in (self._reader_thread, self._heartbeat_thread):
-            if thread is not None and thread.is_alive():
+            if (
+                thread is not None
+                and thread is not current
+                and thread.is_alive()
+            ):
                 thread.join(timeout=2.0)
 
     def __enter__(self) -> "LinkTransport":
@@ -165,7 +207,9 @@ class LinkTransport:
         """Send one request, wait for its reply, return ``result``.
 
         Raises :class:`RpcError` on a non-zero reply code,
-        :class:`ConnectionLostError` if the Link drops while waiting.
+        :class:`RequestTimeoutError` if no reply arrives within ``timeout``
+        (the link may still be up), and :class:`ConnectionLostError` if the
+        Link drops while waiting.
         """
         reply = self.request_raw(method, params, timeout=timeout)
         if not reply.ok:
@@ -183,20 +227,26 @@ class LinkTransport:
         if params:
             msg["params"] = dict(params)
         future: Future[Reply] = Future()
+        send_failed = False
         with self._send_lock:
             self._pending[msg["id"]] = future
             try:
                 self._send(msg)
             except OSError:
                 self._pending.pop(msg["id"], None)
-                self._handle_connection_lost()
-                raise ConnectionLostError("send failed") from None
+                send_failed = True
+        if send_failed:
+            # Connection-lost handling (incl. user handlers) must run outside
+            # _send_lock so handlers can safely call back into the transport.
+            self._handle_connection_lost()
+            raise ConnectionLostError("send failed") from None
         try:
             return future.result(timeout=timeout or self.request_timeout)
         except TimeoutError:
             self._pending.pop(msg["id"], None)
-            raise ConnectionLostError(
-                f"no reply to {method!r} (id={msg['id']}) within timeout"
+            raise RequestTimeoutError(
+                f"no reply to {method!r} (id={msg['id']}) within "
+                f"{timeout or self.request_timeout}s"
             ) from None
 
     def _send(self, msg: Mapping[str, Any]) -> None:
@@ -236,9 +286,21 @@ class LinkTransport:
             except OSError:
                 data = b""
             if not data:
+                # Socket EOF is the only *immediate* connection-loss signal.
                 self._handle_connection_lost()
                 break
-            for message in decoder.feed(data):
+            # Any inbound bytes count as liveness activity.
+            self._last_activity = time.monotonic()
+            try:
+                messages = decoder.feed(data)
+            except json.JSONDecodeError as exc:
+                # Protocol error: one malformed line must not kill the reader
+                # thread while `connected` stays True — treat it as a lost
+                # connection.
+                logger.warning("protocol error: malformed JSON line from scope: %s", exc)
+                self._handle_connection_lost()
+                break
+            for message in messages:
                 self._dispatch(message)
 
     def _dispatch(self, message: Mapping[str, Any]) -> None:
@@ -259,20 +321,49 @@ class LinkTransport:
                     logger.exception("event handler for %r failed", decoded.name)
 
     def _heartbeat_loop(self) -> None:
-        """Send ``test_connection`` every interval; detect a dropped heartbeat."""
+        """Send ``test_connection`` every interval; detect a dead link.
+
+        Liveness is based on *last inbound activity* (any message, not just
+        heartbeat replies): a busy-but-healthy link whose heartbeat replies
+        are slow must not be declared lost, and a heartbeat timeout must not
+        fail other pending requests. Only socket EOF (handled by the reader)
+        or total inbound silence longer than ``heartbeat_timeout`` counts as
+        a lost link. ``heartbeat_timeout`` is deliberately >> ``request_timeout``
+        so slow-but-answering requests never trip the heartbeat.
+        """
         while not self._stop.is_set() and self.connected:
+            self._stop.wait(self.heartbeat_interval)
+            if self._stop.is_set() or not self.connected:
+                break
             try:
                 self.request_raw(
                     protocol.HEARTBEAT_METHOD, timeout=self.heartbeat_timeout
                 )
-                self._last_heartbeat_reply = time.monotonic()
+            except RequestTimeoutError:
+                # Heartbeat reply is late; the link may still be busy. Only
+                # declare the link lost if *nothing* came in for the whole
+                # heartbeat timeout.
+                idle = time.monotonic() - self._last_activity
+                if idle > self.heartbeat_timeout:
+                    logger.warning(
+                        "no inbound activity for %.1fs (heartbeat timeout %.1fs) — link lost",
+                        idle,
+                        self.heartbeat_timeout,
+                    )
+                    self._handle_connection_lost()
+                    return
+                logger.debug(
+                    "heartbeat reply late (%.1fs idle); link still active", idle
+                )
             except (ConnectionLostError, RpcError, OSError) as exc:
                 logger.warning("heartbeat failed: %s", exc)
                 self._handle_connection_lost()
                 return
-            self._stop.wait(self.heartbeat_interval)
 
     def _handle_connection_lost(self) -> None:
+        # Runs no locks while invoking user handlers: callers must not hold
+        # _send_lock here (handlers may call back into the transport, e.g.
+        # disconnect()).
         with self._state_lock:
             was_connected = self._connected
             self._connected = False

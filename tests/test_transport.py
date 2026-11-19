@@ -12,6 +12,7 @@ from seestar_controller.link.mock_scope import NOT_VERIFIED_CODE, MockScope
 from seestar_controller.link.transport import (
     ConnectionLostError,
     LinkTransport,
+    RequestTimeoutError,
     RpcError,
 )
 
@@ -136,6 +137,177 @@ def test_handshake_with_wrong_key_rejected(mock_scope):
     with pytest.raises(HandshakeError):
         t.connect()
     t.disconnect()
+
+
+def test_handshake_failure_leaks_nothing_and_transport_reusable(mock_scope, keypair):
+    """A raising signed handshake must close the socket, stop the reader thread,
+    reset state, and leave the transport able to connect again."""
+    private_pem, _public_pem = keypair
+    wrong_private_pem, _ = auth.generate_keypair()
+    t = LinkTransport("127.0.0.1", mock_scope.command_port, pem=wrong_private_pem)
+    with pytest.raises(HandshakeError):
+        t.connect()
+    assert not t.connected
+    assert not t.verified
+    assert t._sock is None
+    assert t._reader_thread is None or not t._reader_thread.is_alive()
+    # reusable: swap in the correct key and connect again on the same object
+    t._private_key = auth.load_private_key(private_pem)
+    t.connect()
+    assert t.connected
+    assert t.verified
+    assert t.request("get_device_state")["fw_version"] == "9.75"
+    assert mock_scope.client_count == 1
+    t.disconnect()
+    assert not t.connected
+
+
+def test_malformed_line_from_scope_is_protocol_error(transport, mock_scope):
+    """One garbage JSON line from the scope must not kill the reader thread
+    silently: it is a protocol error -> connection-lost handling."""
+    lost = threading.Event()
+    transport.add_connection_lost_handler(lost.set)
+    mock_scope.send_raw(b"this is not json\r\n")
+    assert lost.wait(timeout=3), "malformed line did not trigger connection-lost"
+    deadline = time.monotonic() + 2
+    while transport.connected and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not transport.connected
+    with pytest.raises(ConnectionLostError):
+        transport.request("get_device_state", timeout=0.5)
+    # the reader thread actually stopped (no zombie thread with connected=True)
+    deadline = time.monotonic() + 2
+    while (
+        transport._reader_thread is not None
+        and transport._reader_thread.is_alive()
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.05)
+    assert transport._reader_thread is None or not transport._reader_thread.is_alive()
+
+
+def test_busy_link_with_slow_replies_no_spurious_connection_lost(mock_scope, keypair):
+    """Heartbeat replies may be slow/dropped on a busy-but-healthy link: liveness
+    is last inbound activity, so pending requests must NOT fail with
+    ConnectionLostError and the link must stay up."""
+    private_pem, _ = keypair
+    t = LinkTransport(
+        "127.0.0.1",
+        mock_scope.command_port,
+        pem=private_pem,
+        heartbeat_interval=0.05,
+        heartbeat_timeout=0.8,
+        request_timeout=3.0,
+    )
+    lost = threading.Event()
+    t.add_connection_lost_handler(lost.set)
+    t.connect()
+    try:
+        mock_scope.set_heartbeat_silent(True)  # heartbeat replies stop...
+        mock_scope.reply_delay["slow"] = 0.15  # ...but the link stays busy
+        results: dict[int, object] = {}
+        errors: list[Exception] = []
+
+        def call(n: int) -> None:
+            try:
+                results[n] = t.request("slow", {"n": n})
+            except Exception as exc:  # noqa: BLE001 - collected for assertion
+                errors.append(exc)
+
+        threads = [threading.Thread(target=call, args=(n,)) for n in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=5)
+        # keep the link busy a while longer so heartbeats time out repeatedly
+        deadline = time.monotonic() + 1.0
+        n = 100
+        while time.monotonic() < deadline:
+            results[n] = t.request("slow", {"n": n})
+            n += 1
+        assert not errors
+        assert len(results) == 8 + (n - 100)
+        for r in results.values():
+            assert r["echo_method"] == "slow"
+        assert not lost.is_set(), "busy-but-healthy link was declared lost"
+        assert t.connected
+    finally:
+        t.disconnect()
+
+
+def test_request_timeout_raises_request_timeout_error(mock_scope, keypair):
+    """A per-request timeout raises the dedicated RequestTimeoutError (a
+    TimeoutError), not ConnectionLostError; the link itself stays up."""
+    private_pem, _ = keypair
+    t = LinkTransport(
+        "127.0.0.1",
+        mock_scope.command_port,
+        pem=private_pem,
+        heartbeat_interval=0.1,
+        heartbeat_timeout=5.0,  # >> request timeout: heartbeat must not interfere
+        request_timeout=0.3,
+    )
+    t.connect()
+    try:
+        mock_scope.reply_delay["slow"] = 0.6  # slower than the request timeout
+        with pytest.raises(RequestTimeoutError) as excinfo:
+            t.request("slow", timeout=0.3)
+        assert isinstance(excinfo.value, TimeoutError)
+        assert not isinstance(excinfo.value, ConnectionLostError)
+        # the link is still healthy: a later request succeeds
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                assert t.request("get_device_state")["fw_version"] == "9.75"
+                break
+            except RequestTimeoutError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("link did not recover after a request timeout")
+        assert t.connected
+    finally:
+        t.disconnect()
+
+
+def test_lost_handler_can_call_disconnect_from_heartbeat_thread(mock_scope, keypair):
+    """A connection-lost handler running on the heartbeat thread may call
+    disconnect() without crashing (disconnect never joins the current thread,
+    and handlers run outside _send_lock)."""
+    private_pem, _ = keypair
+    t = LinkTransport(
+        "127.0.0.1",
+        mock_scope.command_port,
+        pem=private_pem,
+        heartbeat_interval=0.05,
+        heartbeat_timeout=0.3,
+        request_timeout=1.0,
+    )
+    handler_done = threading.Event()
+    errors: list[Exception] = []
+
+    def handler() -> None:
+        try:
+            t.disconnect()
+        except Exception as exc:  # noqa: BLE001 - collected for assertion
+            errors.append(exc)
+        finally:
+            handler_done.set()
+
+    t.add_connection_lost_handler(handler)
+    t.connect()
+    mock_scope.set_heartbeat_silent(True)
+    assert handler_done.wait(timeout=5), "connection-lost handler did not run"
+    assert not errors, f"handler/disconnect crashed: {errors!r}"
+    assert not t.connected
+    deadline = time.monotonic() + 2
+    while (
+        t._heartbeat_thread is not None
+        and t._heartbeat_thread.is_alive()
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.05)
+    assert t._heartbeat_thread is None or not t._heartbeat_thread.is_alive()
+    t.disconnect()  # idempotent
 
 
 def test_command_before_handshake_rejected_by_mock(mock_scope):

@@ -26,6 +26,10 @@ WIDE_PORT = 4804
 HEADER_FMT = ">HHHIHHBBHH"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
 
+#: Sanity cap on the frame ``size`` header field (a real JPEG frame is far
+#: below this); a larger value means a corrupt/hostile header, not a frame.
+MAX_FRAME_SIZE = 64 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class Frame:
@@ -81,6 +85,10 @@ def read_frame(sock: socket.socket) -> Frame | None:
     if header is None:
         return None
     size, code, id, width, height = decode_header(header)
+    if size > MAX_FRAME_SIZE:
+        raise ValueError(
+            f"frame size {size} exceeds sanity cap {MAX_FRAME_SIZE}; corrupt header"
+        )
     payload = _recv_exact(sock, size) if size > 0 else b""
     if payload is None:
         return None

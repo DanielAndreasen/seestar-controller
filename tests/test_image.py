@@ -86,3 +86,18 @@ def test_read_frame_multiple_frames_in_stream():
     finally:
         a.close()
         b.close()
+
+
+def test_read_frame_rejects_oversized_size_header():
+    """Sanity cap: a frame header claiming an absurd payload size is rejected."""
+    a, b = socket.socketpair()
+    try:
+        header = struct.pack(
+            HEADER_FMT, 0, 0, 0, image.MAX_FRAME_SIZE + 1, 0, 0, 0, 0, 0, 0
+        )
+        a.sendall(header)
+        with pytest.raises(ValueError, match="sanity cap"):
+            read_frame(b)
+    finally:
+        a.close()
+        b.close()

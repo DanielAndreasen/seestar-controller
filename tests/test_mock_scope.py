@@ -127,3 +127,58 @@ def test_mock_rejects_bad_signature(keypair):
             sock.close()
     finally:
         scope.stop()
+
+
+def test_mock_skips_malformed_json_line_and_keeps_serving(keypair):
+    """A garbage line on the command channel must not kill the mock's client
+    handler: the bad line is skipped and later valid requests still get replies."""
+    import time
+
+    from seestar_controller.link import protocol
+
+    _private_pem, public_pem = keypair
+    scope = MockScope("127.0.0.1", 0, 0, 0, public_pem=public_pem)
+    scope.start()
+    try:
+        sock = socket.create_connection(("127.0.0.1", scope.command_port), timeout=2)
+        try:
+            decoder = protocol.MessageDecoder()
+
+            def rpc(msg):
+                sock.sendall(protocol.encode_message(msg))
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    data = sock.recv(65536)
+                    if not data:
+                        raise AssertionError("socket closed")
+                    for m in decoder.feed(data):
+                        d = protocol.classify(m)
+                        if isinstance(d, protocol.Reply) and d.id == msg["id"]:
+                            return d
+                raise AssertionError("no reply")
+
+            # garbage line and a valid request in the SAME tcp chunk: the mock
+            # must skip the garbage and still answer the valid request
+            sock.sendall(
+                b"this is not json\r\n"
+                + protocol.encode_message({"id": 1, "method": "pi_is_verified"})
+            )
+            deadline = time.monotonic() + 3
+            reply = None
+            while reply is None and time.monotonic() < deadline:
+                data = sock.recv(65536)
+                if not data:
+                    raise AssertionError("socket closed after garbage line")
+                for m in decoder.feed(data):
+                    d = protocol.classify(m)
+                    if isinstance(d, protocol.Reply) and d.id == 1:
+                        reply = d
+            assert reply is not None, "mock died on malformed line"
+            assert reply.code == 0
+            # and it keeps serving afterwards
+            assert rpc({"id": 2, "method": "pi_is_verified"}).code == 0
+            assert scope.client_count == 1
+        finally:
+            sock.close()
+    finally:
+        scope.stop()
