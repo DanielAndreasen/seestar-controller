@@ -8,6 +8,14 @@ alive with the ``test_connection`` heartbeat — liveness is tracked via the
 last inbound activity, so only socket EOF or total silence is a lost
 connection.
 
+The handshake key comes from :mod:`seestar_controller.link.keys`: the
+configured PEM key file (explicit ``pem_path`` > ``SEESTAR_KEY_PATH`` env
+var > ``~/.config/seestar-controller/key.pem``), or the ``pem`` /
+``private_key`` overrides used by tests. A missing or invalid key file
+raises :class:`~seestar_controller.link.keys.MissingKeyError` /
+:class:`~seestar_controller.link.keys.InvalidKeyError` before any socket is
+opened.
+
 NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
 this transport is exercised against the mock Scope
 (:mod:`seestar_controller.link.mock_scope`) only.
@@ -25,7 +33,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from . import auth, protocol
+from . import auth, keys, protocol
 from .protocol import Event, Reply
 
 logger = logging.getLogger(__name__)
@@ -78,11 +86,19 @@ class LinkTransport:
     ) -> None:
         self.host = host
         self.port = port
+        #: Resolved PEM key path when the key is loaded from disk (None when
+        #: ``private_key``/``pem`` was passed directly).
+        self.key_path: Path | None = None
         if private_key is None:
-            pem_bytes = pem if pem is not None else Path(
-                pem_path or auth.DEFAULT_KEY_PATH
-            ).read_bytes()
-            private_key = auth.load_private_key(pem_bytes)
+            if pem is not None:
+                private_key = auth.load_private_key(pem)
+            else:
+                # Configured key file: explicit pem_path > SEESTAR_KEY_PATH
+                # env var > ~/.config/seestar-controller/key.pem. Missing or
+                # invalid keys raise MissingKeyError/InvalidKeyError with an
+                # actionable message naming the extraction step.
+                self.key_path = keys.resolve_key_path(pem_path)
+                private_key = keys.load_key(self.key_path)
         self._private_key = private_key
         self.heartbeat_interval = heartbeat_interval
         self.heartbeat_timeout = heartbeat_timeout

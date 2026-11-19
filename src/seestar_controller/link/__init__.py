@@ -2,6 +2,7 @@
 
 - :mod:`.protocol` — wire envelope on the command channel (TCP :4700)
 - :mod:`.auth` — firmware >= 7.18 PEM-signed handshake
+- :mod:`.keys` — PEM key management (config path, load/save 0600, extraction)
 - :mod:`.transport` — client transport (connect, RPC correlation, events, heartbeat)
 - :mod:`.image` — binary image frames on :4800 (tele) / :4804 (wide)
 - :mod:`.mock_scope` — mock Scope test double speaking the same protocol
@@ -9,14 +10,25 @@
   can also run standalone via ``python -m``)
 """
 
-from . import auth, image, protocol
+from . import auth, image, keys, protocol
+from .keys import (
+    InvalidKeyError,
+    KeyExtractionError,
+    KeyManagementError,
+    MissingKeyError,
+)
 from .transport import ConnectionLostError, LinkTransport, RpcError
 
 __all__ = [
     "auth",
     "image",
+    "keys",
     "protocol",
     "LinkTransport",
     "RpcError",
     "ConnectionLostError",
+    "KeyManagementError",
+    "MissingKeyError",
+    "InvalidKeyError",
+    "KeyExtractionError",
 ]

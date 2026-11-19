@@ -17,6 +17,8 @@ projects:
 The private key is the "interop PEM" extracted once from the official
 Android app (seestarpy's ``extract_pem``) and stored at
 ``~/.config/seestar-controller/key.pem``; the path is configurable.
+Loading, saving (0600), and extraction live in
+:mod:`seestar_controller.link.keys`; this module only signs/verifies.
 
 NOTE (user AFK, no PEM key available — see docs/wiki/assumptions.md): the
 sign/verify round-trip is implemented and tested with generated *test*
