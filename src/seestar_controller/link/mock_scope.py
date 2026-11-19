@@ -15,8 +15,12 @@ Beyond auth and heartbeat, the mock carries a device state (mode, current
 target, stacking progress) and serves the device-level commands the facade
 uses: ``get_scope_state``, ``scope_goto_target`` (simulated slew of
 :attr:`MockScope.slew_duration` seconds, then a pushed ``ScopeGoto``
-"complete" event and mode back to idle) and ``scope_park`` (mode ->
-parked, ``ScopePark`` event pushed).
+"complete" event and mode back to idle), ``scope_park`` (mode ->
+parked, ``ScopePark`` event pushed), and stacking control:
+``iscope_start_stacking`` (validates exposure/gain/mosaic ranges, mode ->
+stacking, then pushes ``Stack`` progress events with frame count + elapsed
+until stopped) and ``iscope_stop_stacking`` (mode -> idle, final ``Stack``
+event). Invalid stacking params are rejected with a non-zero reply code.
 
 NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
 this mock is the only counterpart the client is tested against. Image
@@ -40,7 +44,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import auth, image, protocol
+from . import auth, image, protocol, stacking
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +192,10 @@ class MockScope:
         self.wide_resolution = wide_resolution
         #: simulated slew time in seconds for scope_goto_target (test knob)
         self.slew_duration = slew_duration
+        #: real seconds between pushed Stack progress events while stacking
+        self.stack_event_interval = 0.2
+        #: simulated elapsed time per stacked sub-frame (GLOSSARY: 10 s sub-frame)
+        self.subframe_ms = 10000
 
         self.heartbeat_silent = False
         #: method -> seconds to sleep before replying (forces out-of-order replies)
@@ -210,6 +218,10 @@ class MockScope:
         }
         #: last accepted goto target {"ra": ..., "dec": ...} (test hook)
         self.last_goto: dict[str, float] | None = None
+        #: last accepted stacking params (wire shape, test hook)
+        self.last_stack_params: dict[str, Any] | None = None
+        self._stack_stop = threading.Event()
+        self._stack_thread: threading.Thread | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -242,6 +254,7 @@ class MockScope:
     def stop(self) -> None:
         """Stop serving and close all sockets."""
         self._stopping.set()
+        self._stack_stop.set()  # wake the stacking loop so it exits promptly
         for listener in self._listeners:
             try:
                 listener.close()
@@ -336,7 +349,7 @@ class MockScope:
             return canned[method]
         return {"echo_method": method, "echo_params": dict(params)}
 
-    # -- device state: get_scope_state / scope_goto_target / scope_park ------
+    # -- device state: get_scope_state / goto / park / stacking ---------------
 
     def scope_state(self) -> dict[str, Any]:
         """A deep copy of the mock Scope's current state (mode/target/stacking)."""
@@ -389,6 +402,98 @@ class MockScope:
             self._scope_state["mode"] = "parked"
         self.push_event({"Event": "ScopePark", "state": "parked"})
 
+    def start_stacking(
+        self, exposure: float, gain: int, mosaic: Any = False
+    ) -> dict[str, Any]:
+        """Begin stacking a Stack: validate params, mode -> ``stacking``, and
+        start pushing ``Stack`` progress events (frame count + elapsed).
+
+        ``exposure`` is the sub-frame exposure in seconds; ``mosaic`` is a
+        bool or a ``(pan, tilt)`` framing in degrees (see
+        :func:`seestar_controller.link.stacking.stack_request_params`).
+        Raises ``ValueError`` on out-of-range params or when already
+        stacking. Returns the accepted wire params.
+        """
+        params = stacking.stack_request_params(exposure, gain, mosaic)
+        with self._scope_state_lock:
+            if self._scope_state["mode"] == "stacking":
+                raise ValueError("already stacking")
+            self._scope_state["mode"] = "stacking"
+            self._scope_state["stacking"] = {
+                "state": "working",
+                "lapse_ms": 0,
+                "frames": 0,
+            }
+            self.last_stack_params = dict(params)
+        self._stack_stop.clear()
+        thread = threading.Thread(
+            target=self._stack_loop, name="mock-stack", daemon=True
+        )
+        self._stack_thread = thread
+        self._threads.append(thread)
+        thread.start()
+        # initial progress event: stacking has begun, no sub-frame yet
+        self.push_event(
+            {"Event": stacking.STACK_EVENT, "state": "working", "lapse_ms": 0, "frames": 0}
+        )
+        return dict(params)
+
+    def _stack_loop(self) -> None:
+        """Push a ``Stack`` progress event per simulated stacked sub-frame."""
+        while True:
+            self._stack_stop.wait(self.stack_event_interval)
+            with self._scope_state_lock:
+                if self._stack_stop.is_set() or self._stopping.is_set():
+                    return
+                progress = self._scope_state["stacking"]
+                progress["frames"] += 1
+                progress["lapse_ms"] += self.subframe_ms
+                frames = progress["frames"]
+                lapse_ms = progress["lapse_ms"]
+            self.push_event(
+                {
+                    "Event": stacking.STACK_EVENT,
+                    "state": "working",
+                    "lapse_ms": lapse_ms,
+                    "frames": frames,
+                }
+            )
+
+    def stop_stacking(self) -> dict[str, Any]:
+        """Stop the current Stack: mode -> ``idle``, final ``Stack`` event.
+
+        Raises ``ValueError`` when not stacking. Returns the final progress
+        (mode, state, frames, lapse_ms).
+        """
+        self._stack_stop.set()
+        thread = self._stack_thread
+        if (
+            thread is not None
+            and thread is not threading.current_thread()
+            and thread.is_alive()
+        ):
+            thread.join(timeout=2.0)
+        with self._scope_state_lock:
+            if self._scope_state["mode"] != "stacking":
+                raise ValueError("not stacking")
+            self._scope_state["mode"] = "idle"
+            self._scope_state["stacking"]["state"] = "idle"
+            final = dict(self._scope_state["stacking"])
+        self.push_event(
+            {
+                "Event": stacking.STACK_EVENT,
+                "state": "idle",
+                "lapse_ms": final["lapse_ms"],
+                "frames": final["frames"],
+            }
+        )
+        return {
+            "mode": "idle",
+            "state": final["state"],
+            "lapse_ms": final["lapse_ms"],
+            "frames": final["frames"],
+        }
+
     def handle_scope_command(
         self, method: str, params: Mapping[str, Any]
     ) -> tuple[bool, Any, int]:
@@ -412,6 +517,18 @@ class MockScope:
         if method == "scope_park":
             self.park()
             return True, {"mode": self.scope_state()["mode"]}, 0
+        if method == stacking.START_STACK_METHOD:
+            try:
+                exposure, gain, mosaic = stacking.wire_params_to_stack_args(params)
+                result = self.start_stacking(exposure, gain, mosaic)
+            except (TypeError, ValueError) as exc:
+                return True, {"error": f"invalid stacking params: {exc}"}, -1
+            return True, result, 0
+        if method == stacking.STOP_STACK_METHOD:
+            try:
+                return True, self.stop_stacking(), 0
+            except ValueError as exc:
+                return True, {"error": str(exc)}, -1
         return False, None, 0
 
     # -- internals -----------------------------------------------------------

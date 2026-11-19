@@ -13,11 +13,18 @@ operations in GLOSSARY vocabulary:
 - :meth:`Device.goto` — slew to a target's RA/Dec (``scope_goto_target``);
   arrival is reported by the pushed ``ScopeGoto`` "complete" event, with a
   state-polling fallback if the event is missed;
+- :meth:`Device.start_stack` / :meth:`Device.stop_stack` — stack sub-frames
+  into a Stack on the current target (``iscope_start_stacking`` /
+  ``iscope_stop_stacking``) with per-target exposure / gain / mosaic
+  framing; progress arrives as pushed ``Stack`` events;
 - :meth:`Device.park` — park the Scope (``scope_park``, mode -> parked).
 
 Pushed events from the Scope are surfaced through registered callbacks
 (:meth:`Device.add_event_handler` / :meth:`Device.on_event`), reusing the
-transport's event dispatch.
+transport's event dispatch. Stack progress events (``Stack``) can also be
+received pre-parsed as :class:`StackingProgress` via
+:meth:`Device.add_stacking_progress_handler` / :meth:`Device.on_stacking_progress`,
+and are reflected in :meth:`Device.state` (``state().stacking``).
 
 NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
 the facade is exercised against the mock Scope
@@ -31,10 +38,13 @@ from __future__ import annotations
 import argparse
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from . import stacking
 from .protocol import Event
+from .stacking import START_STACK_METHOD, STACK_EVENT, STOP_STACK_METHOD
 from .transport import COMMAND_PORT, EventHandler, LinkTransport
 
 logger = logging.getLogger(__name__)
@@ -69,11 +79,25 @@ class GotoTimeoutError(TimeoutError):
 
 @dataclass(frozen=True)
 class StackingProgress:
-    """Stacking progress of the Scope's current stack."""
+    """Stacking progress of the Scope's current stack.
+
+    ``frames`` is the number of sub-frames stacked so far, ``lapse_ms`` the
+    elapsed stacking time in milliseconds, ``state`` "working" while the
+    Stack is being collected and "idle" once it stopped.
+    """
 
     state: str
     lapse_ms: int
     frames: int
+
+
+def _stacking_progress_from(payload: Mapping[str, Any]) -> StackingProgress:
+    """Parse a ``Stack`` event payload / ``get_scope_state`` stacking dict."""
+    return StackingProgress(
+        state=str(payload.get("state", "idle")),
+        lapse_ms=int(payload.get("lapse_ms", 0) or 0),
+        frames=int(payload.get("frames", 0) or 0),
+    )
 
 
 @dataclass(frozen=True)
@@ -101,6 +125,10 @@ class DeviceState:
         return self.mode == MODE_SLEWING
 
     @property
+    def stacking_active(self) -> bool:
+        return self.mode == MODE_STACKING
+
+    @property
     def parked(self) -> bool:
         return self.mode == MODE_PARKED
 
@@ -112,12 +140,7 @@ def _parse_state(result: Mapping[str, Any]) -> DeviceState:
     target: tuple[float, float] | None = None
     if target_raw:
         target = (float(target_raw["ra"]), float(target_raw["dec"]))
-    stacking_raw = result.get("stacking") or {}
-    stacking = StackingProgress(
-        state=str(stacking_raw.get("state", "idle")),
-        lapse_ms=int(stacking_raw.get("lapse_ms", 0)),
-        frames=int(stacking_raw.get("frames", 0)),
-    )
+    stacking = _stacking_progress_from(result.get("stacking") or {})
     return DeviceState(mode=mode, target=target, stacking=stacking)
 
 
@@ -130,6 +153,8 @@ class Device:
         self.goto_timeout = goto_timeout
         self._state_lock = threading.Lock()
         self._last_state: DeviceState | None = None
+        #: StackingProgress handler -> registered raw Stack event wrapper
+        self._progress_handlers: dict[Callable[[StackingProgress], None], EventHandler] = {}
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -248,6 +273,81 @@ class Device:
         self._transport.request(PARK_METHOD)
         return self.state()
 
+    # -- stacking --------------------------------------------------------------
+
+    def start_stack(
+        self,
+        exposure: float,
+        gain: int,
+        mosaic: bool | Mapping[str, float] | tuple[float, float] = False,
+        *,
+        timeout: float | None = None,
+    ) -> DeviceState:
+        """Begin stacking a Stack of sub-frames on the current target.
+
+        ``exposure`` is the sub-frame exposure in seconds, ``gain`` the
+        sensor gain, and ``mosaic`` the mosaic framing for the target: a
+        bool (Scope default geometry) or a ``(pan, tilt)`` framing in
+        degrees (mapping with ``pan``/``tilt`` keys works too). Out-of-range
+        values raise :class:`ValueError` client-side and are also rejected
+        by the Scope with a non-zero reply code (:class:`RpcError`).
+
+        Returns once stacking has begun (mode ``stacking``); progress is
+        delivered as pushed ``Stack`` events (see
+        :meth:`add_stacking_progress_handler`) and reflected in
+        :meth:`state` (``state().stacking``).
+        """
+        params = stacking.stack_request_params(exposure, gain, mosaic)
+        self._transport.request(START_STACK_METHOD, params, timeout=timeout)
+        return self.state()
+
+    def stop_stack(self, *, timeout: float | None = None) -> DeviceState:
+        """Stop the current Stack cleanly (mode -> idle).
+
+        The Scope pushes a final ``Stack`` progress event with the final
+        frame count and elapsed time. Returns the state after stopping.
+        """
+        self._transport.request(STOP_STACK_METHOD, timeout=timeout)
+        return self.state()
+
+    def add_stacking_progress_handler(
+        self, handler: Callable[[StackingProgress], None]
+    ) -> None:
+        """Register ``handler`` to receive a parsed :class:`StackingProgress`
+        (frames stacked, elapsed) for every pushed ``Stack`` progress event."""
+
+        def on_stack_event(event: Event) -> None:
+            handler(_stacking_progress_from(event.payload))
+
+        self._progress_handlers[handler] = on_stack_event
+        self._transport.add_event_handler(STACK_EVENT, on_stack_event)
+
+    def remove_stacking_progress_handler(
+        self, handler: Callable[[StackingProgress], None]
+    ) -> None:
+        """Remove a handler registered with :meth:`add_stacking_progress_handler`."""
+        on_stack_event = self._progress_handlers.pop(handler, None)
+        if on_stack_event is not None:
+            self._transport.remove_event_handler(STACK_EVENT, on_stack_event)
+
+    def on_stacking_progress(
+        self, handler: Callable[[StackingProgress], None] | None = None
+    ) -> Any:
+        """Register ``handler`` for stack progress, parsed as
+        :class:`StackingProgress`.
+
+        Returns ``handler``; called with only the decorator form, so
+        ``@device.on_stacking_progress`` works too.
+        """
+        if handler is None:
+            def decorator(fn: Callable[[StackingProgress], None]) -> Callable[[StackingProgress], None]:
+                self.add_stacking_progress_handler(fn)
+                return fn
+
+            return decorator
+        self.add_stacking_progress_handler(handler)
+        return handler
+
     # -- events ------------------------------------------------------------------
 
     def add_event_handler(self, name: str, handler: EventHandler) -> None:
@@ -283,11 +383,13 @@ def connect(ip: str, port: int = COMMAND_PORT, **kwargs: Any) -> Device:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Demo against a local mock Scope: connect -> state -> goto -> park."""
+    """Demo against a local mock Scope: connect -> state -> goto -> stack -> park."""
     parser = argparse.ArgumentParser(
         description="Device facade demo against a local mock Scope"
     )
     parser.add_argument("--slew-duration", type=float, default=0.5)
+    parser.add_argument("--stack-watch", type=float, default=1.2,
+                        help="seconds to watch stack progress before stopping")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -310,8 +412,17 @@ def main(argv: list[str] | None = None) -> None:
         device.add_event_handler(
             "*", lambda e: print(f"  event: {e.name} {dict(e.payload)}")
         )
+
+        @device.on_stacking_progress
+        def on_progress(p: StackingProgress) -> None:
+            print(f"  stack progress: {p.frames} sub-frames, {p.lapse_ms} ms elapsed ({p.state})")
+
         print("state after connect:", device.state())
         print("goto(5.5, 12.25) ->", device.goto(5.5, 12.25))
+        print("start_stack(exposure=10s, gain=80, mosaic=(2.0, 2.0)) ->",
+              device.start_stack(10.0, 80, (2.0, 2.0)))
+        time.sleep(args.stack_watch)
+        print("stop_stack() ->", device.stop_stack())
         print("park() ->", device.park())
         device.disconnect()
     finally:
