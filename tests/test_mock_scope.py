@@ -129,6 +129,58 @@ def test_mock_rejects_bad_signature(keypair):
         scope.stop()
 
 
+def test_get_scope_state_reports_mode_target_and_stacking(transport):
+    """Wire shape of get_scope_state: mode, target, stacking progress."""
+    result = transport.request("get_scope_state")
+    assert result["mode"] == "idle"
+    assert result["target"] is None
+    assert result["stacking"] == {"state": "idle", "lapse_ms": 0, "frames": 0}
+
+
+def test_goto_then_state_and_arrival_event(transport, mock_scope):
+    """scope_goto_target accepts the slew, simulates its duration, then updates
+    the state and pushes a ScopeGoto "complete" event."""
+    import threading
+
+    from seestar_controller.link import protocol
+
+    mock_scope.slew_duration = 0.05
+    events: list[protocol.Event] = []
+    done = threading.Event()
+    transport.add_event_handler(
+        "ScopeGoto",
+        lambda e: (events.append(e), done.set() if e.payload.get("state") == "complete" else None),
+    )
+    result = transport.request("scope_goto_target", {"ra": 1.5, "dec": 2.5})
+    assert result == {"ra": 1.5, "dec": 2.5}
+    # during the slew the state shows slewing with the target set
+    mid = mock_scope.scope_state()
+    assert mid["mode"] == "slewing"
+    assert mid["target"] == {"ra": 1.5, "dec": 2.5}
+    assert done.wait(timeout=3), "no ScopeGoto complete event"
+    final = mock_scope.scope_state()
+    assert final["mode"] == "idle"
+    assert final["target"] == {"ra": 1.5, "dec": 2.5}
+    assert mock_scope.last_goto == {"ra": 1.5, "dec": 2.5}
+
+
+def test_park_sets_mode_parked_and_pushes_event(transport, mock_scope):
+    import threading
+
+    from seestar_controller.link import protocol
+
+    events: list[protocol.Event] = []
+    done = threading.Event()
+    transport.add_event_handler(
+        "ScopePark", lambda e: (events.append(e), done.set())
+    )
+    result = transport.request("scope_park")
+    assert result == {"mode": "parked"}
+    assert mock_scope.scope_state()["mode"] == "parked"
+    assert done.wait(timeout=3)
+    assert events[0].payload["state"] == "parked"
+
+
 def test_mock_skips_malformed_json_line_and_keeps_serving(keypair):
     """A garbage line on the command channel must not kill the mock's client
     handler: the bad line is skipped and later valid requests still get replies."""

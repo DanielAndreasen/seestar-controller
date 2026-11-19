@@ -11,6 +11,13 @@ client's PEM-signed handshake (``get_verify_str`` challenge ->
 ``verify_client`` with an RSA-SHA1 PKCS#1 v1.5 signature) against a public
 key, and replies 9.75-style with a ``key_envelope`` result.
 
+Beyond auth and heartbeat, the mock carries a device state (mode, current
+target, stacking progress) and serves the device-level commands the facade
+uses: ``get_scope_state``, ``scope_goto_target`` (simulated slew of
+:attr:`MockScope.slew_duration` seconds, then a pushed ``ScopeGoto``
+"complete" event and mode back to idle) and ``scope_park`` (mode ->
+parked, ``ScopePark`` event pushed).
+
 NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
 this mock is the only counterpart the client is tested against. Image
 payloads are synthetic (``MOCKFRAME`` + counter), not real JPEGs; only the
@@ -22,6 +29,7 @@ Run standalone: ``uv run python -m seestar_controller.link.mock_scope``
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import secrets
@@ -140,6 +148,11 @@ class _CommandConnection:
             )
             return
 
+        handled, result, code = self.scope.handle_scope_command(method, params)
+        if handled:
+            self.reply(request.id, method, result, code=code)
+            return
+
         self.reply(request.id, method, self.scope.canned_result(method, params))
 
 
@@ -160,6 +173,7 @@ class MockScope:
         frame_size: int = 1024,
         tele_resolution: tuple[int, int] = (1920, 1080),
         wide_resolution: tuple[int, int] = (1280, 720),
+        slew_duration: float = 0.5,
     ) -> None:
         self.host = host
         self._command_port = command_port
@@ -172,6 +186,8 @@ class MockScope:
         self.frame_size = frame_size
         self.tele_resolution = tele_resolution
         self.wide_resolution = wide_resolution
+        #: simulated slew time in seconds for scope_goto_target (test knob)
+        self.slew_duration = slew_duration
 
         self.heartbeat_silent = False
         #: method -> seconds to sleep before replying (forces out-of-order replies)
@@ -184,6 +200,16 @@ class MockScope:
         self._clients_lock = threading.Lock()
         self._image_socks: set[socket.socket] = set()
         self._stopping = threading.Event()
+
+        # -- device state (what get_scope_state reports) ----------------------
+        self._scope_state_lock = threading.Lock()
+        self._scope_state: dict[str, Any] = {
+            "mode": "idle",
+            "target": None,
+            "stacking": {"state": "idle", "lapse_ms": 0, "frames": 0},
+        }
+        #: last accepted goto target {"ra": ..., "dec": ...} (test hook)
+        self.last_goto: dict[str, float] | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -309,6 +335,84 @@ class MockScope:
         if method in canned:
             return canned[method]
         return {"echo_method": method, "echo_params": dict(params)}
+
+    # -- device state: get_scope_state / scope_goto_target / scope_park ------
+
+    def scope_state(self) -> dict[str, Any]:
+        """A deep copy of the mock Scope's current state (mode/target/stacking)."""
+        with self._scope_state_lock:
+            return copy.deepcopy(self._scope_state)
+
+    def set_stacking_progress(
+        self, state: str, *, lapse_ms: int = 0, frames: int = 0
+    ) -> None:
+        """Test knob: set the stacking progress reported by ``get_scope_state``."""
+        with self._scope_state_lock:
+            self._scope_state["stacking"] = {
+                "state": state,
+                "lapse_ms": lapse_ms,
+                "frames": frames,
+            }
+
+    def begin_goto(self, ra: float, dec: float) -> None:
+        """Start a simulated slew to (ra, dec).
+
+        Mode goes to ``slewing`` immediately and a ``ScopeGoto`` "slewing"
+        event is pushed; after :attr:`slew_duration` seconds the mode goes
+        back to ``idle`` and a ``ScopeGoto`` "complete" event is pushed.
+        """
+        with self._scope_state_lock:
+            self._scope_state["mode"] = "slewing"
+            self._scope_state["target"] = {"ra": ra, "dec": dec}
+            self.last_goto = {"ra": ra, "dec": dec}
+        self.push_event({"Event": "ScopeGoto", "state": "slewing", "ra": ra, "dec": dec})
+        thread = threading.Thread(
+            target=self._slew, args=(ra, dec), name="mock-slew", daemon=True
+        )
+        self._threads.append(thread)
+        thread.start()
+
+    def _slew(self, ra: float, dec: float) -> None:
+        time.sleep(self.slew_duration)
+        if self._stopping.is_set():
+            return
+        with self._scope_state_lock:
+            if self._scope_state["mode"] == "slewing":
+                self._scope_state["mode"] = "idle"
+        self.push_event(
+            {"Event": "ScopeGoto", "state": "complete", "ra": ra, "dec": dec}
+        )
+
+    def park(self) -> None:
+        """Park the mock Scope: mode -> ``parked``, ``ScopePark`` event pushed."""
+        with self._scope_state_lock:
+            self._scope_state["mode"] = "parked"
+        self.push_event({"Event": "ScopePark", "state": "parked"})
+
+    def handle_scope_command(
+        self, method: str, params: Mapping[str, Any]
+    ) -> tuple[bool, Any, int]:
+        """Device-level commands used by the facade.
+
+        Returns ``(handled, result, code)``; ``handled`` is False for methods
+        this dispatcher does not know (fall through to canned results).
+        """
+        if method == "get_scope_state":
+            return True, self.scope_state(), 0
+        if method == "scope_goto_target":
+            try:
+                ra = float(params.get("ra"))
+                dec = float(params.get("dec"))
+            except (TypeError, ValueError):
+                return True, {"error": f"ra/dec must be numbers, got {dict(params)!r}"}, -1
+            if not (0.0 <= ra < 24.0 and -90.0 <= dec <= 90.0):
+                return True, {"error": f"ra/dec out of range: ra={ra} dec={dec}"}, -1
+            self.begin_goto(ra, dec)
+            return True, {"ra": ra, "dec": dec}, 0
+        if method == "scope_park":
+            self.park()
+            return True, {"mode": self.scope_state()["mode"]}, 0
+        return False, None, 0
 
     # -- internals -----------------------------------------------------------
 
