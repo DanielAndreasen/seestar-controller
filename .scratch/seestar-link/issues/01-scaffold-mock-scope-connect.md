@@ -4,11 +4,11 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in 6660003
 
-- [ ] Mock scope server runs standalone and accepts a JSON-RPC connection on :4700
-- [ ] Client connects to the mock scope with signed handshake and receives a successful reply
-- [ ] Request/reply correlation by id works for concurrent requests
-- [ ] Pushed events from the scope are dispatched to a registered handler
-- [ ] Heartbeat keeps the connection alive; dropping it is detected
-- [ ] Unit tests cover envelope encode/decode and id correlation without real sockets where possible
+- [x] Mock scope server runs standalone and accepts a JSON-RPC connection on :4700
+- [x] Client connects to the mock scope with signed handshake and receives a successful reply
+- [x] Request/reply correlation by id works for concurrent requests
+- [x] Pushed events from the scope are dispatched to a registered handler
+- [x] Heartbeat keeps the connection alive; dropping it is detected
+- [x] Unit tests cover envelope encode/decode and id correlation without real sockets where possible
