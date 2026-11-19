@@ -2,8 +2,15 @@
 
 import socket
 
+import pytest
+
 from seestar_controller.link import image
-from seestar_controller.link.mock_scope import FRAME_MAGIC, MockScope, make_frame_payload
+from seestar_controller.link.mock_scope import (
+    FRAME_MAGIC,
+    MockScope,
+    make_frame_payload,
+    make_jpeg_payload,
+)
 
 
 def _read_frames(port: int, count: int):
@@ -234,3 +241,123 @@ def test_mock_skips_malformed_json_line_and_keeps_serving(keypair):
             sock.close()
     finally:
         scope.stop()
+
+
+# -- preview streaming knobs ------------------------------------------------------
+
+
+def test_make_jpeg_payload_is_a_jpeg_with_counter():
+    from seestar_controller.link.preview import decode_payload, is_jpeg
+
+    payload = make_jpeg_payload(9, 64, 48)
+    assert is_jpeg(payload)
+    assert not is_jpeg(make_frame_payload(9, 64))
+    frame = image.Frame(
+        code=0, id=9, width=64, height=48, size=len(payload), payload=payload
+    )
+    arr = decode_payload(frame)
+    assert arr.shape == (48, 64, 3)
+    assert abs(float(arr[..., 2].mean()) - 9) <= 2  # counter in blue channel
+
+
+def test_jpeg_frames_served_on_image_socket(keypair):
+    _private_pem, public_pem = keypair
+    scope = MockScope(
+        "127.0.0.1", 0, 0, 0,
+        public_pem=public_pem,
+        frame_format="jpeg",
+        frame_count=3,
+        frame_interval=0.01,
+        tele_resolution=(64, 48),
+    )
+    scope.start()
+    try:
+        sock = socket.create_connection(("127.0.0.1", scope.tele_port), timeout=5)
+        try:
+            for seq in range(3):
+                frame = image.read_frame(sock)
+                assert frame is not None
+                assert frame.id == seq
+                assert (frame.width, frame.height) == (64, 48)
+                assert frame.payload[:2] == b"\xff\xd8"  # JPEG SOI
+            # after frame_count frames the mock closes the image socket
+            assert image.read_frame(sock) is None
+        finally:
+            sock.close()
+    finally:
+        scope.stop()
+
+
+def test_chunked_frame_delivery_is_reassembled_by_read_frame(keypair):
+    """chunk_size splits each frame into small TCP segments; read_frame must
+    still reassemble header + payload."""
+    _private_pem, public_pem = keypair
+    scope = MockScope(
+        "127.0.0.1", 0, 0, 0,
+        public_pem=public_pem,
+        frame_count=3,
+        frame_interval=0.01,
+        frame_size=100,
+        chunk_size=7,
+    )
+    scope.start()
+    try:
+        sock = socket.create_connection(("127.0.0.1", scope.tele_port), timeout=5)
+        try:
+            for seq in range(3):
+                frame = image.read_frame(sock)
+                assert frame is not None
+                assert frame.id == seq
+                assert frame.payload == make_frame_payload(seq, 100)
+        finally:
+            sock.close()
+    finally:
+        scope.stop()
+
+
+def test_stop_start_streaming_gates_frame_push(keypair):
+    _private_pem, public_pem = keypair
+    scope = MockScope(
+        "127.0.0.1", 0, 0, 0,
+        public_pem=public_pem,
+        frame_count=None,
+        frame_interval=0.01,
+        frame_size=64,
+    )
+    scope.start()
+    try:
+        sock = socket.create_connection(("127.0.0.1", scope.tele_port), timeout=5)
+        try:
+            assert image.read_frame(sock).id == 0
+            assert image.read_frame(sock).id == 1
+            scope.stop_streaming()
+            assert not scope.streaming
+            sock.settimeout(0.4)
+            with pytest.raises(socket.timeout):
+                image.read_frame(sock)  # nothing pushed while paused
+            scope.start_streaming()
+            assert scope.streaming
+            sock.settimeout(5)
+            assert image.read_frame(sock).id == 2
+        finally:
+            sock.close()
+    finally:
+        scope.stop()
+
+
+def test_stream_fps_property_sets_frame_interval():
+    scope = MockScope.__new__(MockScope)  # property test without binding
+    scope.frame_interval = 0.05
+    assert scope.stream_fps == 20.0
+    scope.stream_fps = 50
+    assert scope.frame_interval == pytest.approx(0.02)
+    assert scope.stream_fps == 50.0
+    with pytest.raises(ValueError):
+        scope.stream_fps = 0
+
+
+def test_invalid_frame_format_and_chunk_size_rejected():
+    with pytest.raises(ValueError, match="frame_format"):
+        MockScope("127.0.0.1", 0, 0, 0, frame_format="png")
+    with pytest.raises(ValueError, match="chunk_size"):
+        MockScope("127.0.0.1", 0, 0, 0, chunk_size=0)

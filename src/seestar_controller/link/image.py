@@ -8,8 +8,10 @@ bytes (a JPEG on real hardware), per seestar_alp's binary protocol::
     _s1, _s2, _s3, size, _s5, _s6, code, id, width, height = unpack(fmt, header)
 
 NOTE (user AFK, no real scope — see docs/wiki/assumptions.md): the mock
-Scope sends synthetic payloads (see :mod:`...mock_scope`), not real JPEGs;
-only the framing is exercised against the mock.
+Scope sends synthetic payloads (see :mod:`...mock_scope`): ``MOCKFRAME`` +
+counter with ``frame_format="raw"``, or a JPEG gradient with the frame
+counter with ``frame_format="jpeg"``; only the framing is exercised against
+the mock.
 """
 
 from __future__ import annotations

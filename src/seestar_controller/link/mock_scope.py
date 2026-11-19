@@ -22,10 +22,19 @@ stacking, then pushes ``Stack`` progress events with frame count + elapsed
 until stopped) and ``iscope_stop_stacking`` (mode -> idle, final ``Stack``
 event). Invalid stacking params are rejected with a non-zero reply code.
 
+The image sockets stream the **Preview** (GLOSSARY): each accepted
+connection gets a loop pushing synthetic frames at :attr:`frame_interval`
+(:attr:`stream_fps`), capped by ``frame_count``. ``frame_format="raw"``
+sends ``MOCKFRAME`` + counter payloads; ``frame_format="jpeg"`` sends a
+JPEG-encoded RGB gradient with the frame counter in the blue channel (what
+real hardware sends). ``chunk_size`` splits each frame into small TCP
+segments (partial-frame reassembly tests), and :meth:`stop_streaming` /
+:meth:`start_streaming` gate the push.
+
 NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
-this mock is the only counterpart the client is tested against. Image
-payloads are synthetic (``MOCKFRAME`` + counter), not real JPEGs; only the
-20-byte frame framing is exercised.
+this mock is the only counterpart the client is tested against. Only the
+20-byte frame framing and the synthetic payloads are exercised; real JPEGs
+from hardware are unverified.
 
 Run standalone: ``uv run python -m seestar_controller.link.mock_scope``
 """
@@ -34,15 +43,20 @@ from __future__ import annotations
 
 import argparse
 import copy
+import io
 import json
 import logging
 import secrets
+import select
 import socket
 import struct
 import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
+
+import numpy as np
+from PIL import Image
 
 from . import auth, image, protocol, stacking
 
@@ -60,6 +74,26 @@ def make_frame_payload(seq: int, size: int) -> bytes:
     payload = bytearray(FRAME_MAGIC + struct.pack(">I", seq))
     payload.extend(b"\x00" * max(0, size - len(payload)))
     return bytes(payload[:size])
+
+
+def make_jpeg_payload(seq: int, width: int, height: int, quality: int = 95) -> bytes:
+    """Synthetic JPEG Preview frame: an RGB gradient with the frame counter
+    ``seq`` in the flat blue channel.
+
+    The blue channel is a uniform field of ``seq % 256``, which survives
+    lossy JPEG encoding within a couple of gray levels, so a decoder can
+    recover the counter from the decoded image (see
+    :func:`seestar_controller.link.preview.decode_payload`).
+    """
+    ramp_x = np.linspace(0, 255, width, dtype=np.uint8)
+    ramp_y = np.linspace(0, 255, height, dtype=np.uint8)
+    arr = np.empty((height, width, 3), dtype=np.uint8)
+    arr[..., 0] = ramp_x[np.newaxis, :]
+    arr[..., 1] = ramp_y[:, np.newaxis]
+    arr[..., 2] = seq % 256
+    buf = io.BytesIO()
+    Image.fromarray(arr, "RGB").save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
 
 
 class _CommandConnection:
@@ -175,6 +209,8 @@ class MockScope:
         frame_interval: float = 0.05,
         frame_count: int | None = None,
         frame_size: int = 1024,
+        frame_format: str = "raw",
+        chunk_size: int | None = None,
         tele_resolution: tuple[int, int] = (1920, 1080),
         wide_resolution: tuple[int, int] = (1280, 720),
         slew_duration: float = 0.5,
@@ -188,8 +224,23 @@ class MockScope:
         self.frame_interval = frame_interval
         self.frame_count = frame_count
         self.frame_size = frame_size
+        if frame_format not in ("raw", "jpeg"):
+            raise ValueError(
+                f"frame_format must be 'raw' or 'jpeg', got {frame_format!r}"
+            )
+        #: payload flavour of the streamed Preview frames: "raw" (MOCKFRAME
+        #: + counter) or "jpeg" (JPEG gradient with counter, like real hw)
+        self.frame_format = frame_format
+        if chunk_size is not None and chunk_size <= 0:
+            raise ValueError(f"chunk_size must be > 0 or None, got {chunk_size}")
+        #: when set, each frame is sent in TCP segments of this many bytes
+        #: (partial-frame reassembly test knob)
+        self.chunk_size = chunk_size
         self.tele_resolution = tele_resolution
         self.wide_resolution = wide_resolution
+        #: gate on the image-socket streaming loops (start/stop_streaming)
+        self._stream_gate = threading.Event()
+        self._stream_gate.set()
         #: simulated slew time in seconds for scope_goto_target (test knob)
         self.slew_duration = slew_duration
         #: real seconds between pushed Stack progress events while stacking
@@ -308,6 +359,33 @@ class MockScope:
     def set_heartbeat_silent(self, silent: bool) -> None:
         """When silent, stop replying to ``test_connection`` (dropped heartbeat)."""
         self.heartbeat_silent = silent
+
+    # -- preview streaming knobs -------------------------------------------------
+
+    @property
+    def streaming(self) -> bool:
+        """True while the image sockets push Preview frames."""
+        return self._stream_gate.is_set()
+
+    def start_streaming(self) -> None:
+        """Resume pushing Preview frames on the image sockets."""
+        self._stream_gate.set()
+
+    def stop_streaming(self) -> None:
+        """Pause pushing Preview frames; connected image clients stay
+        connected and simply receive nothing until :meth:`start_streaming`."""
+        self._stream_gate.clear()
+
+    @property
+    def stream_fps(self) -> float:
+        """The image sockets' streaming rate in frames per second."""
+        return 1.0 / self.frame_interval if self.frame_interval > 0 else float("inf")
+
+    @stream_fps.setter
+    def stream_fps(self, fps: float) -> None:
+        if fps <= 0:
+            raise ValueError(f"stream_fps must be > 0, got {fps}")
+        self.frame_interval = 1.0 / fps
 
     def push_event(self, event: Mapping[str, Any]) -> None:
         """Push an event to every connected command-channel client."""
@@ -587,32 +665,44 @@ class MockScope:
     def _accept_image(
         self, sock: socket.socket, address: Any, resolution: tuple[int, int]
     ) -> None:
-        """Serve binary frames on an image socket (:4800 tele / :4804 wide)."""
+        """Serve binary Preview frames on an image socket (:4800 tele / :4804 wide).
+
+        A streaming loop pushes one synthetic frame every
+        :attr:`frame_interval` (see :attr:`stream_fps`) while streaming is
+        enabled (:meth:`start_streaming` / :meth:`stop_streaming`), until
+        ``frame_count`` frames were sent (then the socket is closed) or the
+        client disconnects. ``chunk_size`` splits each frame into small TCP
+        segments (partial-frame reassembly test knob).
+        """
         with self._clients_lock:
             self._image_socks.add(sock)
         width, height = resolution
         seq = 0
         try:
-            sock.settimeout(0.1)
             while not self._stopping.is_set():
                 # Drain (and ignore) any JSON commands the client sends first,
-                # e.g. {"id": 21, "method": "begin_streaming"}.
-                try:
-                    if not sock.recv(65536):
-                        break  # client closed the image socket
-                except socket.timeout:
-                    pass
+                # e.g. {"id": 21, "method": "begin_streaming"}, and detect a
+                # closed client. Non-blocking: the drain must not pace (and
+                # slow down) the streaming rate.
+                readable, _, _ = select.select([sock], [], [], 0)
+                if readable:
+                    try:
+                        if not sock.recv(65536):
+                            break  # client closed the image socket
+                    except OSError:
+                        break
+                if not self._stream_gate.wait(0.05):
+                    continue  # streaming paused via stop_streaming()
                 if self.frame_count is not None and seq >= self.frame_count:
                     break
-                sock.sendall(
-                    image.encode_frame(
-                        make_frame_payload(seq, self.frame_size),
-                        code=0,
-                        id=seq,
-                        width=width,
-                        height=height,
-                    )
+                if self.frame_format == "jpeg":
+                    payload = make_jpeg_payload(seq, width, height)
+                else:
+                    payload = make_frame_payload(seq, self.frame_size)
+                blob = image.encode_frame(
+                    payload, code=0, id=seq, width=width, height=height
                 )
+                self._send_blob(sock, blob)
                 seq += 1
                 time.sleep(self.frame_interval)
         except OSError:
@@ -624,6 +714,14 @@ class MockScope:
                 sock.close()
             except OSError:
                 pass
+
+    def _send_blob(self, sock: socket.socket, blob: bytes) -> None:
+        """Send one frame blob, optionally split into ``chunk_size`` segments."""
+        if self.chunk_size:
+            for i in range(0, len(blob), self.chunk_size):
+                sock.sendall(blob[i : i + self.chunk_size])
+        else:
+            sock.sendall(blob)
 
 
 def main(argv: list[str] | None = None) -> None:

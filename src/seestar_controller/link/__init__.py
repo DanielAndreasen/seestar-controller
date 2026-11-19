@@ -7,11 +7,12 @@
 - :mod:`.stacking` — stacking wire contract (methods, Stack event, param ranges)
 - :mod:`.device` — device facade (connect, state, goto, stack, park, event callbacks)
 - :mod:`.image` — binary image frames on :4800 (tele) / :4804 (wide)
+- :mod:`.preview` — Preview stream: decoded live frames from :4800/:4804
 - :mod:`.mock_scope` — mock Scope test double speaking the same protocol
 
-:mod:`.device` and :mod:`.mock_scope` are imported lazily (PEP 562
+:mod:`.device` and :mod:`.preview` are imported lazily (PEP 562
 ``__getattr__``) so those modules can also run standalone via
-``python -m seestar_controller.link.device`` / ``...mock_scope``.
+``python -m seestar_controller.link.device`` / ``...preview``.
 """
 
 from . import auth, image, keys, protocol, stacking
@@ -25,6 +26,14 @@ from .transport import ConnectionLostError, LinkTransport, RpcError
 
 #: Device-facade names re-exported lazily from :mod:`.device`.
 _DEVICE_EXPORTS = ("Device", "DeviceState", "StackingProgress", "GotoTimeoutError")
+#: Preview-stream names re-exported lazily from :mod:`.preview`.
+_PREVIEW_EXPORTS = (
+    "PreviewStream",
+    "PreviewFrame",
+    "PreviewCallback",
+    "FrameThrottle",
+    "decode_payload",
+)
 
 
 def __getattr__(name: str):
@@ -32,6 +41,10 @@ def __getattr__(name: str):
         from . import device
 
         return getattr(device, name)
+    if name in _PREVIEW_EXPORTS:
+        from . import preview
+
+        return getattr(preview, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -40,12 +53,18 @@ __all__ = [
     "device",
     "image",
     "keys",
+    "preview",
     "protocol",
     "stacking",
     "Device",
     "DeviceState",
     "StackingProgress",
     "GotoTimeoutError",
+    "PreviewStream",
+    "PreviewFrame",
+    "PreviewCallback",
+    "FrameThrottle",
+    "decode_payload",
     "LinkTransport",
     "RpcError",
     "ConnectionLostError",
