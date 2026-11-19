@@ -4,9 +4,9 @@
 
 **Blocked by:** 04, 05
 
-**Status:** ready-for-agent
+**Status:** implemented in 7f8bb25
 
-- [ ] Sub-frames and stacks are downloaded to the given directory
-- [ ] Each file has a metadata sidecar with time/exposure/gain/target
-- [ ] Files are written atomically (temp + rename)
-- [ ] Tests: download against mock scope, verify file contents and sidecars
+- [x] Sub-frames and stacks are downloaded to the given directory
+- [x] Each file has a metadata sidecar with time/exposure/gain/target
+- [x] Files are written atomically (temp + rename)
+- [x] Tests: download against mock scope, verify file contents and sidecars
