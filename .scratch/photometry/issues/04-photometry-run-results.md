@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 03, project-store 05
 
-**Status:** implemented in 545d3d4
+**Status:** implemented in c087c4a
 
 - [x] Run photometry over all subs of a session (worker thread, progress shown)
 - [x] Results view: per-frame table + scatter plot, outliers flaggable
