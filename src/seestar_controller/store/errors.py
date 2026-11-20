@@ -35,3 +35,9 @@ class SessionNotFoundError(ProjectError):
 class SessionAlreadyClosedError(ProjectError):
     """The session is already closed (``ended_at`` is set); closing it again
     is rejected."""
+
+
+class FrameStoreError(ProjectError):
+    """Storing or reading a frame failed: the bytes are not a readable FITS
+    file, the ``frames`` db row could not be inserted, the frame file is
+    missing on disk, or the stored path is unsafe (see :mod:`.frames`)."""

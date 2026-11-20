@@ -8,7 +8,8 @@ Pure Python, no GTK, no link (module boundary per
   :class:`~.errors.ProjectNotFoundError`, :class:`~.errors.InvalidProjectError`,
   and the session errors :class:`~.errors.SessionOpenError`,
   :class:`~.errors.SessionNotFoundError`,
-  :class:`~.errors.SessionAlreadyClosedError`
+  :class:`~.errors.SessionAlreadyClosedError`, plus
+  :class:`~.errors.FrameStoreError`
 - :mod:`.schema` — the ``db.sqlite`` schema (sessions, frames, stars,
   measurements) and :data:`~.schema.SCHEMA_VERSION`, initialized in one
   transaction with WAL journal mode
@@ -24,12 +25,19 @@ Pure Python, no GTK, no link (module boundary per
   and the session errors :class:`~.errors.SessionOpenError`,
   :class:`~.errors.SessionNotFoundError`,
   :class:`~.errors.SessionAlreadyClosedError`
+- :mod:`.frames` — frame storage: :func:`~.frames.store_frame` (atomic FITS
+  write into ``subs/<session>/`` / ``stacks/<session>/`` + the ``frames`` db
+  row), :func:`~.frames.list_frames`, :func:`~.frames.get_frame_path`,
+  :func:`~.frames.read_frame_bytes`, the :class:`~.frames.Frame` record, the
+  kind constants :data:`~.frames.KIND_SUB` / :data:`~.frames.KIND_STACK` /
+  :data:`~.frames.KINDS`, and :class:`~.errors.FrameStoreError`
 
 Module boundary (see ``.scratch/project-store/spec.md``): nothing in this
 package imports GTK or :mod:`seestar_controller.link`.
 """
 
 from .errors import (
+    FrameStoreError,
     InvalidProjectError,
     ProjectError,
     ProjectExistsError,
@@ -37,6 +45,18 @@ from .errors import (
     SessionAlreadyClosedError,
     SessionNotFoundError,
     SessionOpenError,
+)
+from .frames import (
+    FITS_SUFFIX,
+    KIND_STACK,
+    KIND_SUB,
+    KINDS,
+    Frame,
+    get_frame_path,
+    list_frames,
+    normalize_kind,
+    read_frame_bytes,
+    store_frame,
 )
 from .project import (
     DB_FILE,
@@ -68,6 +88,10 @@ from .sessions import (
 __all__ = [
     "DB_FILE",
     "DEFAULT_PROJECT_ROOT",
+    "FITS_SUFFIX",
+    "KIND_STACK",
+    "KIND_SUB",
+    "KINDS",
     "MAX_SLUG_LENGTH",
     "PROJECT_FILE",
     "PROJECT_ROOT_ENV_VAR",
@@ -76,6 +100,8 @@ __all__ = [
     "SCHEMA_VERSION",
     "STACKS_DIR",
     "SUBS_DIR",
+    "Frame",
+    "FrameStoreError",
     "InvalidProjectError",
     "Project",
     "ProjectError",
@@ -89,12 +115,17 @@ __all__ = [
     "close_session",
     "create_project",
     "default_project_root",
+    "get_frame_path",
     "get_open_session",
     "initialize_db",
+    "list_frames",
     "list_projects",
     "list_sessions",
+    "normalize_kind",
     "open_project",
+    "read_frame_bytes",
     "slugify",
     "start_session",
+    "store_frame",
     "utc_now_iso",
 ]
