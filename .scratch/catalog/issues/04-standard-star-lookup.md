@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02
 
-**Status:** implemented in 1b12d96
+**Status:** implemented in dc96fe7
 
 - [x] Given RA/Dec + radius, returns standard stars with coords and magnitudes
 - [x] Results filtered by angular distance and sorted by magnitude closeness to the target
