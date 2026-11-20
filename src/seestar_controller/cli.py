@@ -1,14 +1,20 @@
 """Command-line entry point for seestar-controller.
 
-Currently one subcommand:
+Subcommands:
 
 - ``seestar-controller extract-key <seestar.apk|xapk>`` — extract the interop
   PEM key from the official Seestar Android app package (the same flow as
   seestarpy's ``python -m seestarpy.extract_pem``) and write it to the
   configured key path (``~/.config/seestar-controller/key.pem`` unless
   ``SEESTAR_KEY_PATH`` or ``--key-path`` says otherwise) with mode 0600.
+- ``seestar-controller key-path`` — print the resolved PEM key path.
+- ``seestar-controller gui`` — launch the GTK4/libadwaita desktop app
+  (``seestar_controller.ui.app``). The ``gi`` import happens lazily inside
+  this subcommand, so the CLI works on machines without GTK; on the desktop
+  the system packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` are needed
+  (PyGObject is not a pip dependency).
 
-Also runnable as ``uv run python -m seestar_controller extract-key ...``.
+Also runnable as ``uv run python -m seestar_controller ...``.
 """
 
 from __future__ import annotations
@@ -61,6 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
         "key-path",
         help="print the resolved PEM key path",
     )
+
+    sub.add_parser(
+        "gui",
+        help="launch the GTK4/libadwaita desktop app",
+        description=(
+            "Launch the GTK4/libadwaita desktop app (seestar_controller.ui.app). "
+            "Requires the system packages python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 "
+            "on the desktop machine (PyGObject is not a pip dependency)."
+        ),
+    )
     return parser
 
 
@@ -90,6 +106,27 @@ def _cmd_extract_key(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_gui() -> int:
+    """Launch the GTK4/libadwaita GUI.
+
+    The ``gi`` import happens here (lazily), so the rest of the CLI works on
+    machines without GTK — headless sandboxes, CI. Without the system GTK
+    packages this fails cleanly with an actionable message instead of a
+    traceback.
+    """
+    try:
+        from .ui.app import main as gui_main
+    except (ImportError, ValueError) as exc:
+        print(
+            "error: the GUI needs the system GTK packages — install "
+            "`python3-gi gir1.2-gtk-4.0 gir1.2-adw-1` on the desktop machine "
+            f"(PyGObject is not a pip dependency): {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    return gui_main()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -98,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "key-path":
         print(keys.resolve_key_path())
         return 0
+    if args.command == "gui":
+        return _cmd_gui()
     parser.print_help()
     return 0
 
