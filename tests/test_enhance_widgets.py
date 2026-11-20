@@ -198,17 +198,18 @@ def test_viewer_row_selection_opens_stack(gtk, viewer, viewer_controller):
 
 
 def test_viewer_refresh_button_relists(gtk, viewer, viewer_controller, project):
-    from seestar_controller.store import start_session as _start
+    from seestar_controller.store import get_open_session
 
     # store another stack after the viewer was built; Refresh picks it up
-    session = _start(project, clock=frozen(T0))
+    # (the project fixture already has one open session — reuse it)
+    session = get_open_session(project).id
     store_frame(
         project, session, KIND_STACK,
         fits_bytes(synthetic_image(32, seed=9), date_obs="2026-11-20T23:00:00.000", obj="M 33"),
         meta={"target": "M 33"},
     )
     assert viewer.row_count() == 2
-    viewer.refresh_button.clicked()
+    viewer.refresh_button.emit("clicked")
     assert viewer.row_count() == 3
 
 
@@ -355,18 +356,18 @@ def test_editor_undo_redo_reset_buttons(editor, viewer_controller):
     editor.slider("sharpen", "amount").set_value(2.0)
     assert editor.undo_button.get_sensitive()
     assert not editor.redo_button.get_sensitive()
-    editor.undo_button.clicked()
+    editor.undo_button.emit("clicked")
     assert ec.pipeline.ops[2].params.amount == pytest.approx(0.5)
     assert editor.redo_button.get_sensitive()
     # the slider re-synced to the undone value
     assert editor.slider("sharpen", "amount").get_value() == pytest.approx(0.5)
-    editor.redo_button.clicked()
+    editor.redo_button.emit("clicked")
     assert ec.pipeline.ops[2].params.amount == pytest.approx(2.0)
     assert editor.slider("sharpen", "amount").get_value() == pytest.approx(2.0)
-    editor.reset_button.clicked()
+    editor.reset_button.emit("clicked")
     assert ec.pipeline == default_pipeline()
     assert editor.slider("sharpen", "amount").get_value() == pytest.approx(0.5)
-    assert ec.controller.wait(5.0)
+    assert ec.wait(5.0)
     pump_main()
 
 
@@ -416,7 +417,7 @@ def test_editor_save_preset_button_stores_preset(editor, viewer_controller, proj
     ec = editor.controller
     editor.slider("denoise", "strength").set_value(0.8)
     assert not ec.snapshot.preset_saved
-    editor.save_preset_button.clicked()
+    editor.save_preset_button.emit("clicked")
     assert ec.snapshot.preset_saved
     assert "preset saved" in editor.info_label.get_label()
     stack = viewer_controller.current_stack
@@ -431,7 +432,7 @@ def test_editor_save_enhanced_button_stores_enhanced_frame(editor, viewer_contro
     _open_first_stack(editor, viewer_controller)
     ec = editor.controller
     stack_ids_before = {f.id for f in list_frames(project)}
-    editor.save_enhanced_button.clicked()
+    editor.save_enhanced_button.emit("clicked")
     frame = ec.snapshot.saved_frame
     assert frame is not None and frame.kind == "enhanced"
     assert frame.id not in stack_ids_before
