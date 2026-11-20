@@ -4,7 +4,7 @@
 
 **Blocked by:** None (observing queue, catalog coords, ui-shell all done). Extend ui/state.py settings with site lat/lon/elevation + timezone, persisted in settings.json.
 
-**Status:** ready-for-agent
+**Status:** implemented in 28cb0e6 (merged)
 
 - [x] Pure `visibility/` (or `observing/planner.py`) package, no gi (subprocess boundary test); astropy.coordinates AltAz + get_body("sun"/"moon")
 - [x] `altitude_curves(entries, site, night)` -> per-target (times, alt, az); `twilight_times(site, night)`; `moon_track(site, night)` (alt + phase)
