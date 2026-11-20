@@ -227,7 +227,18 @@ class EnhanceEditor(Gtk.Box):
         right.set_vexpand(True)
 
         # toolbar: before/after toggle + undo/redo/reset + spinner
-        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        # A FlowBox (not a Box: GTK4 boxes do not wrap) so the buttons wrap
+        # onto several lines on narrow windows — the toolbar's minimum width
+        # is one button, not the sum of all eight, keeping the window's
+        # minimum size small enough to maximize on laptop screens.
+        toolbar = Gtk.FlowBox(
+            selection_mode=Gtk.SelectionMode.NONE,
+            homogeneous=False,
+            min_children_per_line=1,
+            max_children_per_line=8,
+            row_spacing=8,
+            column_spacing=8,
+        )
         self._before_after_toggle = Gtk.ToggleButton(
             label="Before",
             tooltip_text="Show the original (before) instead of the enhanced (after) image",
