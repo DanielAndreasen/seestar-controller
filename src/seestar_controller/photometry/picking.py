@@ -83,6 +83,7 @@ import numpy as np
 
 from seestar_controller.catalog.coords import J2000Coord
 from seestar_controller.store.errors import ProjectError, StarPickError
+from seestar_controller.store.frames import header_to_dict
 from seestar_controller.store.stars import (
     ROLE_COMP,
     ROLE_TARGET,
@@ -132,6 +133,14 @@ def _finite_float(value: Any, what: str) -> float:
 def _wcs_from_header(header: Any) -> Any:
     """Build an :class:`astropy.wcs.WCS` from a FITS ``header`` mapping.
 
+    The mapping is first converted with
+    :func:`seestar_controller.store.frames.header_to_dict` (sanitized plain
+    dict): real Seestar FITS carry consecutive ``COMMENT`` cards whose
+    joined value contains ``\\n``, and ``WCS(dict)`` re-inserts every card
+    into a fresh astropy Header — which raises ``ValueError`` ("FITS header
+    values must contain standard printable ASCII characters") on such a
+    value. Sanitizing makes the WCS buildable from any real frame header.
+
     Raises :class:`PickingError` when the header is not a mapping, the WCS
     cannot be built, or the header carries no celestial WCS (blank ``CTYPE``
     — ``WCS({})`` alone does not raise, it builds an identity WCS).
@@ -143,7 +152,7 @@ def _wcs_from_header(header: Any) -> Any:
     from astropy.wcs import WCS
 
     try:
-        wcs = WCS(header)
+        wcs = WCS(header_to_dict(header))
     except Exception as exc:
         raise PickingError(f"cannot build a WCS from the header: {exc}") from exc
     if wcs.naxis < 2 or not any(str(ctype).strip() for ctype in wcs.wcs.ctype):

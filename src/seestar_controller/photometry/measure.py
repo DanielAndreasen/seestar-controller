@@ -97,6 +97,7 @@ from seestar_controller.store.errors import ProjectError
 from seestar_controller.store.frames import (
     KIND_SUB,
     _date_obs_jd_utc,
+    header_to_dict,
     list_frames,
     read_frame_bytes,
 )
@@ -533,6 +534,10 @@ class MeasureReport:
 
 def _read_frame_fits(project: Any, frame: Any) -> tuple[Any, dict[str, Any]]:
     """Read the stored FITS of ``frame``: ``(data, header)`` (astropy, lazy).
+    The header is a plain dict with sanitized values
+    (:func:`seestar_controller.store.frames.header_to_dict`) — real Seestar
+    FITS carry consecutive ``COMMENT`` cards whose joined value contains
+    ``\\n``, which astropy rejects when re-inserted into a Header.
     Raises :class:`MeasurementError` when the file is unreadable or not a
     FITS with data."""
     from astropy.io import fits as pyfits
@@ -546,7 +551,7 @@ def _read_frame_fits(project: Any, frame: Any) -> tuple[Any, dict[str, Any]]:
     try:
         with pyfits.open(io.BytesIO(fits_bytes), memmap=False) as hdul:
             data = hdul[0].data
-            header = dict(hdul[0].header)
+            header = header_to_dict(hdul[0].header)
     except Exception as exc:
         raise MeasurementError(
             f"frame {frame.id} of project {project.slug!r} is not a readable "

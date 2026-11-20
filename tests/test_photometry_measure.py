@@ -50,6 +50,7 @@ from seestar_controller.photometry import (
     measure_frame_data,
     measure_project,
     measure_star,
+    pixel_to_sky,
 )
 from seestar_controller.photometry.measure import (
     MAG_ERR_COEFF,
@@ -372,6 +373,85 @@ def test_measure_frame_jd_falls_back_to_frame_jd(project):
     )
     meas = measure_frame(project, frame.id, make_picks(), APERTURE)
     assert meas.jd == pytest.approx(frame.jd, abs=1e-12)
+
+
+# --- regression: Seestar-style FITS headers with non-ASCII / control chars ---------------
+# Real Seestar S50 FITS files carry two consecutive COMMENT cards (the FITS-standard
+# paper citation). dict(astropy_header) joins them into ONE value containing "\n",
+# and re-inserting such a value into an astropy Header — which astropy.wcs.WCS does
+# for every card — raises ValueError("FITS header values must contain standard
+# printable ASCII characters; "\n  and Astrophysics'..." ..."). The photometry read
+# path must sanitize such headers (store.frames.header_to_dict).
+
+
+def seestar_style_fits_bytes(
+    data: np.ndarray, *, date_obs: str | None = "2026-11-20T22:00:00.000"
+) -> bytes:
+    """A small valid FITS file mimicking the Seestar S50: two consecutive COMMENT
+    cards (whose joined dict value contains ``\\n``) plus a simple CAR WCS."""
+    hdu = pyfits.PrimaryHDU(data=np.asarray(data, dtype=np.float32))
+    hdu.header["COMMENT"] = (
+        "FITS (Flexible Image Transport System) format is defined in 'Astronomy"
+    )
+    hdu.header["COMMENT"] = (
+        "and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H"
+    )
+    if date_obs is not None:
+        hdu.header["DATE-OBS"] = date_obs
+    hdu.header["EXPTIME"] = 10.0
+    hdu.header["GAIN"] = 50
+    hdu.header["OBJECT"] = "M 42"
+    # a simple 2-axis CAR WCS (exactly linear), reference pixel = 1-based (33, 33)
+    hdu.header["CTYPE1"] = "RA---CAR"
+    hdu.header["CTYPE2"] = "DEC--CAR"
+    hdu.header["CRVAL1"] = 83.0
+    hdu.header["CRVAL2"] = 22.0
+    hdu.header["CRPIX1"] = 33.0
+    hdu.header["CRPIX2"] = 33.0
+    hdu.header["CDELT1"] = -0.001
+    hdu.header["CDELT2"] = 0.001
+    buf = io.BytesIO()
+    pyfits.HDUList([hdu]).writeto(buf)
+    return buf.getvalue()
+
+
+def test_read_path_sanitizes_seestar_comment_cards(project):
+    """The full photometry read path on a Seestar-style FITS (two COMMENT cards
+    -> a ``\\n`` in the joined header value): the header dict is sanitized, the
+    WCS build (the pre-fix crash site) works, and the frame is measured."""
+    from astropy.wcs import WCS
+
+    from seestar_controller.photometry.measure import _read_frame_fits
+
+    session = start_session(project, clock=frozen(T0))
+    frame = store_frame(
+        project,
+        session,
+        KIND_SUB,
+        seestar_style_fits_bytes(frame_data(F0, seed=3), date_obs=date_obs_str(0)),
+        meta={"target": "M 42", "exposure": 10.0, "gain": 50},
+    )
+    data, header = _read_frame_fits(project, frame)
+    assert data is not None
+    comment = header.get("COMMENT")
+    assert isinstance(comment, str)
+    assert "\n" not in comment
+    assert all(32 <= ord(c) <= 126 for c in comment)
+    assert "Astronomy" in comment and "Astrophysics" in comment
+    for value in header.values():  # every string value is printable ASCII
+        if isinstance(value, str):
+            assert all(32 <= ord(c) <= 126 for c in value)
+    # the exact pre-fix failure: WCS(dict) re-inserts every card into a Header
+    WCS(header)  # must not raise
+    # the GUI pick path on the sanitized header works (0-based (32, 32) == CRPIX)
+    coord = pixel_to_sky(header, 32.0, 32.0)
+    assert coord.ra_deg == pytest.approx(83.0, abs=1e-9)
+    assert coord.dec_deg == pytest.approx(22.0, abs=1e-9)
+    # and the frame is measured through the photometry read path
+    meas = measure_frame(project, frame.id, make_picks(), APERTURE)
+    assert meas.frame_id == frame.id
+    assert meas.mag == pytest.approx(0.0, abs=0.02)  # target peak == comp peak F0
+    assert meas.jd == pytest.approx(expected_jd(0), abs=1e-9)
 
 
 def test_measure_frame_unknown_frame_and_skip(project):

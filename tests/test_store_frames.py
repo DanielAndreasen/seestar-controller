@@ -178,6 +178,62 @@ def test_header_values_are_the_fallback(project, session):
         assert frame.target == "M 42"
 
 
+# --- header sanitization (Seestar COMMENT cards) ---------------------------------------
+
+
+def test_sanitize_header_value_reduces_strings_to_printable_ascii():
+    from seestar_controller.store.frames import sanitize_header_value
+
+    assert sanitize_header_value("plain ascii 123 !") == "plain ascii 123 !"
+    assert sanitize_header_value("a\nb\rc\td") == "a b c d"  # control chars -> space
+    assert sanitize_header_value("caf\u00e9 \u2603") == "caf   "  # non-ASCII -> space
+    # numbers / None / bytes pass through unchanged (type preserved)
+    assert sanitize_header_value(10.0) == 10.0 and isinstance(sanitize_header_value(10.0), float)
+    assert sanitize_header_value(50) == 50 and isinstance(sanitize_header_value(50), int)
+    assert sanitize_header_value(True) is True
+    assert sanitize_header_value(None) is None
+    assert sanitize_header_value(b"raw") == b"raw"
+
+
+def test_header_to_dict_sanitizes_mapping_values():
+    from seestar_controller.store.frames import header_to_dict
+
+    raw = {
+        "OBJECT": "NGC7789\nline2",
+        "NOTE": "caf\u00e9",
+        "EXPTIME": 10.0,
+        "GAIN": 50,
+        "FLAG": True,
+        "X": None,
+    }
+    d = header_to_dict(raw)
+    assert d["OBJECT"] == "NGC7789 line2"
+    assert d["NOTE"] == "caf "
+    assert d["EXPTIME"] == 10.0 and d["GAIN"] == 50 and d["FLAG"] is True and d["X"] is None
+    with pytest.raises(TypeError):
+        header_to_dict("nope")
+
+
+def test_header_to_dict_joins_seestar_comment_cards_without_newline():
+    """Regression: real Seestar FITS carry two consecutive COMMENT cards (the
+    FITS-standard citation); ``dict(astropy_header)`` joins them into one
+    value containing ``\\n``, which astropy rejects when re-inserted into a
+    Header (e.g. by ``astropy.wcs.WCS``)."""
+    from seestar_controller.store.frames import header_to_dict
+
+    hdr = pyfits.Header()
+    hdr["COMMENT"] = "FITS (Flexible Image Transport System) format is defined in 'Astronomy"
+    hdr["COMMENT"] = "and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H"
+    hdr["DATE-OBS"] = DATE1
+    d = header_to_dict(hdr)
+    comment = d["COMMENT"]
+    assert isinstance(comment, str)
+    assert "\n" not in comment
+    assert all(32 <= ord(c) <= 126 for c in comment)
+    assert "Astronomy" in comment and "Astrophysics" in comment
+    assert d["DATE-OBS"] == DATE1
+
+
 def test_partial_meta_overrides_only_given_keys(project, session):
     fits = make_fits(date_obs=DATE1, exptime=10.0, gain=50, obj="M 42")
     frame = store_frame(project, session, "sub", fits, meta={"gain": 99, "id": "ignored", "time": "ignored"})

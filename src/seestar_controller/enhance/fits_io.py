@@ -49,6 +49,7 @@ from seestar_controller.store.frames import (
     KIND_STACK,
     Frame,
     get_frame_path,
+    header_to_dict,
     list_frames,
 )
 from seestar_controller.store.project import Project
@@ -208,7 +209,10 @@ def load_fits(path: str | Path) -> FitsImage:
             if hdu is None:
                 raise EnhanceError(f"{file_path} has no image data in any HDU")
             raw = np.asarray(hdu.data)
-            header = dict(hdu.header)
+            # sanitized plain dict: real Seestar FITS carry consecutive COMMENT
+            # cards whose joined value contains "\n" (rejected by astropy when
+            # re-inserted into a Header, e.g. by astropy.wcs.WCS)
+            header = header_to_dict(hdu.header)
     except EnhanceError:
         raise
     except Exception as exc:

@@ -236,6 +236,27 @@ def test_pixel_to_sky_missing_wcs_raises():
         sky_to_pixel({}, J2000Coord(ra_deg=83.0, dec_deg=22.0))
 
 
+def test_wcs_helpers_sanitize_header_values_with_control_or_non_ascii_chars():
+    """Regression: real Seestar FITS carry two consecutive COMMENT cards, so
+    ``dict(astropy_header)["COMMENT"]`` contains ``\\n``; ``astropy.wcs.WCS``
+    re-inserts every card of the given mapping into a fresh Header and raised
+    ``ValueError`` ("FITS header values must contain standard printable ASCII
+    characters") on such a value. The WCS helpers must sanitize the mapping
+    first, so picking works on real Seestar frames."""
+    header = wcs_header()
+    header["COMMENT"] = (
+        "FITS (Flexible Image Transport System) format is defined in 'Astronomy\n"
+        "  and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H"
+    )
+    header["OBJECT"] = "M 42\nNGC 7789"  # control char inside a value
+    header["NOTE"] = "caf\u00e9"  # non-ASCII char inside a value
+    coord = pixel_to_sky(header, 50, 50)
+    assert coord.ra_deg == pytest.approx(83.0, abs=1e-9)
+    assert coord.dec_deg == pytest.approx(22.0, abs=1e-9)
+    x, y = sky_to_pixel(header, coord)
+    assert (x, y) == pytest.approx((50.0, 50.0), abs=1e-6)
+
+
 def test_pixel_to_sky_bad_xy_raises():
     header = wcs_header()
     for bad in (float("nan"), float("inf"), "x", None, True):
