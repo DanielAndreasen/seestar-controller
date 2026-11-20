@@ -68,6 +68,7 @@ from gi.repository import GLib, Gtk  # noqa: E402
 from .fold import (  # noqa: E402
     SOURCE_PEAK,
     FoldedPoint,
+    FoldError,
     PeriodController,
     PeriodError,
     PeriodSnapshot,
@@ -345,7 +346,10 @@ class PeriodView(Gtk.Box):
         red status line."""
         try:
             period = self._controller.set_manual_period(self._period_spin.get_value())
-        except PeriodError as exc:
+        except FoldError as exc:
+            # FoldError (the superclass) covers both an invalid entry
+            # (validate_period raises FoldError) and a persistence failure
+            # (PeriodError, a FoldError subclass) — the red status path.
             self._set_status(f"invalid period: {exc}", error=True)
             return
         self._set_status(f"period set manually to {period:.6g} d (saved in the project)", error=False)

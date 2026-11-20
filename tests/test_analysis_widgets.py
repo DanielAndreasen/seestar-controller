@@ -365,7 +365,8 @@ def test_period_view_manual_entry_sets_and_persists_the_period(gtk, project, two
     assert len(view.folded_points()) == 5  # all points folded
     assert "0.25" in view.status_label.get_label()
     # an invalid entry (allowed by loosening the adjustment) -> red status,
-    # the state unchanged
+    # the state unchanged; set_manual_period raises FoldError (not PeriodError)
+    # for invalid input, so this exercises the widget's `except FoldError`
     view.period_spin.get_adjustment().set_lower(-1.0)
     view.period_spin.set_value(-1.0)
     view.set_period_button.emit("clicked")

@@ -355,6 +355,31 @@ def test_set_manual_period_validates_applies_and_folds_all_sessions(project):
     assert ctrl.period == 0.1 and ctrl.source == SOURCE_MANUAL
 
 
+def test_set_manual_period_exception_contract_the_widget_relies_on(project):
+    """Regression test for the period-view manual-entry handler: it catches
+    ``FoldError`` (the SUPERCLASS), because :meth:`PeriodController.set_manual_period`
+    raises ``FoldError`` for an invalid entry AND ``PeriodError`` (a
+    ``FoldError`` subclass) for a persistence failure — one
+    ``except FoldError`` in the widget covers both red-status paths."""
+    assert issubclass(PeriodError, FoldError)  # the widget's except FoldError covers PeriodError
+    ctrl = PeriodController(project=project)
+    # invalid input raises FoldError (not PeriodError) and changes nothing
+    for bad in (0, -1, float("nan"), float("inf"), True, "0.1", None):
+        with pytest.raises(FoldError):
+            ctrl.set_manual_period(bad)
+    assert ctrl.period is None and ctrl.source is None
+    # a persistence failure raises PeriodError — still a FoldError, so the
+    # widget's single `except FoldError` renders it as the red status too
+    def _boom() -> None:
+        raise RuntimeError("disk full")
+
+    project.save_config = _boom  # type: ignore[method-assign]
+    with pytest.raises(PeriodError) as excinfo:
+        ctrl.set_manual_period(0.5)
+    assert isinstance(excinfo.value, FoldError)
+    assert ctrl.period is None  # the in-memory state is unchanged on failure
+
+
 def test_controller_without_a_project():
     ctrl = PeriodController()
     assert ctrl.project is None
