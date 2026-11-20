@@ -4,7 +4,7 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** implemented in e7b2c12
+**Status:** implemented in 1d9ae43
 
 - [x] Each op is a pure function with a params object
 - [x] Pipeline applies ops in order and is re-runnable from the original
