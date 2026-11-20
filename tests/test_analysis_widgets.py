@@ -34,8 +34,19 @@ selects (and persists) that peak's period, the manual period entry applies
 (and persists) the entered days (an invalid entry surfaces as a red status,
 state unchanged), and the folded plot covers ALL sessions sorted by phase
 with one color per session.
+
+Ticket 04 adds: the click-a-point outlier gesture — a single click within a
+few px of a data point on the lightcurve plot (or the folded plot) toggles
+the store's ``excluded`` flag through the shared lightcurve controller (the
+point disappears from the periodogram input and is drawn marked; a
+double-click still only resets the zoom) — and the Export CSV / Export
+folded CSV buttons on the Lightcurve page (async ``Gtk.FileDialog`` save
+dialog marshalled back via ``invoke_on_main``; the programmatic helpers
+``export_lightcurve_to`` / ``export_folded_to`` drive the same export path
+without the dialog).
 """
 
+import csv
 import io
 import json
 import time
@@ -61,6 +72,7 @@ from seestar_controller.analysis import (  # noqa: E402  (the views are the lazy
     LightcurveView,
     PeriodController,
     PeriodView,
+    data_to_screen,
     full_window,
     zoom_window_at,
 )
@@ -69,6 +81,7 @@ from seestar_controller.store import (  # noqa: E402
     add_measurement,
     close_session,
     create_project,
+    lightcurve,
     list_sessions,
     start_session,
     store_frame,
@@ -404,3 +417,161 @@ def test_period_view_folded_plot_covers_all_sessions_with_colors(gtk, project, t
     assert view.periodogram_window.jd_max > view.periodogram_window.jd_min
     assert view.reset_folded_zoom() == view.folded_window
     assert view.reset_periodogram_zoom().jd_max > view.reset_periodogram_zoom().jd_min
+
+
+# --- ticket 04: click-a-point outlier marking + CSV export buttons --------------------------------------
+
+
+def _store_flag(project, measurement_id: int) -> bool:
+    m = next(m for m in lightcurve(project, include_excluded=True) if m.id == measurement_id)
+    return m.excluded
+
+
+def test_lightcurve_view_click_point_toggles_outlier(gtk, project, two_session_project):
+    lc = LightcurveController(project)
+    view = LightcurveView(lc)
+    pump_main()
+    target = next(p for p in view.plot_points() if not p.excluded)
+    x, y = data_to_screen(view.window, view._geom, target.jd, target.mag)
+    # single click on the point -> excluded in the store + status, and gone
+    # from the default (periodogram-input) lightcurve
+    view._on_pressed(None, 1, x, y)
+    pump_main()
+    assert _store_flag(project, target.measurement_id) is True
+    assert target.measurement_id not in {m.id for m in lightcurve(project)}
+    assert "excluded as an outlier" in view.status_label.get_label()
+    # the re-rendered plot still shows the point, flagged
+    assert any(p.measurement_id == target.measurement_id and p.excluded for p in view.plot_points())
+    # clicking the same point again -> included again
+    view._on_pressed(None, 1, x, y)
+    pump_main()
+    assert _store_flag(project, target.measurement_id) is False
+    assert "included again" in view.status_label.get_label()
+    # a click far from every point is a no-op
+    view._on_pressed(None, 1, 1.0, 1.0)
+    pump_main()
+    assert _store_flag(project, target.measurement_id) is False
+    # a double-click resets the zoom WITHOUT toggling
+    geom = view._geom
+    cx = geom.margin_left + geom.plot_width / 2.0
+    cy = geom.margin_top + geom.plot_height / 2.0
+    view._window = zoom_window_at(view.window, geom, cx, cy, 2.0)
+    view._on_pressed(None, 2, x, y)
+    pump_main()
+    assert view.window == full_window(view.plot_points())
+    assert _store_flag(project, target.measurement_id) is False
+
+
+def test_period_view_folded_click_toggles_outlier(gtk, project, two_session_project):
+    pc = PeriodController(project=project)
+    view = PeriodView(pc)
+    pump_main()
+    pc.set_manual_period(0.1)
+    pump_main()
+    target = next(fp for fp in view.folded_points() if not fp.point.excluded)
+    x, y = data_to_screen(view.folded_window, view._folded_geom, target.phase, target.point.mag)
+    # single click on the folded point -> toggled through the shared lightcurve controller
+    view._on_plot_pressed(None, 1, x, y, view.folded_plot, view.reset_folded_zoom)
+    pump_main()
+    assert _store_flag(project, target.point.measurement_id) is True
+    assert "excluded as an outlier" in view.status_label.get_label()
+    # a click on the PERIODOGRAM plot does not toggle anything
+    view._on_plot_pressed(None, 1, x, y, view.periodogram_plot, view.reset_periodogram_zoom)
+    pump_main()
+    assert _store_flag(project, target.point.measurement_id) is True  # unchanged
+    # a click far from every folded point is a no-op
+    view._on_plot_pressed(None, 1, 1.0, 1.0, view.folded_plot, view.reset_folded_zoom)
+    pump_main()
+    assert _store_flag(project, target.point.measurement_id) is True
+    # a double-click on the folded plot resets the zoom WITHOUT toggling
+    geom = view._folded_geom
+    cx = geom.margin_left + geom.plot_width / 2.0
+    cy = geom.margin_top + geom.plot_height / 2.0
+    view._folded_window = zoom_window_at(view.folded_window, geom, cx, cy, 2.0)
+    view._on_plot_pressed(None, 2, x, y, view.folded_plot, view.reset_folded_zoom)
+    pump_main()
+    assert view.folded_window.jd_min == -0.02 and view.folded_window.jd_max == 1.02
+    assert _store_flag(project, target.point.measurement_id) is True
+    # and back
+    view._on_plot_pressed(None, 1, x, y, view.folded_plot, view.reset_folded_zoom)
+    pump_main()
+    assert _store_flag(project, target.point.measurement_id) is False
+
+
+def test_lightcurve_page_export_buttons_and_helpers(gtk, project, two_session_project, tmp_path):
+    from seestar_controller.ui.views import build_view
+
+    lc = LightcurveController(project)
+    pc = PeriodController(lc)
+    page = build_view("lightcurve", lightcurve_controller=lc, period_controller=pc)
+    pump_main()
+    assert page.export_csv_button.get_label() == "Export CSV"
+    assert page.export_folded_csv_button.get_label() == "Export folded CSV"
+    # the lightcurve export helper writes the store-format CSV
+    lc_csv = tmp_path / "lc.csv"
+    page.export_lightcurve_to(str(lc_csv))
+    pump_main()
+    with lc_csv.open("r", encoding="utf-8", newline="") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == ["jd", "utc", "mag", "mag_err", "session", "target"]
+    assert len(rows) - 1 == 4  # 5 points, 1 excluded
+    assert "exported" in page._export_status.get_label()
+    # the folded export without a selected period -> red status, no file
+    folded_csv = tmp_path / "folded.csv"
+    page.export_folded_to(str(folded_csv))
+    pump_main()
+    assert not folded_csv.exists()
+    assert "no period" in page._export_status.get_label()
+    # with a period selected -> the 7-column folded CSV
+    pc.set_manual_period(0.1)
+    pump_main()
+    page.export_folded_to(str(folded_csv))
+    pump_main()
+    with folded_csv.open("r", encoding="utf-8", newline="") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == ["jd", "utc", "mag", "mag_err", "session", "target", "phase"]
+    assert len(rows) - 1 == 4
+    phases = [float(r[6]) for r in rows[1:]]
+    assert phases == sorted(phases) and all(0.0 <= p < 1.0 for p in phases)
+    assert "exported" in page._export_status.get_label()
+
+
+def test_lightcurve_page_export_dialog_callback(gtk, project, two_session_project, tmp_path):
+    from seestar_controller.ui.views import build_view
+
+    lc = LightcurveController(project)
+    page = build_view(
+        "lightcurve", lightcurve_controller=lc, period_controller=PeriodController(lc)
+    )
+    pump_main()
+
+    class FakeFile:
+        def __init__(self, path):
+            self._path = path
+
+        def get_path(self):
+            return self._path
+
+    class FakeDialog:
+        def __init__(self, path=None, error=False):
+            self._path = path
+            self._error = error
+
+        def save_finish(self, result):
+            if self._error:
+                raise GLib.Error.new_literal(GLib.quark_from_string("test-cancel"), "cancelled", 0)
+            return None if self._path is None else FakeFile(self._path)
+
+    # a chosen path -> marshalled through invoke_on_main -> the file is written
+    dest = tmp_path / "via_dialog.csv"
+    page._on_export_dialog_finished(FakeDialog(str(dest)), None, "lightcurve")
+    pump_main()
+    assert dest.exists()
+    with dest.open("r", encoding="utf-8", newline="") as fh:
+        assert list(csv.reader(fh))[0] == ["jd", "utc", "mag", "mag_err", "session", "target"]
+    # a cancelled dialog (GLib.Error) or a None file -> no-op
+    before = dest.read_bytes()
+    page._on_export_dialog_finished(FakeDialog(error=True), None, "lightcurve")
+    page._on_export_dialog_finished(FakeDialog(None), None, "lightcurve")
+    pump_main()
+    assert dest.read_bytes() == before

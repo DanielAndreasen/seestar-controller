@@ -10,14 +10,16 @@ dependency — it needs the system GTK headers to build)::
 
     sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
 
-The Lightcurve view (period-analysis tickets 01 + 03) carries the
+The Lightcurve view (period-analysis tickets 01 + 03 + 04) carries the
 :class:`~seestar_controller.analysis.lightcurve_view.LightcurveView` widget —
 the mag-vs-JD plot of the current project's lightcurve (one color per
 session + legend, error bars, excluded points marked, inverted mag axis,
-zoom/pan) — plus the
+zoom/pan, single-click on a point to toggle its outlier flag) — plus the
 :class:`~seestar_controller.analysis.period_view.PeriodView` widget (ticket
 03: periodogram plot with clickable peaks, manual period entry, phase-folded
-lightcurve) — driven by the app's shared
+lightcurve whose points are also clickable to toggle the outlier flag) and a
+toolbar with the ticket-04 Export CSV / Export folded CSV buttons — driven by
+the app's shared
 :class:`~seestar_controller.analysis.lightcurve.LightcurveController` and
 :class:`~seestar_controller.analysis.fold.PeriodController` (both following
 the shared viewer controller's project; passed in via
@@ -69,15 +71,24 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Gtk  # noqa: E402
+from gi.repository import GLib, Gtk  # noqa: E402
 
-from seestar_controller.analysis import LightcurveController, PeriodController  # noqa: E402
+from seestar_controller.analysis import (  # noqa: E402
+    FOLDED_CSV_FILE,
+    AnalysisError,
+    ExportError,
+    LightcurveController,
+    PeriodController,
+    export_folded_csv,
+    export_lightcurve_csv,
+)
 from seestar_controller.analysis.lightcurve_view import (  # noqa: E402
     LightcurveView as LightcurveViewWidget,
 )
 from seestar_controller.analysis.period_view import (  # noqa: E402
     PeriodView as PeriodViewWidget,
 )
+from seestar_controller.store.csv_export import CSV_FILE as LIGHTCURVE_CSV_FILE  # noqa: E402
 from seestar_controller.enhance import EditorController, ViewerController  # noqa: E402
 from seestar_controller.enhance.enhance_view import (  # noqa: E402
     EnhanceEditor as EnhanceEditorWidget,
@@ -418,15 +429,21 @@ class PhotometryView(_PlaceholderView):
 
 
 class LightcurveView(_PlaceholderView):
-    """Lightcurve view (period-analysis tickets 01 + 03): wraps the
+    """Lightcurve view (period-analysis tickets 01 + 03 + 04): wraps the
     :class:`~seestar_controller.analysis.lightcurve_view.LightcurveView`
     widget — the mag-vs-JD plot of the current project's lightcurve with one
     color per session + legend, error bars per point, excluded points marked,
-    the inverted mag axis, and zoom (scroll) / pan (drag) / double-click
-    reset — and, below it, the
+    the inverted mag axis, zoom (scroll) / pan (drag) / double-click reset,
+    and single-click on a data point to toggle its outlier flag (ticket 04)
+    — and, below it, the
     :class:`~seestar_controller.analysis.period_view.PeriodView` widget
     (ticket 03): the periodogram plot with clickable top-N peaks, the manual
-    period entry, and the phase-folded lightcurve.
+    period entry, and the phase-folded lightcurve (whose points are also
+    clickable to toggle the outlier flag, ticket 04). A toolbar row on top
+    carries the ticket-04 **Export CSV** / **Export folded CSV** buttons
+    (async :class:`Gtk.FileDialog` save dialogs; the chosen path is
+    marshalled back onto the main loop via the lightcurve controller's
+    ``invoke_on_main``) plus a status label for export results.
 
     ``lightcurve_controller`` is the app's shared
     :class:`~seestar_controller.analysis.lightcurve.LightcurveController`
@@ -467,10 +484,104 @@ class LightcurveView(_PlaceholderView):
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        toolbar.set_margin_top(6)
+        toolbar.set_margin_bottom(0)
+        toolbar.set_margin_start(6)
+        toolbar.set_margin_end(6)
+        self._export_csv_button = Gtk.Button(label="Export CSV")
+        self._export_csv_button.connect("clicked", self._on_export_csv_clicked)
+        toolbar.append(self._export_csv_button)
+        self._export_folded_csv_button = Gtk.Button(label="Export folded CSV")
+        self._export_folded_csv_button.connect("clicked", self._on_export_folded_csv_clicked)
+        toolbar.append(self._export_folded_csv_button)
+        self._export_status = Gtk.Label(label="", halign=Gtk.Align.START, hexpand=True)
+        toolbar.append(self._export_status)
+        self.append(toolbar)
         self._lightcurve_widget = LightcurveViewWidget(self._lightcurve_controller)
         self.append(self._lightcurve_widget)
         self._period_widget = PeriodViewWidget(self._period_controller)
         self.append(self._period_widget)
+
+    # -- ticket 04: CSV export ------------------------------------------------------------
+
+    def _set_export_status(self, message: str, *, error: bool) -> None:
+        self._export_status.set_label(message)
+        for css_class in ("error", "dim-label"):
+            self._export_status.remove_css_class(css_class)
+        self._export_status.add_css_class("error" if error else "dim-label")
+
+    def _on_export_csv_clicked(self, *_args) -> None:
+        """Open a :class:`Gtk.FileDialog` save dialog for the lightcurve CSV;
+        the async callback marshals the chosen path back onto the main loop
+        via the lightcurve controller's ``invoke_on_main``."""
+        self._open_export_dialog("Export lightcurve CSV", LIGHTCURVE_CSV_FILE, "lightcurve")
+
+    def _on_export_folded_csv_clicked(self, *_args) -> None:
+        """Same as :meth:`_on_export_csv_clicked` for the folded CSV."""
+        self._open_export_dialog("Export folded CSV", FOLDED_CSV_FILE, "folded")
+
+    def _open_export_dialog(self, title: str, initial_name: str, kind: str) -> None:
+        dialog = Gtk.FileDialog(title=title, accept_label=title)
+        dialog.set_initial_name(initial_name)
+        dialog.save(
+            self.get_root(),
+            None,
+            lambda dlg, result, kind=kind: self._on_export_dialog_finished(dlg, result, kind),
+        )
+
+    def _on_export_dialog_finished(self, dialog: Gtk.FileDialog, result, kind: str) -> None:
+        try:
+            file = dialog.save_finish(result)
+        except GLib.Error:
+            return  # cancelled
+        if file is None:
+            return
+        path = file.get_path()
+        if not path:
+            return
+        # the dialog callback is NOT on the main loop's controller context —
+        # marshal the export through invoke_on_main (GLib.idle_add in the app)
+        self._lightcurve_controller.invoke_on_main(lambda: self._do_export(path, kind))
+
+    def _do_export(self, path: str, kind: str) -> None:
+        """Run the pure export on the main loop; ``kind`` is ``"lightcurve"``
+        or ``"folded"``. Errors surface as a red status line."""
+        project = self._lightcurve_controller.project
+        if project is None:
+            self._set_export_status("no project open — nothing to export", error=True)
+            return
+        try:
+            if kind == "lightcurve":
+                written = export_lightcurve_csv(project, path=path)
+            elif kind == "folded":
+                period = self._period_controller.period
+                if period is None:
+                    self._set_export_status(
+                        "no period selected — compute the periodogram or set a period first",
+                        error=True,
+                    )
+                    return
+                jd0 = self._period_controller.snapshot.jd0
+                written = export_folded_csv(project, period, path=path, jd0=jd0)
+            else:
+                raise ExportError(f"unknown export kind: {kind!r}")
+        except (AnalysisError, OSError) as exc:
+            self._set_export_status(f"export failed: {exc}", error=True)
+            return
+        self._set_export_status(f"exported {written}", error=False)
+
+    def export_lightcurve_to(self, path: str) -> None:
+        """Test/programmatic helper: export the lightcurve CSV to ``path``
+        (same path as the Export CSV button, without the file dialog)."""
+        self._do_export(path, "lightcurve")
+
+    def export_folded_to(self, path: str) -> None:
+        """Test/programmatic helper: export the folded CSV to ``path`` (same
+        path as the Export folded CSV button, without the file dialog)."""
+        self._do_export(path, "folded")
+
+    # -- properties ------------------------------------------------------------------------
 
     @property
     def lightcurve_controller(self) -> LightcurveController:
@@ -485,14 +596,24 @@ class LightcurveView(_PlaceholderView):
 
     @property
     def lightcurve_widget(self) -> LightcurveViewWidget:
-        """The lightcurve plot widget (mag vs JD, zoom/pan)."""
+        """The lightcurve plot widget (mag vs JD, zoom/pan, click-to-flag)."""
         return self._lightcurve_widget
 
     @property
     def period_widget(self) -> PeriodViewWidget:
         """The period-analysis widget (periodogram + manual entry + folded
-        plot, ticket 03)."""
+        plot, tickets 03 + 04)."""
         return self._period_widget
+
+    @property
+    def export_csv_button(self) -> Gtk.Button:
+        """The Export CSV button (period-analysis ticket 04)."""
+        return self._export_csv_button
+
+    @property
+    def export_folded_csv_button(self) -> Gtk.Button:
+        """The Export folded CSV button (period-analysis ticket 04)."""
+        return self._export_folded_csv_button
 
 
 class ProjectsView(_PlaceholderView):
@@ -539,7 +660,7 @@ def build_view(
     ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
     04), and ``lightcurve_controller`` / ``period_controller`` to the
-    Lightcurve view (period-analysis tickets 01 + 03) — the app window
+    Lightcurve view (period-analysis tickets 01 + 03 + 04) — the app window
     passes its shared controllers; the other views ignore them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)

@@ -40,6 +40,15 @@ project; the window passes it down via
   window to the full data range. The widget stores the current
   :class:`~seestar_controller.analysis.lightcurve.PlotWindow` and redraws on
   every change;
+- **outlier marking (ticket 04)**: a single click (:class:`Gtk.GestureClick`,
+  ``n_press == 1``) hit-tests the data points — within
+  :data:`POINT_HIT_RADIUS_PX` of a point's screen position, see
+  :meth:`LightcurveView.point_at` — and toggles that point's ``excluded``
+  flag via
+  :meth:`~seestar_controller.analysis.lightcurve.LightcurveController.toggle_excluded`
+  (the store write + refresh; the point is then drawn red). A double-click
+  on a point toggles it once (the ``n_press == 1`` press) and resets the
+  zoom (documented interaction);
 - an **empty-state placeholder**: a :class:`Gtk.Stack` switches between the
   plot and a centered label when there is no project or no measurements yet.
 
@@ -66,6 +75,7 @@ from .lightcurve import (  # noqa: E402
     EXCLUDED_COLOR,
     ZOOM_FACTOR,
     LightcurveController,
+    LightcurveError,
     LightcurvePoint,
     LightcurveSnapshot,
     PlotGeometry,
@@ -81,6 +91,10 @@ from .lightcurve import (  # noqa: E402
 #: zoom/pan handlers until the first draw reports the real size.
 INITIAL_PLOT_WIDTH = 480
 INITIAL_PLOT_HEIGHT = 320
+
+#: Hit-test radius (pixels) around a data point for the click-to-toggle
+#: outlier gesture (ticket 04).
+POINT_HIT_RADIUS_PX = 6.0
 
 
 class LightcurveView(Gtk.Box):
@@ -234,6 +248,20 @@ class LightcurveView(Gtk.Box):
         self._plot.queue_draw()
         return self._window
 
+    def point_at(self, x: float, y: float) -> LightcurvePoint | None:
+        """The data point within :data:`POINT_HIT_RADIUS_PX` of the plot pixel
+        ``(x, y)`` (the closest one), or None — the hit-test of the
+        click-to-toggle outlier gesture (ticket 04)."""
+        best = None
+        best_dist = POINT_HIT_RADIUS_PX
+        for point in self._points:
+            px, py = data_to_screen(self._window, self._geom, point.jd, point.mag)
+            dist = ((px - x) ** 2 + (py - y) ** 2) ** 0.5
+            if dist <= best_dist:
+                best_dist = dist
+                best = point
+        return best
+
     # -- events ------------------------------------------------------------------------
 
     def _on_refresh_clicked(self, *_args) -> None:
@@ -280,9 +308,27 @@ class LightcurveView(Gtk.Box):
         self._plot.queue_draw()
 
     def _on_pressed(self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float) -> None:
-        """Double-click resets the zoom to the full data range."""
+        """Single click on a data point toggles its outlier flag (ticket 04);
+        double-click resets the zoom to the full data range."""
         if n_press == 2:
             self.reset_zoom()
+            return
+        if n_press != 1:
+            return
+        point = self.point_at(x, y)
+        if point is None:
+            return
+        try:
+            excluded = self._controller.toggle_excluded(point.measurement_id)
+        except LightcurveError as exc:
+            self._set_status(f"cannot flag the point: {exc}", error=True)
+            return
+        self._set_status(
+            f"point {point.measurement_id} (jd {point.jd:.6f}) "
+            + ("excluded as an outlier" if excluded else "included again")
+            + " — it no longer feeds the periodogram",
+            error=False,
+        )
 
     # -- controller listener ---------------------------------------------------------------
 
@@ -326,7 +372,7 @@ class LightcurveView(Gtk.Box):
             self._set_status(
                 f"{len(snapshot.points)} point(s) across "
                 f"{len(snapshot.sessions)} session(s) — scroll to zoom, drag to pan, "
-                "double-click to reset",
+                "double-click to reset, click a point to toggle its outlier flag",
                 error=False,
             )
         return GLib.SOURCE_REMOVE

@@ -576,7 +576,8 @@ def test_fold_module_imports_no_gi_no_link_no_ui_no_photometry_no_enhance_and_wi
 def test_fold_source_is_pure_and_period_view_is_a_widget_module_lazy_exported():
     modules = {path.stem for path in ANALYSIS_PACKAGE_DIR.glob("*.py")}
     assert modules == {
-        "__init__", "lightcurve", "periodogram", "fold", "lightcurve_view", "period_view",
+        "__init__", "lightcurve", "periodogram", "fold", "export",
+        "lightcurve_view", "period_view",
     }
     forbidden = re.compile(
         r"^\s*(import|from)\s+(gi\b|seestar_controller\.(gi|ui|link|photometry|enhance)\b)",

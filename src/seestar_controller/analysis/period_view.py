@@ -45,7 +45,16 @@ window passes it down via
   double-click resets to the full window (the same pure
   :func:`~seestar_controller.analysis.lightcurve.zoom_window_at` /
   :func:`~seestar_controller.analysis.lightcurve.pan_window` math as the
-  lightcurve view).
+  lightcurve view);
+- **outlier marking (ticket 04)**: a single click on the FOLDED plot
+  hit-tests the folded points (within :data:`FOLDED_POINT_HIT_RADIUS_PX` of a
+  point's screen position, see :meth:`PeriodView.folded_point_at`) and
+  toggles that point's ``excluded`` flag via the bound lightcurve
+  controller's
+  :meth:`~seestar_controller.analysis.lightcurve.LightcurveController.toggle_excluded`
+  — the store write refreshes the lightcurve, the period controller
+  re-emits, and the point is redrawn marked (red). Excluded points never
+  feed the periodogram (the store lightcurve default).
 
 The view re-renders on every frozen
 :class:`~seestar_controller.analysis.fold.PeriodSnapshot` (listener
@@ -79,6 +88,7 @@ from .lightcurve import (  # noqa: E402
     AXIS_COLOR,
     EXCLUDED_COLOR,
     ZOOM_FACTOR,
+    LightcurveError,
     PlotGeometry,
     PlotWindow,
     data_to_screen,
@@ -95,6 +105,10 @@ INITIAL_PLOT_HEIGHT = 240
 
 #: Hit-test radius (pixels) around a peak marker for the click-to-select.
 PEAK_HIT_RADIUS_PX = 10.0
+
+#: Hit-test radius (pixels) around a folded data point for the
+#: click-to-toggle outlier gesture (ticket 04).
+FOLDED_POINT_HIT_RADIUS_PX = 6.0
 
 #: The manual period entry range (days): the SpinButton's adjustment bounds.
 MANUAL_PERIOD_MIN_DAYS = 1e-9
@@ -324,6 +338,23 @@ class PeriodView(Gtk.Box):
         self._folded_plot.queue_draw()
         return self._folded_window
 
+    def folded_point_at(self, x: float, y: float) -> FoldedPoint | None:
+        """Hit-test the folded plot: the closest folded point whose screen
+        position is within :data:`FOLDED_POINT_HIT_RADIUS_PX` of ``(x, y)``
+        (widget coordinates), or ``None``. Used by the click-to-toggle
+        outlier gesture (ticket 04)."""
+        if not self._folded:
+            return None
+        best = None
+        best_dist = FOLDED_POINT_HIT_RADIUS_PX
+        for fp in self._folded:
+            px, py = data_to_screen(self._folded_window, self._folded_geom, fp.phase, fp.point.mag)
+            dist = ((px - x) ** 2 + (py - y) ** 2) ** 0.5
+            if dist <= best_dist:
+                best_dist = dist
+                best = fp
+        return best
+
     # -- events ------------------------------------------------------------------------
 
     def _on_compute_clicked(self, *_args) -> None:
@@ -428,9 +459,26 @@ class PeriodView(Gtk.Box):
         plot.queue_draw()
 
     def _on_plot_pressed(self, gesture: Gtk.GestureClick, n_press: int, x: float, y: float, plot: Gtk.DrawingArea, on_double_click) -> None:
-        """Double-click resets the plot's zoom to its full window."""
+        """Plot click: double-click resets the plot's zoom to its full
+        window; a single click on the folded plot hit-tests the data points
+        (within :data:`FOLDED_POINT_HIT_RADIUS_PX`) and toggles the outlier
+        flag of the closest one through the shared lightcurve controller
+        (ticket 04)."""
         if n_press == 2:
             on_double_click()
+            return
+        if n_press != 1 or plot is not self._folded_plot:
+            return
+        fp = self.folded_point_at(x, y)
+        if fp is None:
+            return
+        try:
+            now_excluded = self._controller.lightcurve_controller.toggle_excluded(fp.point.measurement_id)
+        except LightcurveError as exc:
+            self._set_status(f"cannot toggle outlier flag: {exc}", error=True)
+            return
+        state = "excluded as an outlier" if now_excluded else "included again"
+        self._set_status(f"point at phase {fp.phase:.4f} {state}", error=False)
 
     # -- controller listener ---------------------------------------------------------------
 

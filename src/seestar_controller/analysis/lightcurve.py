@@ -33,7 +33,13 @@ What lives here:
   ``invoke_on_main`` (the app binds ``GLib.idle_add``; the default calls
   directly, so tests are synchronous). The snapshot NEVER raises: no project
   or an empty project yields an empty snapshot, a store failure yields
-  ``error`` set — the view renders whatever it gets;
+  ``error`` set — the view renders whatever it gets. **Ticket 04** adds the
+  outlier flagging: :meth:`~LightcurveController.set_excluded` /
+  :meth:`~LightcurveController.toggle_excluded` write the store's
+  ``excluded`` flag (through :meth:`_call_store`) and refresh, so the plot
+  widgets' click-a-point gesture marks outliers and the periodogram (which
+  reads the store lightcurve with its default ``include_excluded=False``)
+  drops them;
 - the **session color assignment**: :data:`SESSION_PALETTE` (a deterministic
   RGBA palette) with :func:`session_color_index` / :func:`session_color` —
   the palette index is the session's position in the snapshot's first-seen
@@ -79,6 +85,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from seestar_controller.store.measurements import lightcurve
+from seestar_controller.store.measurements import set_excluded as _store_set_excluded
 from seestar_controller.store.sessions import list_sessions
 
 logger = logging.getLogger(__name__)
@@ -539,6 +546,59 @@ class LightcurveController:
         snapshot = self.snapshot
         self._emit(snapshot)
         return snapshot
+
+    # -- outlier flagging (period-analysis ticket 04) ---------------------------------
+
+    def set_excluded(self, measurement_id: int, excluded: bool) -> LightcurvePoint:
+        """Flag (``excluded=True``) or unflag (``excluded=False``) the outlier
+        point ``measurement_id`` in the current project — the store write
+        goes through :meth:`_call_store` (sqlite thread-affinity) — then
+        reload + notify (the views re-render, the point drawn marked) and
+        return the updated point as a frozen :class:`LightcurvePoint`.
+
+        Raises :class:`LightcurveError` when there is no project, the id is
+        not an int, ``excluded`` is not a bool, or the store call fails
+        (e.g. an unknown measurement id — wrapped from
+        :class:`~seestar_controller.store.errors.MeasurementError`).
+        """
+        if isinstance(measurement_id, bool) or not isinstance(measurement_id, int):
+            raise LightcurveError(f"measurement_id must be an int, got {measurement_id!r}")
+        if not isinstance(excluded, bool):
+            raise LightcurveError(f"excluded must be a bool, got {excluded!r}")
+        project = self.project
+        if project is None:
+            raise LightcurveError("no project — cannot flag an outlier point")
+        try:
+            updated = self._call_store(
+                lambda: _store_set_excluded(project, measurement_id, excluded)
+            )
+        except Exception as exc:
+            raise LightcurveError(
+                f"cannot set the outlier flag of measurement {measurement_id} in "
+                f"project {getattr(project, 'slug', project)!r}: {exc}"
+            ) from exc
+        self.refresh()  # re-read + notify: the views re-render the flagged point
+        return _point_from_measurement(updated)
+
+    def toggle_excluded(self, measurement_id: int) -> bool:
+        """Toggle the outlier flag of ``measurement_id`` (the click-a-point
+        gesture of the plot widgets calls this) and return the NEW
+        ``excluded`` state.
+
+        Raises :class:`LightcurveError` when the measurement is not in the
+        current lightcurve (or no project — see :meth:`set_excluded`).
+        """
+        current = next(
+            (p for p in self.snapshot.points if p.measurement_id == measurement_id),
+            None,
+        )
+        if current is None:
+            raise LightcurveError(
+                f"no measurement {measurement_id!r} in the current lightcurve"
+            )
+        new_state = not current.excluded
+        self.set_excluded(measurement_id, new_state)
+        return new_state
 
     def sessions(self) -> tuple[str, ...]:
         """The project's session ids ordered by ``started_at`` (via

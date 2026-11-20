@@ -81,7 +81,7 @@ from seestar_controller.store import (
 ANALYSIS_PACKAGE_DIR = Path(analysis.__file__).resolve().parent
 
 #: The pure analysis modules — no ``gi`` import allowed (subprocess-enforced).
-PURE_ANALYSIS_MODULES = ("lightcurve", "periodogram", "fold")
+PURE_ANALYSIS_MODULES = ("lightcurve", "periodogram", "fold", "export")
 #: The widget analysis modules — ``import gi`` at module top, lazy export.
 WIDGET_ANALYSIS_MODULES = ("lightcurve_view", "period_view")
 
@@ -679,6 +679,7 @@ def test_pure_analysis_modules_import_no_gi_no_link_no_ui_no_photometry_and_widg
         "import seestar_controller.analysis.lightcurve;"
         "import seestar_controller.analysis.periodogram;"
         "import seestar_controller.analysis.fold;"
+        "import seestar_controller.analysis.export;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"

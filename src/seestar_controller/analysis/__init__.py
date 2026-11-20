@@ -53,23 +53,41 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   with frozen :class:`~.fold.PeriodSnapshot`\\ s marshalled via
   ``invoke_on_main``). Also imports **nothing** from ``gi``, ``link``, ``ui``,
   ``photometry``, or ``enhance`` — subprocess-enforced.
+- **Pure layer** — :mod:`.export` (period-analysis ticket 04, CSV export):
+  stdlib + :mod:`seestar_controller.store` + the sibling pure modules only —
+  :func:`~.export.export_lightcurve_csv` (delegates to
+  :func:`seestar_controller.store.csv_export.export_csv`: the lightcurve CSV
+  ``jd,utc,mag,mag_err,session,target``) and
+  :func:`~.export.export_folded_csv` (the phase-folded CSV with an extra
+  ``phase`` column, from a project OR a plain point iterable, atomic write),
+  with :class:`~.export.ExportError` under
+  :class:`~.lightcurve.AnalysisError`. Also imports **nothing** from ``gi``,
+  ``link``, ``ui``, ``photometry``, or ``enhance`` — subprocess-enforced.
+  Ticket 04 also adds the outlier flagging to
+  :class:`~.lightcurve.LightcurveController`
+  (:meth:`~.lightcurve.LightcurveController.set_excluded` /
+  :meth:`~.lightcurve.LightcurveController.toggle_excluded`).
 - **Widget layer** — :mod:`.lightcurve_view` (:class:`~.lightcurve_view.LightcurveView`,
   the Lightcurve view's plot: a :class:`Gtk.DrawingArea` painting mag vs JD
   with one color per session + legend, error bars per point, excluded points
-  marked red, the inverted mag axis, and zoom (scroll around the cursor) /
-  pan (drag) / double-click reset driven by the pure transform math), and
+  marked red, the inverted mag axis, zoom (scroll around the cursor) /
+  pan (drag) / double-click reset driven by the pure transform math, and —
+  ticket 04 — a click on a data point toggles its outlier flag), and
   :mod:`.period_view` (:class:`~.period_view.PeriodView`, ticket 03: the
   periodogram plot with clickable top-N peak markers, the manual period
-  entry, and the phase-folded lightcurve plot). Both import ``gi`` at module
-  top and are re-exported here **lazily** (PEP 562 ``__getattr__``), so
-  ``import seestar_controller.analysis`` never imports ``gi``.
+  entry, and the phase-folded lightcurve plot — ticket 04 adds the same
+  click-a-point outlier toggle on the folded plot). Both import ``gi`` at
+  module top and are re-exported here **lazily** (PEP 562 ``__getattr__``),
+  so ``import seestar_controller.analysis`` never imports ``gi``. The
+  ticket-04 export buttons live on the Lightcurve view PAGE
+  (:mod:`seestar_controller.ui.views`), which has both shared controllers.
 
 On the desktop, PyGObject is not a pip dependency — install the system
 packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` (see the README).
 
 Ticket 01 covers the lightcurve view; ticket 02 adds the Lomb-Scargle
-periodogram core; ticket 03 adds period selection + phase fold; later
-tickets add CSV export / outlier management.
+periodogram core; ticket 03 adds period selection + phase fold; ticket 04
+adds CSV export + outlier marking.
 """
 
 from .lightcurve import (
@@ -101,6 +119,13 @@ from .lightcurve import (
     session_color,
     session_color_index,
     zoom_window_at,
+)
+from .export import (
+    FOLDED_CSV_FILE,
+    FOLDED_CSV_HEADER,
+    ExportError,
+    export_folded_csv,
+    export_lightcurve_csv,
 )
 from .fold import (
     PERIOD_CONFIG_KEY,
@@ -164,6 +189,9 @@ __all__ = [
     "DEFAULT_TOP_N",
     "DEFAULT_WINDOW",
     "EXCLUDED_COLOR",
+    "ExportError",
+    "FOLDED_CSV_FILE",
+    "FOLDED_CSV_HEADER",
     "MAX_GRID_POINTS",
     "MIN_JD_SPAN",
     "MIN_MAG_SPAN",
@@ -197,6 +225,8 @@ __all__ = [
     "PlotWindow",
     "compute_periodogram",
     "data_to_screen",
+    "export_folded_csv",
+    "export_lightcurve_csv",
     "folded_window",
     "fold_points",
     "frequency_grid",

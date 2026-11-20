@@ -587,7 +587,8 @@ def test_periodogram_source_has_no_forbidden_imports_and_the_package_lists_it():
     assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE)
     modules = {path.stem for path in ANALYSIS_PACKAGE_DIR.glob("*.py")}
     assert modules == {
-        "__init__", "lightcurve", "periodogram", "fold", "lightcurve_view", "period_view",
+        "__init__", "lightcurve", "periodogram", "fold", "export",
+        "lightcurve_view", "period_view",
     }
     assert periodogram_module.PeriodogramError is PeriodogramError
 
