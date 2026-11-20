@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 03, project-store 01
 
-**Status:** implemented in e9d0f273c1a517973e8fea04632a4fde9a854901
+**Status:** implemented in d12be0ec1a517973e8fea04632a4fde9a854901
 
 - [x] Enhanced image saved into the project; original FITS byte-identical after save
 - [x] PNG/JPEG export of the current render
