@@ -50,15 +50,23 @@ from seestar_controller.observing import (
     ObserveViewState,
     PlanQueueController,
     QueueEntry,
+    StaleSessionError,
     default_preview_stream_factory,
     format_elapsed,
+    format_session_time,
     format_target,
 )
 from seestar_controller.observing.observe_controller import (
     DEFAULT_PREVIEW_MAX_FPS,
     OBSERVE_SOURCE,
 )
+from seestar_controller.store.errors import SessionOpenError
 from seestar_controller.store.project import create_project
+from seestar_controller.store.sessions import (
+    get_open_session,
+    list_sessions,
+    start_session,
+)
 from seestar_controller.ui.connection import ConnectionController, ConnectionStatus
 from seestar_controller.ui.notifications import NotificationBus, NotificationSeverity
 from seestar_controller.ui.settings import SettingsController
@@ -470,6 +478,143 @@ def test_aborted_night_stops_preview_and_pushes_error(harness, project):
     )
 
 
+# --- ticket 05: stale open session on Start night ---------------------------------------
+
+
+STALE_STARTED = "2026-11-20T22:00:00.123+00:00"
+
+
+def test_start_night_with_stale_open_session_raises_stale_session_error(harness, project):
+    """A stale open session (app killed mid-night) blocks Start night with a
+    StaleSessionError (a SessionOpenError) carrying the session — raised
+    BEFORE anything is created, so no raw error surfaces as a night."""
+    stale = start_session(project, started_at=STALE_STARTED)
+    harness.queue_controller.add_entry(coord_entry(5.5, -5.0))
+    with pytest.raises(SessionOpenError) as excinfo:
+        harness.controller.start_night(project, frames_per_target=1)
+    exc = excinfo.value
+    assert isinstance(exc, StaleSessionError)
+    assert exc.session.id == stale
+    assert exc.session.started_at == STALE_STARTED
+    assert stale in str(exc) and STALE_STARTED in str(exc)
+    # nothing was started: no executor, no preview stream, no new session row
+    assert harness.controller.executor is None
+    assert harness.streams == []
+    assert not harness.controller.preview_running
+    assert len(list_sessions(project)) == 1
+    open_session = get_open_session(project)
+    assert open_session is not None and open_session.id == stale  # untouched
+    # no night notifications were pushed (no aborted night)
+    assert not any("Night" in n.title for n in harness.bus.log())
+
+
+def test_resume_stale_session_reattaches_the_executor_to_the_open_session(harness, project):
+    """The dialog's Resume path: the executor reattaches to the open session
+    (no new session row) and the night runs in it."""
+    stale = start_session(project, started_at=STALE_STARTED)
+    harness.queue_controller.add_entry(coord_entry(5.5, -5.0))
+    ex = harness.controller.resume_stale_session(project, stale, frames_per_target=1)
+    assert ex.session == stale
+    assert ex.resume_session == stale
+    assert len(list_sessions(project)) == 1  # no new session opened
+    assert wait_until(lambda: ex.state == ExecutorState.STACKING)
+    harness.device.emit_progress(1)
+    assert ex.wait(timeout=5)
+    assert ex.snapshot.state == ExecutorState.DONE
+    # the resumed session was closed when the night ended
+    sessions = list_sessions(project)
+    assert len(sessions) == 1
+    assert sessions[0].id == stale and sessions[0].ended_at is not None
+    assert get_open_session(project) is None
+    # the capture is bound to the resumed session
+    capture = harness.controller.capture
+    assert capture is not None and capture.session_id == stale
+    # the preview stream started for the resumed night
+    assert harness.streams and harness.streams[0].start_calls == [(True, False)]
+
+
+def test_resume_stale_session_defaults_to_the_open_session(harness, project):
+    stale = start_session(project, started_at=STALE_STARTED)
+    harness.queue_controller.add_entry(coord_entry(5.5, -5.0))
+    assert harness.controller.open_session(project).id == stale
+    ex = harness.controller.resume_stale_session(project, duration_per_target_s=30.0)
+    assert ex.session == stale
+    assert wait_until(lambda: ex.state == ExecutorState.STACKING)
+    harness.controller.stop()
+    assert ex.wait(timeout=5)
+    assert ex.snapshot.state == ExecutorState.DONE
+
+
+def test_close_stale_session_closes_via_store_and_start_night_then_works(harness, project):
+    """The dialog's Close-and-start-new path: close_session (store) closes the
+    stale session, then start_night opens a NEW session and runs."""
+    stale = start_session(project, started_at=STALE_STARTED)
+    harness.queue_controller.add_entry(coord_entry(5.5, -5.0))
+    closed = harness.controller.close_stale_session(project, stale)
+    assert closed.id == stale and closed.ended_at is not None
+    assert get_open_session(project) is None
+    assert any(
+        n.title == "Stale session closed" and n.severity == NotificationSeverity.INFO
+        for n in harness.bus.log()
+    )
+    # now Start night works again and opens a fresh session
+    ex = harness.controller.start_night(project, frames_per_target=1)
+    assert ex.session is not None and ex.session != stale
+    assert wait_until(lambda: ex.state == ExecutorState.STACKING)
+    harness.device.emit_progress(1)
+    assert ex.wait(timeout=5)
+    assert ex.snapshot.state == ExecutorState.DONE
+    sessions = list_sessions(project)
+    assert len(sessions) == 2
+    assert sessions[0].id == stale and sessions[0].ended_at is not None
+    assert sessions[1].id == ex.session
+
+
+def test_close_and_start_new_bundles_close_then_fresh_start(harness, project):
+    stale = start_session(project, started_at=STALE_STARTED)
+    harness.queue_controller.add_entry(coord_entry(5.5, -5.0))
+    ex = harness.controller.close_and_start_new(project, stale, frames_per_target=1)
+    assert ex.session is not None and ex.session != stale
+    open_session = get_open_session(project)
+    assert open_session is not None and open_session.id == ex.session
+    assert wait_until(lambda: ex.state == ExecutorState.STACKING)
+    harness.device.emit_progress(1)
+    assert ex.wait(timeout=5)
+    assert ex.snapshot.state == ExecutorState.DONE
+    assert get_open_session(project) is None
+    assert [s.id for s in list_sessions(project)] == [stale, ex.session]
+
+
+def test_start_night_resume_session_must_be_the_open_session(harness, project):
+    with pytest.raises(ObserveStateError, match="cannot resume"):
+        harness.controller.start_night(project, resume_session="no-such-session")
+    stale = start_session(project, started_at=STALE_STARTED)
+    # resuming a DIFFERENT id while one is open is still the stale-session error
+    with pytest.raises(StaleSessionError):
+        harness.controller.start_night(project, resume_session="other-session")
+    # resuming the open one works
+    harness.queue_controller.add_entry(coord_entry(5.5, -5.0))
+    ex = harness.controller.start_night(project, resume_session=stale, duration_per_target_s=30.0)
+    assert ex.session == stale
+    harness.controller.stop()
+    assert ex.wait(timeout=5)
+    assert ex.snapshot.state == ExecutorState.DONE
+
+
+def test_resume_and_close_stale_session_without_open_session_raise(harness, project):
+    with pytest.raises(ObserveStateError, match="no open session"):
+        harness.controller.resume_stale_session(project)
+    with pytest.raises(ObserveStateError, match="no open session"):
+        harness.controller.close_stale_session(project)
+
+
+def test_format_session_time():
+    assert format_session_time(STALE_STARTED) == "2026-11-20 22:00:00 UTC"
+    assert format_session_time("2026-11-20T22:00:00") == "2026-11-20 22:00:00 UTC"
+    assert format_session_time("2026-11-20T23:00:00+01:00") == "2026-11-20 22:00:00 UTC"
+    assert format_session_time("not-a-timestamp") == "not-a-timestamp"
+
+
 # --- preview frames ----------------------------------------------------------------------
 
 
@@ -678,18 +823,23 @@ def test_observe_names_are_lazy_exports_of_the_package():
         "ExecutorFactory",
         "PreviewStreamFactory",
         "InvokeOnMain",
+        "StaleSessionError",
         "default_executor_factory",
         "default_preview_stream_factory",
         "format_target",
         "format_elapsed",
+        "format_session_time",
         "OBSERVE_SOURCE",
         "DEFAULT_PREVIEW_MAX_FPS",
     ):
         assert name in observing.__all__
         assert getattr(observing, name) is getattr(observe_controller, name)
     assert observing._EXECUTOR_EXPORTS["ObserveController"] == "observe_controller"
+    assert observing._EXECUTOR_EXPORTS["StaleSessionError"] == "observe_controller"
     assert observing._WIDGET_EXPORTS["ObserveView"] == "observe_view"
+    assert observing._WIDGET_EXPORTS["StaleSessionDialog"] == "stale_session_dialog"
     assert "ObserveView" in observing.__all__
+    assert "StaleSessionDialog" in observing.__all__
 
 
 def test_observe_controller_module_imports_no_gi_and_the_package_stays_lazy():

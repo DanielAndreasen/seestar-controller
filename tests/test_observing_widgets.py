@@ -33,6 +33,15 @@ call the controller's passthroughs (with an inline error when start fails),
 the progress rows / preview picture / button sensitivity, and the app owns
 one shared :class:`~seestar_controller.observing.ObserveController` that the
 window passes down to the Observe page.
+
+Observing ticket 05 adds the stale-session dialog tests: when Start night
+raises ``SessionOpenError`` (a stale session is still open — the app was
+killed mid-night), the view presents the
+:class:`~seestar_controller.observing.stale_session_dialog.StaleSessionDialog`
+(via ``GLib.idle_add``, pumped with the main-context helper) instead of the
+raw inline error; its **Resume** button calls the controller's
+``resume_stale_session`` and **Close and start new** calls
+``close_and_start_new``; other start errors stay inline.
 """
 
 import dataclasses
@@ -63,7 +72,9 @@ from seestar_controller.observing import (
     ObserveViewState,
     PlanQueueController,
     QueueEntry,
+    StaleSessionError,
 )
+from seestar_controller.store.sessions import Session
 from seestar_controller.ui.connection import ConnectionStatus
 
 COORD_A = J2000Coord(ra_deg=83.8215, dec_deg=-5.39114)  # ~ M 42
@@ -385,6 +396,20 @@ class StubObserveController:
             raise self.start_error
         return SimpleNamespace()
 
+    def resume_stale_session(self, project=None, session_id=None, **kwargs):
+        """Ticket 05: the stale-session dialog's Resume action."""
+        self.calls.append(("resume_stale_session", project, session_id, kwargs))
+        if self.start_error is not None:
+            raise self.start_error
+        return SimpleNamespace()
+
+    def close_and_start_new(self, project=None, session_id=None, **kwargs):
+        """Ticket 05: the stale-session dialog's Close-and-start-new action."""
+        self.calls.append(("close_and_start_new", project, session_id, kwargs))
+        if self.start_error is not None:
+            raise self.start_error
+        return SimpleNamespace()
+
     def pause(self):
         self.calls.append(("pause",))
 
@@ -679,6 +704,126 @@ def test_session_log_dialog_summary_counts_stored_frames(gtk, tmp_path):
     dialog.refresh()
     assert "2 frame(s) stored (1 sub, 1 stack)" in dialog.summary_label.get_label()
     dialog.close()
+
+
+# --- observing ticket 05: the stale-session resume/close dialog --------------------------
+#
+# When "Start night" raises SessionOpenError because a stale session is still
+# open (the app was killed mid-night), the Observe view must show the
+# StaleSessionDialog (Resume / Close-and-start-new, presented via
+# GLib.idle_add) instead of surfacing the raw error inline.
+
+STALE_SESSION = Session(
+    id="20261120T220000000000Z",
+    started_at="2026-11-20T22:00:00+00:00",
+    ended_at=None,
+)
+
+
+def _stale_stub(observe_stub):
+    """Make the stub's start_night raise a StaleSessionError (a SessionOpenError)."""
+    observe_stub.start_error = StaleSessionError(STALE_SESSION)
+    return observe_stub
+
+
+def _observe_view_with_stale_session(gtk, controller, observe_stub):
+    """Build the observe view, click Start night, pump the main loop (the
+    dialog is marshalled via GLib.idle_add) and return (view, widget, window,
+    dialog)."""
+    from seestar_controller.observing import StaleSessionDialog
+    from seestar_controller.ui.views import build_view
+
+    _stale_stub(observe_stub)
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    window = Gtk.Window()
+    window.set_child(view)
+    widget.start_button.emit("clicked")
+    _pump_main_context()  # the dialog is presented via GLib.idle_add
+    dialog = widget.stale_dialog
+    assert isinstance(dialog, StaleSessionDialog)
+    return view, widget, window, dialog
+
+
+def test_start_button_with_stale_open_session_shows_the_dialog(gtk, controller, observe_stub):
+    _view, widget, window, dialog = _observe_view_with_stale_session(
+        gtk, controller, observe_stub
+    )
+    assert dialog.session is STALE_SESSION
+    label = dialog.message_label.get_label()
+    assert "20261120T220000000000Z" in label
+    assert "2026-11-20 22:00:00 UTC" in label
+    assert "still open" in label
+    assert dialog.resume_button.get_label() == "Resume"
+    assert dialog.close_button.get_label() == "Close and start new"
+    # the raw SessionOpenError is NOT surfaced inline
+    assert "SessionOpenError" not in widget.status_label.get_label()
+    window.destroy()
+
+
+def test_stale_session_dialog_resume_button_resumes_the_session(gtk, controller, observe_stub):
+    _view, widget, window, dialog = _observe_view_with_stale_session(
+        gtk, controller, observe_stub
+    )
+    dialog.resume_button.emit("clicked")
+    _pump_main_context()  # the "closed" signal may arrive via the main loop
+    assert (
+        "resume_stale_session",
+        observe_stub.project,
+        STALE_SESSION.id,
+        {},
+    ) in observe_stub.calls
+    assert widget.stale_dialog is None  # the dialog closed itself
+    window.destroy()
+
+
+def test_stale_session_dialog_close_button_closes_and_starts_new(gtk, controller, observe_stub):
+    _view, widget, window, dialog = _observe_view_with_stale_session(
+        gtk, controller, observe_stub
+    )
+    dialog.close_button.emit("clicked")
+    _pump_main_context()  # the "closed" signal may arrive via the main loop
+    assert (
+        "close_and_start_new",
+        observe_stub.project,
+        STALE_SESSION.id,
+        {},
+    ) in observe_stub.calls
+    assert widget.stale_dialog is None
+    window.destroy()
+
+
+def test_stale_session_dialog_action_error_shows_inline(gtk, controller, observe_stub):
+    """A failing dialog action (e.g. the close raced) shows inline, no crash."""
+    _view, widget, window, dialog = _observe_view_with_stale_session(
+        gtk, controller, observe_stub
+    )
+    observe_stub.start_error = ObserveStateError("close_session failed")
+    dialog.resume_button.emit("clicked")
+    assert "close_session failed" in widget.status_label.get_label()
+    assert widget.status_label.has_css_class("error")
+    window.destroy()
+
+
+def test_start_button_non_session_error_still_shows_inline(gtk, controller, observe_stub):
+    """Only SessionOpenError opens the dialog; other start errors stay inline."""
+    from seestar_controller.ui.views import build_view
+
+    observe_stub.start_error = ObserveStateError("a night is already running")
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    window = Gtk.Window()
+    window.set_child(view)
+    widget.start_button.emit("clicked")
+    _pump_main_context()
+    assert widget.stale_dialog is None
+    assert "already running" in widget.status_label.get_label()
+    assert widget.status_label.has_css_class("error")
+    window.destroy()
 
 
 # --- layout regression: night controls must stay on-screen ---------------------------------

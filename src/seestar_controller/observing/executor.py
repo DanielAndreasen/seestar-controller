@@ -55,7 +55,11 @@ when :meth:`NightExecutor.start` is called and closed with
 (``DONE`` / ``ABORTED`` / ``stop()``) — both on the **calling thread** of
 :meth:`start` / :meth:`run` / :meth:`wait` (the thread that owns the project
 db — sqlite connections are thread-affine, so the worker thread never touches
-the store). The store has no session-log API yet (ticket 04 persists it), so
+the store). With ``resume_session=<id>`` (ticket 05 — the app was killed
+mid-night and the session is still open) :meth:`start` instead **adopts** the
+already-open session (verified via
+:func:`~seestar_controller.store.sessions.get_open_session`; no new row) and
+the run continues in it. The store has no session-log API yet (ticket 04 persists it), so
 the executor keeps its own in-memory event log — :attr:`NightExecutor.log`, a
 tuple of frozen :class:`ExecutorEvent` ``(ts, state, detail)`` — covering every
 transition, per-entry start/finish, errors, session open/close and park.
@@ -98,7 +102,12 @@ from seestar_controller.link.resilience import (
     SCOPE_ERROR_EVENT,
     STACK_FINISHED_EVENT,
 )
-from seestar_controller.store.sessions import close_session, start_session
+from seestar_controller.store.errors import SessionOpenError
+from seestar_controller.store.sessions import (
+    close_session,
+    get_open_session,
+    start_session,
+)
 
 from .queue import (
     EVENT_RESOLVED,
@@ -236,6 +245,13 @@ class NightExecutor:
       a target stacks until skip/stop/pause;
     - ``error_policy`` — ``"skip"`` (default) or ``"abort"``, see the module
       docstring;
+    - ``resume_session`` — the id of an already-open session to **reattach** to
+      instead of opening a new one (ticket 05: the app was killed mid-night
+      and the session is still open). :meth:`start` verifies the session is
+      really open (via :func:`~seestar_controller.store.sessions.get_open_session`)
+      and adopts it — no new row is inserted; the session is still closed by
+      :meth:`run` / :meth:`wait` when the run ends. None (default) opens a
+      fresh session with :func:`~seestar_controller.store.sessions.start_session`;
     - ``invoke_on_main`` — the marshalling callable for listener notifications
       (default: direct call);
     - ``park_at_end`` — park the Scope when the run ends in DONE (default
@@ -254,6 +270,7 @@ class NightExecutor:
         frames_per_target: int | None = None,
         duration_per_target_s: float | None = None,
         error_policy: str = ERROR_POLICY_SKIP,
+        resume_session: str | None = None,
         invoke_on_main: InvokeOnMain | None = None,
         park_at_end: bool = True,
         poll_interval_s: float = 0.05,
@@ -285,6 +302,12 @@ class NightExecutor:
                 )
         if poll_interval_s <= 0:
             raise ValueError(f"poll_interval_s must be > 0, got {poll_interval_s}")
+        if resume_session is not None and (
+            not isinstance(resume_session, str) or not resume_session
+        ):
+            raise ValueError(
+                f"resume_session must be a non-empty session id or None, got {resume_session!r}"
+            )
         entries = getattr(queue, "entries", None)
         if not isinstance(entries, tuple) or not all(
             isinstance(e, QueueEntry) for e in entries
@@ -304,6 +327,7 @@ class NightExecutor:
             float(duration_per_target_s) if duration_per_target_s is not None else None
         )
         self._error_policy = error_policy
+        self._resume_session = resume_session
         self._invoke_on_main: InvokeOnMain = invoke_on_main or _direct_invoke
         self._park_at_end = bool(park_at_end)
         self._poll_interval_s = float(poll_interval_s)
@@ -346,6 +370,12 @@ class NightExecutor:
     def error_policy(self) -> str:
         """The error policy: ``"skip"`` or ``"abort"``."""
         return self._error_policy
+
+    @property
+    def resume_session(self) -> str | None:
+        """The id of the open session this executor reattaches to (ticket 05),
+        or None when it opens a fresh session."""
+        return self._resume_session
 
     @property
     def park_at_end(self) -> bool:
@@ -521,9 +551,14 @@ class NightExecutor:
         thread that owns the project db) and spawn the worker thread running
         the loop.
 
+        With ``resume_session`` set (ticket 05), the already-open session is
+        **adopted** instead of opening a new one: :meth:`start` verifies via
+        :func:`~seestar_controller.store.sessions.get_open_session` that the
+        session is really open and uses its id (no new row is inserted).
+
         Returns the worker :class:`threading.Thread`, or ``None`` when the
-        session could not be opened — in that case the executor goes to
-        ``ABORTED`` with the error and no worker runs.
+        session could not be opened (or resumed) — in that case the executor
+        goes to ``ABORTED`` with the error and no worker runs.
 
         Raises :class:`ExecutorStateError` when a run is already in flight
         (state not IDLE — wait for DONE/ABORTED first).
@@ -542,8 +577,19 @@ class NightExecutor:
                 self._commands.get_nowait()
             except queue_module.Empty:
                 break
+        resumed = self._resume_session is not None
         try:
-            session_id = start_session(self._project)
+            if resumed:
+                open_session = get_open_session(self._project)
+                if open_session is None or open_session.id != self._resume_session:
+                    raise SessionOpenError(
+                        f"cannot resume session {self._resume_session!r} — no such "
+                        f"open session in project "
+                        f"{getattr(self._project, 'slug', self._project)!r}"
+                    )
+                session_id = self._resume_session
+            else:
+                session_id = start_session(self._project)
         except Exception as exc:  # noqa: BLE001
             message = f"{type(exc).__name__}: {exc}"
             self._log_event(ExecutorState.ABORTED, f"session open failed: {message}")
@@ -553,7 +599,9 @@ class NightExecutor:
             return None
         with self._lock:
             self._session = session_id
-        self._log_event(ExecutorState.IDLE, f"session {session_id} opened")
+        self._log_event(
+            ExecutorState.IDLE, f"session {session_id} {'resumed' if resumed else 'opened'}"
+        )
         worker = threading.Thread(
             target=self._run, name="seestar-observing-executor", daemon=True
         )

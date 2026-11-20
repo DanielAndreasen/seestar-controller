@@ -33,9 +33,12 @@ no GTK, see docs/wiki/assumptions.md):
   add-by-name / add-by-RA-Dec area), :mod:`.observe_view`
   (:class:`~.observe_view.ObserveView`, the two-pane Observe view: queue
   editor + night controls on the left, live preview + progress on the right),
-  and :mod:`.session_log_dialog` (:class:`~.session_log_dialog.SessionLogDialog`,
+  :mod:`.session_log_dialog` (:class:`~.session_log_dialog.SessionLogDialog`,
   the per-session event log + stored frames dialog opened from the Observe
-  view — ticket 04). All import ``gi`` at module top and are re-exported here
+  view — ticket 04), and :mod:`.stale_session_dialog`
+  (:class:`~.stale_session_dialog.StaleSessionDialog`, the resume /
+  close-and-start-new offer shown when Start night hits a stale open session —
+  ticket 05). All import ``gi`` at module top and are re-exported here
   **lazily** (PEP 562 ``__getattr__``), so ``import seestar_controller.observing``
   never imports ``gi``.
 
@@ -82,6 +85,7 @@ _WIDGET_EXPORTS = {
     "ObserveView": "observe_view",
     "QueueEditor": "queue_editor",
     "SessionLogDialog": "session_log_dialog",
+    "StaleSessionDialog": "stale_session_dialog",
 }
 
 #: Executor-layer names re-exported lazily from :mod:`.executor`,
@@ -129,10 +133,12 @@ _EXECUTOR_EXPORTS = {
     "ObserveViewState": "observe_controller",
     "PreviewFrameListener": "observe_controller",
     "PreviewStreamFactory": "observe_controller",
+    "StaleSessionError": "observe_controller",
     "default_capture_factory": "observe_controller",
     "default_executor_factory": "observe_controller",
     "default_preview_stream_factory": "observe_controller",
     "format_elapsed": "observe_controller",
+    "format_session_time": "observe_controller",
     "format_target": "observe_controller",
 }
 
@@ -222,6 +228,8 @@ __all__ = [
     "SessionCapture",
     "SessionLog",
     "SessionLogDialog",
+    "StaleSessionDialog",
+    "StaleSessionError",
     "classify_executor_event",
     "default_capture_factory",
     "default_executor_factory",
@@ -229,6 +237,7 @@ __all__ = [
     "default_preview_stream_factory",
     "describe_mosaic",
     "format_elapsed",
+    "format_session_time",
     "format_target",
     "normalize_mosaic",
     "parse_entry_coords",

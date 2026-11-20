@@ -66,6 +66,17 @@ What it does:
   Stacks downloaded into the session as they arrive + the per-session event
   log, exposed via :attr:`capture`); DONE/ABORTED stops it. A capture
   failure pushes a warning notification but never kills the night.
+- stale sessions (ticket 05) — when a previous session of the project is
+  still marked open (the app was killed mid-night), :meth:`start_night`
+  raises :class:`StaleSessionError` (a
+  :class:`~seestar_controller.store.errors.SessionOpenError` carrying the open
+  :class:`~seestar_controller.store.sessions.Session`) **before** creating
+  anything, so the Observe view can offer the resume / close-and-start-new
+  dialog instead of surfacing the raw error. :meth:`resume_stale_session`
+  reattaches the executor to the open session (``resume_session`` kwarg of
+  :class:`~.executor.NightExecutor`); :meth:`close_stale_session` closes it via
+  :func:`~seestar_controller.store.sessions.close_session` and
+  :meth:`close_and_start_new` then starts a fresh night.
 
 All callbacks (executor snapshots, preview frames, queue events) are
 marshalled through ``invoke_on_main``, so with ``GLib.idle_add`` nothing
@@ -82,6 +93,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from seestar_controller.link.image import Frame
@@ -90,6 +102,12 @@ from seestar_controller.link.preview import (
     PreviewFrame,
     PreviewStream,
     decode_payload,
+)
+from seestar_controller.store.errors import SessionOpenError
+from seestar_controller.store.sessions import (
+    Session,
+    close_session,
+    get_open_session,
 )
 from seestar_controller.ui.connection import ConnectionController, ConnectionStatus
 from seestar_controller.ui.notifications import (
@@ -129,6 +147,28 @@ _TERMINAL_EXECUTOR_STATES: tuple[ExecutorState, ...] = (
 class ObserveStateError(RuntimeError):
     """An invalid observe-controller operation (start without a connection
     or project, park while disconnected, start while a night is running)."""
+
+
+class StaleSessionError(SessionOpenError):
+    """A stale session is still open in the project (ticket 05 — e.g. the app
+    was killed mid-night and never closed it): :meth:`ObserveController.start_night`
+    raises this instead of letting the raw store error surface, so the Observe
+    view can offer the resume / close-and-start-new dialog.
+
+    It **is** a :class:`~seestar_controller.store.errors.SessionOpenError`
+    (catch that to handle both), and carries the open session record:
+
+    - ``session`` — the open :class:`~seestar_controller.store.sessions.Session`
+      (``id`` + ``started_at``), used for the dialog text and the resume/close
+      actions.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session: Session = session
+        super().__init__(
+            f"session {session.id} from {session.started_at} is still open — "
+            "resume it or close it and start a new one"
+        )
 
 
 @dataclass(frozen=True)
@@ -250,6 +290,19 @@ def format_target(entry: QueueEntry | None) -> str:
 def format_elapsed(seconds: float) -> str:
     """The elapsed-time label: ``"42 s"`` (``"0 s"`` when idle)."""
     return f"{max(0.0, seconds):.0f} s"
+
+
+def format_session_time(started_at: str) -> str:
+    """Format a session ``started_at`` ISO-8601 string for the stale-session
+    dialog (ticket 05): ``"2026-11-20 22:00:00 UTC"``. A naive timestamp is
+    treated as UTC; an unparseable string is returned unchanged."""
+    try:
+        dt = datetime.fromisoformat(started_at)
+    except ValueError:
+        return started_at
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _idle_snapshot() -> ExecutorSnapshot:
@@ -488,21 +541,53 @@ class ObserveController:
 
     # -- start night ---------------------------------------------------------------
 
-    def start_night(self, project: Any = None, **executor_kwargs: Any) -> NightExecutor:
+    def _resolve_project(self, project: Any) -> Any:
+        """The given project, or the one set via :meth:`set_project`;
+        raises :class:`ObserveStateError` when neither is set."""
+        with self._lock:
+            if project is None:
+                project = self._project
+        if project is None:
+            raise ObserveStateError(
+                "no project — open a project first (Projects view)"
+            )
+        return project
+
+    def open_session(self, project: Any = None) -> Session | None:
+        """The project's currently open session (``ended_at IS NULL``), or
+        None — the stale-session check behind the resume/close dialog
+        (ticket 05)."""
+        return get_open_session(self._resolve_project(project))
+
+    def start_night(
+        self, project: Any = None, *, resume_session: str | None = None, **executor_kwargs: Any
+    ) -> NightExecutor:
         """Start the night: create + start the executor and the preview stream.
 
         - ``project`` — the store project the session is opened in; defaults
           to the project set via :meth:`set_project`. Raises
           :class:`ObserveStateError` when neither is set;
+        - ``resume_session`` — the id of an already-open session to reattach
+          to (ticket 05) instead of opening a new one; forwarded to the
+          executor factory (the default :class:`~.executor.NightExecutor`
+          adopts the open session). Raises :class:`ObserveStateError` when the
+          id is not the project's open session;
         - ``**executor_kwargs`` — forwarded to the executor factory (e.g.
           ``frames_per_target=6``, ``duration_per_target_s=600``,
           ``error_policy="abort"``, ``park_at_end=False``).
 
         Requires a connected device (:class:`ObserveStateError` otherwise) and
         no night already in flight (:class:`ObserveStateError`; wait for
-        DONE/ABORTED first). The preview stream is started best-effort: a
-        failure (unreachable image socket) pushes a warning notification and
-        the night runs without preview.
+        DONE/ABORTED first). When a **stale session is still open** in the
+        project (the app was killed mid-night), raises
+        :class:`StaleSessionError` — a
+        :class:`~seestar_controller.store.errors.SessionOpenError` carrying the
+        open :class:`~seestar_controller.store.sessions.Session` — so the view
+        can offer resume / close-and-start-new (see :meth:`resume_stale_session`
+        / :meth:`close_and_start_new`) instead of surfacing the raw error.
+        The preview stream is started best-effort: a failure (unreachable
+        image socket) pushes a warning notification and the night runs without
+        preview.
 
         Returns the started :class:`~.executor.NightExecutor`.
         """
@@ -524,11 +609,25 @@ class ObserveController:
                     "no project — open a project first (Projects view)"
                 )
             old_executor = self._executor
+        # ticket 05: a stale open session blocks the start — raise
+        # StaleSessionError (a SessionOpenError) BEFORE creating anything, so
+        # the view can offer resume / close-and-start-new.
+        open_session = get_open_session(project)
+        if open_session is not None and open_session.id != resume_session:
+            # a stale session is open and we are not resuming exactly it
+            raise StaleSessionError(open_session)
+        if resume_session is not None and open_session is None:
+            raise ObserveStateError(
+                f"cannot resume session {resume_session!r} — no session is open "
+                "in the project"
+            )
         if old_executor is not None:
             old_executor.remove_listener(self._on_executor_snapshot)
         kwargs = dict(executor_kwargs)
         kwargs.setdefault("resolver", self._queue_controller.resolver)
         kwargs["invoke_on_main"] = self._invoke_on_main
+        if resume_session is not None:
+            kwargs["resume_session"] = resume_session
         executor = self._executor_factory(
             device, self._queue_controller.queue, project, **kwargs
         )
@@ -548,6 +647,72 @@ class ObserveController:
             self._start_capture(device, project, session_id, executor)
         self._emit()
         return executor
+
+    # -- stale-session actions (ticket 05) -------------------------------------------
+
+    def resume_stale_session(
+        self,
+        project: Any = None,
+        session_id: str | None = None,
+        **executor_kwargs: Any,
+    ) -> NightExecutor:
+        """Resume the stale open session (ticket 05 — the dialog's **Resume**
+        button): reattach the executor to the already-open session instead of
+        opening a new one.
+
+        - ``project`` — defaults to the project set via :meth:`set_project`;
+        - ``session_id`` — defaults to the project's open session;
+        - ``**executor_kwargs`` — forwarded to :meth:`start_night`.
+
+        Raises :class:`ObserveStateError` when there is no open session to
+        resume (or the id is not the open one).
+        """
+        project = self._resolve_project(project)
+        if session_id is None:
+            session = get_open_session(project)
+            if session is None:
+                raise ObserveStateError("no open session to resume")
+            session_id = session.id
+        return self.start_night(project, resume_session=session_id, **executor_kwargs)
+
+    def close_stale_session(self, project: Any = None, session_id: str | None = None) -> Session:
+        """Close the stale open session (ticket 05 — the dialog's
+        **Close-and-start-new** button, first half) via
+        :func:`seestar_controller.store.sessions.close_session` on the calling
+        thread. Returns the closed :class:`~seestar_controller.store.sessions.Session`.
+
+        - ``project`` — defaults to the project set via :meth:`set_project`;
+        - ``session_id`` — defaults to the project's open session.
+
+        Raises :class:`ObserveStateError` when there is no open session to
+        close; the store's own errors (not found / already closed) propagate.
+        """
+        project = self._resolve_project(project)
+        if session_id is None:
+            session = get_open_session(project)
+            if session is None:
+                raise ObserveStateError("no open session to close")
+            session_id = session.id
+        closed = close_session(project, session_id)
+        self._notify(
+            NotificationSeverity.INFO,
+            "Stale session closed",
+            f"session {session_id} (started {closed.started_at}) was closed",
+        )
+        self._emit()
+        return closed
+
+    def close_and_start_new(
+        self,
+        project: Any = None,
+        session_id: str | None = None,
+        **executor_kwargs: Any,
+    ) -> NightExecutor:
+        """Close the stale open session and start a fresh night (ticket 05 —
+        the dialog's **Close-and-start-new** button): :meth:`close_stale_session`
+        then :meth:`start_night`, which now opens a NEW session."""
+        self.close_stale_session(project, session_id)
+        return self.start_night(project, **executor_kwargs)
 
     def _start_capture(
         self, device: Any, project: Any, session_id: str, executor: NightExecutor

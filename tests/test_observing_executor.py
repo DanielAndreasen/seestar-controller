@@ -554,6 +554,60 @@ def test_session_open_failure_aborts_without_touching_the_open_session(project):
     close_session(project, existing)
 
 
+# --- ticket 05: resuming a stale open session ---------------------------------------
+
+
+def test_resume_session_reattaches_the_open_session(project):
+    """``resume_session=<id>`` adopts the already-open session: no new row is
+    inserted, the run continues in it, and it is closed when the run ends."""
+    stale = start_session(project, started_at="2026-11-20T22:00:00+00:00")
+    dev = FakeDevice()
+    ex = NightExecutor(
+        dev,
+        PlanQueue([coord_entry(1.0, 2.0)]),
+        project,
+        frames_per_target=1,
+        resume_session=stale,
+    )
+    assert ex.resume_session == stale
+    worker = ex.start()
+    assert worker is not None
+    assert ex.session == stale  # reattached, not a new session
+    assert len(list_sessions(project)) == 1
+    assert wait_until(lambda: ex.state == ExecutorState.STACKING)
+    dev.emit_progress(1)
+    assert ex.wait(timeout=5)
+    assert ex.snapshot.state == ExecutorState.DONE
+    sessions = list_sessions(project)
+    assert len(sessions) == 1
+    assert sessions[0].id == stale and sessions[0].ended_at is not None
+    assert get_open_session(project) is None
+    assert any("resumed" in event.detail for event in ex.log)
+
+
+def test_resume_session_that_is_not_open_aborts(project):
+    """Resuming a session that is not open fails like a session-open failure:
+    ABORTED with the error, no worker, the device never driven."""
+    dev = FakeDevice()
+    ex = NightExecutor(
+        dev, PlanQueue([coord_entry(1.0, 2.0)]), project, resume_session="missing-session"
+    )
+    snap = ex.run(timeout=5)
+    assert snap.state == ExecutorState.ABORTED
+    assert snap.error is not None and "missing-session" in snap.error
+    assert ex.session is None
+    assert not dev.calls
+    assert get_open_session(project) is None
+
+
+def test_resume_session_validation(project):
+    dev = FakeDevice()
+    with pytest.raises(ValueError, match="resume_session"):
+        NightExecutor(dev, PlanQueue(), project, resume_session="")
+    with pytest.raises(ValueError, match="resume_session"):
+        NightExecutor(dev, PlanQueue(), project, resume_session=42)  # type: ignore[arg-type]
+
+
 def test_invoke_on_main_marshals_listener_notifications(project):
     dev = FakeDevice()
     pending: list = []

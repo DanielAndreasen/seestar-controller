@@ -22,7 +22,11 @@ dependency — it needs the system GTK headers to build)::
   **Stop**, **Park**, **Session log** (ticket 04 — opens the per-session event
   log + stored frames dialog) — all bound to the controller's passthroughs,
   with an inline status label for errors (start without connection/project,
-  park while disconnected);
+  park while disconnected). **Start night** hitting a stale open session
+  (ticket 05 — the app was killed mid-night) opens the
+  :class:`~.stale_session_dialog.StaleSessionDialog` (Resume / Close-and-start-new,
+  presented via ``GLib.idle_add``) instead of surfacing the raw
+  ``SessionOpenError``;
 - **right pane** — the live preview (a :class:`Gtk.Picture` fed from the
   latest decoded frame: the ndarray is encoded to PNG via PIL and wrapped in
   a :class:`Gdk.Texture` with ``Gdk.Texture.new_from_bytes`` — marshalled
@@ -42,6 +46,7 @@ threads.
 from __future__ import annotations
 
 import io
+import logging
 from typing import Any
 
 import gi
@@ -53,6 +58,8 @@ import numpy as np
 from gi.repository import Adw, Gdk, GLib, Gtk
 from PIL import Image
 
+from seestar_controller.store.errors import SessionOpenError
+from seestar_controller.store.sessions import Session, get_open_session
 from seestar_controller.ui.connection import ConnectionStatus
 
 from .observe_controller import (
@@ -65,6 +72,9 @@ from .observe_controller import (
 from .queue_controller import PlanQueueController
 from .queue_editor import QueueEditor
 from .session_log_dialog import SessionLogDialog
+from .stale_session_dialog import StaleSessionDialog
+
+logger = logging.getLogger(__name__)
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
 LEFT_PANE_POSITION = 560
@@ -118,6 +128,7 @@ class ObserveView(Gtk.Box):
         self._project = project
         self._last_frame_id: int | None = None
         self._log_dialog: SessionLogDialog | None = None
+        self._stale_dialog: StaleSessionDialog | None = None
 
         paned = Gtk.Paned(
             orientation=Gtk.Orientation.HORIZONTAL,
@@ -314,6 +325,12 @@ class ObserveView(Gtk.Box):
         return self._log_dialog
 
     @property
+    def stale_dialog(self) -> StaleSessionDialog | None:
+        """The currently open stale-session (resume/close) dialog — ticket 05,
+        None when closed/never opened."""
+        return self._stale_dialog
+
+    @property
     def status_label(self) -> Gtk.Label:
         return self._status_label
 
@@ -429,11 +446,72 @@ class ObserveView(Gtk.Box):
     # -- button handlers -----------------------------------------------------------------
 
     def _on_start_clicked(self, *_args) -> None:
-        """Start night: ``controller.start_night(project)``; inline error on
-        failure (not connected / no project / already running)."""
+        """Start night: ``controller.start_night(project)``; a stale open
+        session (:class:`~seestar_controller.store.errors.SessionOpenError`,
+        ticket 05) opens the resume/close dialog instead of an inline error;
+        any other failure shows inline (never crash the view)."""
         project = self._project if self._project is not None else self._controller.project
         try:
             self._controller.start_night(project)
+        except SessionOpenError as exc:
+            # stale open session (the app was killed mid-night): offer
+            # resume / close-and-start-new. Marshalled onto the main loop via
+            # GLib.idle_add (like every other callback), so the dialog is only
+            # ever presented from the main loop.
+            GLib.idle_add(self._present_stale_session_dialog, project, exc)
+            return
+        except Exception as exc:  # noqa: BLE001 - shown inline, never crash the view
+            self._set_status(f"{type(exc).__name__}: {exc}", error=True)
+            return
+        self._set_status("night running", error=False)
+
+    def _present_stale_session_dialog(self, project: Any, exc: SessionOpenError) -> bool:
+        """Present the stale-session dialog (ticket 05). Runs via
+        ``GLib.idle_add`` on the main loop; returns False so the idle source
+        is removed. Falls back to the inline error when no session record is
+        available."""
+        session = getattr(exc, "session", None)
+        if session is None and project is not None:
+            try:
+                session = get_open_session(project)
+            except Exception:
+                logger.debug("could not look up the open session", exc_info=True)
+                session = None
+        if session is None:
+            self._set_status(f"{type(exc).__name__}: {exc}", error=True)
+            return False
+        self._stale_dialog = StaleSessionDialog(
+            session,
+            on_resume=lambda: self._on_stale_session_resume(project, session),
+            on_close_and_start_new=lambda: self._on_stale_session_close_and_start_new(
+                project, session
+            ),
+        )
+        self._stale_dialog.connect("closed", self._on_stale_dialog_closed)
+        parent = self.get_root()
+        self._stale_dialog.present(parent if parent is not None else self)
+        return False  # GLib.SOURCE_REMOVE
+
+    def _on_stale_dialog_closed(self, *_args) -> None:
+        """The stale-session dialog was closed: forget it."""
+        self._stale_dialog = None
+
+    def _on_stale_session_resume(self, project: Any, session: Session) -> None:
+        """Dialog **Resume** (ticket 05): reattach the executor to the open
+        session via the controller's ``resume_stale_session``."""
+        try:
+            self._controller.resume_stale_session(project, session.id)
+        except Exception as exc:  # noqa: BLE001 - shown inline, never crash the view
+            self._set_status(f"{type(exc).__name__}: {exc}", error=True)
+            return
+        self._set_status(f"resumed session {session.id}", error=False)
+
+    def _on_stale_session_close_and_start_new(self, project: Any, session: Session) -> None:
+        """Dialog **Close and start new** (ticket 05): close the stale session
+        (store ``close_session``) and start a fresh night via the controller's
+        ``close_and_start_new``."""
+        try:
+            self._controller.close_and_start_new(project, session.id)
         except Exception as exc:  # noqa: BLE001 - shown inline, never crash the view
             self._set_status(f"{type(exc).__name__}: {exc}", error=True)
             return
