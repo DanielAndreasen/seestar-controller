@@ -281,7 +281,12 @@ def test_settings_dialog_live_validation_and_save(app, gtk, tmp_path):
     dialog = SettingsDialog(controller)
 
     # entries are initialized from the controller values; defaults are valid
-    assert dialog.values() == controller.values
+    # (the dialog edits only the editable keys — last_project is app-managed)
+    from seestar_controller.ui.state import EDITABLE_SETTINGS_KEYS
+
+    assert dialog.values() == {
+        key: value for key, value in controller.values.items() if key in EDITABLE_SETTINGS_KEYS
+    }
     assert dialog.save_sensitive()
 
     # invalid IP -> error label visible, save blocked, nothing persisted
@@ -613,3 +618,252 @@ def test_notification_widgets_are_reachable_lazily_from_the_package(gtk):
     # the pure names stay eagerly importable (no gi needed for them)
     assert ui.NotificationBus is not None
     assert ui.NotificationController is not None
+
+
+# --- projects-view ticket 01 -----------------------------------------------------------
+
+
+@pytest.fixture()
+def project_state(tmp_path):
+    """An AppState with the project root pointed at a tmp directory."""
+    from seestar_controller.ui.state import AppState
+
+    state = AppState(tmp_path / "settings.json")
+    root = tmp_path / "projects"
+    root.mkdir()
+    state.set_setting("project_root", str(root))
+    return state
+
+
+def test_projects_view_lists_creates_and_opens(gtk, project_state):
+    from seestar_controller.ui.project_controller import ProjectController
+    from seestar_controller.ui.views import build_view
+
+    controller = ProjectController(project_state)
+    view = build_view("projects", project_controller=controller)
+    assert view.view_id == "projects"
+    assert view.controller is controller
+    # empty state: no rows, banner says no project open, root line shows the root
+    assert view.row_count() == 0
+    assert "No project open" in view.current_label.get_label()
+    assert str(project_state.get_setting("project_root")) in view.root_label.get_label()
+
+    # create via the name entry + Create button
+    view.name_entry.set_text("M 42")
+    view.create_button.emit("clicked")
+    assert view.row_count() == 1
+    assert view.row_label(0) == "M 42"
+    assert "m-42" in view.row_subtitle(0)
+    assert view.is_current_row(0)  # the created project becomes current
+    assert "M 42" in view.current_label.get_label()
+    assert controller.current is not None and controller.current.name == "M 42"
+    assert project_state.get_setting("last_project") == str(controller.current.path)
+    assert view.name_entry.get_text() == ""  # cleared after a successful create
+    assert view.status_label.has_css_class("success")
+
+    # a second project; opening the first row switches the current project
+    view.name_entry.set_text("M 31")
+    view.create_button.emit("clicked")
+    assert view.row_count() == 2
+    assert view.is_current_row(1) and not view.is_current_row(0)
+    view.click_open(0)
+    assert controller.current is not None and controller.current.name == "M 42"
+    assert view.is_current_row(0) and not view.is_current_row(1)
+    assert "M 42" in view.current_label.get_label()
+    assert project_state.get_setting("last_project") == str(controller.current.path)
+
+
+def test_projects_view_inline_errors_on_duplicate_and_invalid_name(gtk, project_state):
+    from seestar_controller.ui.project_controller import ProjectController
+    from seestar_controller.ui.views import build_view
+
+    controller = ProjectController(project_state)
+    view = build_view("projects", project_controller=controller)
+    view.name_entry.set_text("M 42")
+    view.create_button.emit("clicked")
+    assert view.row_count() == 1
+
+    # duplicate (same slug) -> inline error, nothing changes
+    view.name_entry.set_text("m 42")
+    view.create_button.emit("clicked")
+    assert view.status_label.has_css_class("error")
+    assert "already exists" in view.status_label.get_label()
+    assert view.row_count() == 1
+    assert controller.current is not None and controller.current.name == "M 42"
+
+    # invalid name -> inline error, nothing changes
+    view.name_entry.set_text("!!!")
+    view.create_button.emit("clicked")
+    assert view.status_label.has_css_class("error")
+    assert view.row_count() == 1
+
+
+def test_projects_view_inline_error_when_open_fails(gtk, project_state):
+    from seestar_controller.ui.project_controller import ProjectController
+    from seestar_controller.ui.views import build_view
+
+    controller = ProjectController(project_state)
+    view = build_view("projects", project_controller=controller)
+    view.name_entry.set_text("M 42")
+    view.create_button.emit("clicked")
+    assert view.row_count() == 1
+    # the project becomes invalid after it was listed (project.json removed)
+    (controller.current.path / "project.json").unlink()
+    view.click_open(0)
+    assert view.status_label.has_css_class("error")
+    assert controller.current is not None  # unchanged
+
+
+def test_projects_view_constructs_standalone_and_refreshes_on_events(gtk):
+    from seestar_controller.ui.views import ProjectsView, build_view
+
+    view = build_view("projects")  # no controller -> its own over a default state
+    assert isinstance(view, ProjectsView)
+    assert view.controller is not None
+    assert view.row_count() == 0
+    # an external event (refresh) re-renders the list
+    view.controller.refresh()
+    assert view.row_count() == 0
+
+
+def test_app_restores_last_project_and_pushes_it_to_all_controllers(gtk, tmp_path):
+    from seestar_controller.store import create_project
+    from seestar_controller.ui.app import SeestarApplication
+    from seestar_controller.ui.state import AppState
+
+    settings_path = tmp_path / "settings.json"
+    root = tmp_path / "projects"
+    root.mkdir()
+    state = AppState(settings_path)
+    state.set_setting("project_root", str(root))
+    project = create_project("M 42", root=root)
+    state.set_setting("last_project", str(project.path))
+    state.save()
+
+    app = SeestarApplication(settings_path=str(settings_path))
+    assert app.project_controller.current is not None
+    assert app.project_controller.current.path == project.path
+    # the restored project was pushed to every attached shared controller
+    current = app.project_controller.current
+    assert app.observe_controller.project is current
+    assert app.viewer_controller.project is current
+    assert app.picker_controller.project is current
+    assert app.run_controller.project is current
+    assert app.lightcurve_controller.project is current
+    assert app.period_controller.project is current
+
+
+def test_window_shares_the_project_controller_with_the_views(app, gtk, tmp_path):
+    from seestar_controller.ui.app import SeestarWindow
+
+    window = SeestarWindow(app, app.state)
+    assert window.project_controller is app.project_controller
+    stack = window.view_stack
+    projects_page = stack.get_child_by_name("projects")
+    observe_page = stack.get_child_by_name("observe")
+    assert projects_page.controller is app.project_controller
+    assert observe_page.project_controller is app.project_controller
+
+    # creating a project through the shared controller reaches the views AND
+    # the attached controllers (project root pointed at tmp first)
+    root = tmp_path / "projects"
+    root.mkdir()
+    app.state.set_setting("project_root", str(root))
+    app.state.save()
+    project = app.project_controller.create_project("M 42")
+    assert projects_page.row_count() == 1
+    assert projects_page.is_current_row(0)
+    assert observe_page.observe_widget.project is project
+    assert app.observe_controller.project is project
+    assert app.viewer_controller.project is project
+    assert app.lightcurve_controller.project is project
+
+
+class _StubObserveController:
+    """Minimal duck-typed ObserveController for the start-button test."""
+
+    def __init__(self, queue_controller, status):
+        from types import SimpleNamespace
+
+        from seestar_controller.observing import ExecutorState, ObserveViewState
+
+        self._queue_controller = queue_controller
+        self.connection = SimpleNamespace(status=status)
+        self.project = None
+        self._snapshot = ObserveViewState(
+            executor_state=ExecutorState.IDLE,
+            queue_index=None,
+            entry=None,
+            frames_stacked=0,
+            elapsed_s=0.0,
+            error=None,
+            session=None,
+            queue_entries=queue_controller.entries,
+            preview_frame=None,
+            preview_running=False,
+            night_active=False,
+        )
+        self.listeners = []
+        self.started_with = None
+
+    @property
+    def queue_controller(self):
+        return self._queue_controller
+
+    @property
+    def snapshot(self):
+        return self._snapshot
+
+    def add_listener(self, listener):
+        self.listeners.append(listener)
+        return listener
+
+    def remove_listener(self, listener):
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def start_night(self, project=None, **kwargs):
+        self.started_with = project
+
+    def pause(self):
+        pass
+
+    def resume(self):
+        pass
+
+    def skip(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def park(self):
+        pass
+
+
+def test_observe_view_start_button_enables_when_a_project_opens(gtk, project_state):
+    from seestar_controller.observing import PlanQueueController
+    from seestar_controller.ui.connection import ConnectionStatus
+    from seestar_controller.ui.project_controller import ProjectController
+    from seestar_controller.ui.views import build_view
+
+    controller = ProjectController(project_state)
+    queue = PlanQueueController()
+    stub = _StubObserveController(queue, ConnectionStatus.CONNECTED)
+    view = build_view(
+        "observe",
+        queue_controller=queue,
+        observe_controller=stub,
+        project_controller=controller,
+    )
+    widget = view.observe_widget
+    # connected but no project open -> Start disabled
+    assert not widget.start_button.get_sensitive()
+    # opening a project through the project controller enables Start
+    project = controller.create_project("M 42")
+    assert widget.start_button.get_sensitive()
+    assert widget.project is project
+    assert view.project_controller is controller
+    # and Start passes the current project to start_night
+    widget.start_button.emit("clicked")
+    assert stub.started_with is project

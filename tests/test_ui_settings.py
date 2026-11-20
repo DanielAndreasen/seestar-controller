@@ -241,6 +241,7 @@ def test_update_valid_persists_and_reloads(settings_file, controller, root_dir, 
         "key_path": str(key_path),
         "project_root": str(root_dir),
         "photometry_comp_search_radius_deg": "1.5",
+        "last_project": "",
     }
     assert controller.values == new_values
     # persisted atomically to the settings file
@@ -261,6 +262,7 @@ def test_update_partial_keeps_other_fields(controller, root_dir):
         "key_path": "/tmp/k.pem",
         "project_root": str(root_dir),
         "photometry_comp_search_radius_deg": "1.5",
+        "last_project": "",
     }
 
 
@@ -397,6 +399,7 @@ def test_defaults_when_no_config_file(settings_file, controller):
         "key_path",
         "project_root",
         "photometry_comp_search_radius_deg",
+        "last_project",
     }
 
 

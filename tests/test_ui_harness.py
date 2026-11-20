@@ -32,7 +32,14 @@ import seestar_controller.ui as ui
 UI_PACKAGE_DIR = Path(ui.__file__).resolve().parent
 
 #: The pure ui modules — no ``gi`` import allowed (subprocess-enforced).
-PURE_UI_MODULES = ("__init__", "state", "settings", "connection", "notifications")
+PURE_UI_MODULES = (
+    "__init__",
+    "state",
+    "settings",
+    "connection",
+    "notifications",
+    "project_controller",
+)
 
 #: The widget ui modules — ``gi`` at module top, lazy-exported via PEP 562.
 WIDGET_UI_MODULES = (

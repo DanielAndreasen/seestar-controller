@@ -23,9 +23,15 @@ the app's shared
 :class:`~seestar_controller.analysis.lightcurve.LightcurveController` and
 :class:`~seestar_controller.analysis.fold.PeriodController` (both following
 the shared viewer controller's project; passed in via
-:func:`build_view`). The **Projects** view is still a
-:class:`_PlaceholderView` (a centered label); later tickets replace the
-placeholder content. The
+:func:`build_view`). The **Projects** view (projects-view ticket 01) carries
+the real content: the list of projects under the configured project root
+(name / path / created-at, current project badged), a **New project** area
+(name entry + Create button + inline errors), and an **Open** button per row
+— driven by the app's shared
+:class:`~seestar_controller.ui.project_controller.ProjectController` (passed
+in via :func:`build_view`; a fresh one over a default
+:class:`~seestar_controller.ui.state.AppState` is created when omitted, so
+the view also constructs standalone). The
 **Observe** view (observing tickets 01 + 03) already carries the real
 content: the two-pane
 :class:`~seestar_controller.observing.observe_view.ObserveView` widget — the
@@ -70,6 +76,7 @@ apply maximize on laptop screens (see the class docstring).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import gi
@@ -77,7 +84,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import GLib, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from seestar_controller.analysis import (  # noqa: E402
     FOLDED_CSV_FILE,
@@ -95,6 +102,7 @@ from seestar_controller.analysis.period_view import (  # noqa: E402
     PeriodView as PeriodViewWidget,
 )
 from seestar_controller.store.csv_export import CSV_FILE as LIGHTCURVE_CSV_FILE  # noqa: E402
+from seestar_controller.store.errors import ProjectError  # noqa: E402
 from seestar_controller.enhance import EditorController, ViewerController  # noqa: E402
 from seestar_controller.enhance.enhance_view import (  # noqa: E402
     EnhanceEditor as EnhanceEditorWidget,
@@ -119,7 +127,9 @@ from seestar_controller.photometry.star_picker import (  # noqa: E402
     StarPickerView as StarPickerWidget,
 )
 
+
 from .connection import ConnectionController  # noqa: E402
+from .project_controller import ProjectController, ProjectEvent  # noqa: E402
 from .settings import SettingsController  # noqa: E402
 from .state import VIEWS, AppState, UnknownViewError, view_by_id  # noqa: E402
 
@@ -209,8 +219,13 @@ class ObserveView(_PlaceholderView):
     controllers (the app window passes them via :func:`build_view`); when
     omitted, the view creates its own, so it also constructs standalone.
     ``project`` is the store project the Start button passes to
-    ``start_night`` (the Projects view is a later ticket; it can also be set
-    later via :meth:`observe_widget.set_project`).
+    ``start_night`` (the app passes the project controller's current project;
+    it can also be set later via :meth:`observe_widget.set_project`).
+    ``project_controller`` (projects-view ticket 01) is the app's shared
+    :class:`~seestar_controller.ui.project_controller.ProjectController`;
+    when given, the view listens to it and pushes every current-project
+    change into the observe widget (so the Start button enables as soon as a
+    project is open and the scope is connected).
     """
 
     view_id = "observe"
@@ -221,6 +236,7 @@ class ObserveView(_PlaceholderView):
         queue_controller: PlanQueueController | None = None,
         observe_controller: ObserveController | None = None,
         project: Any = None,
+        project_controller: ProjectController | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -236,7 +252,16 @@ class ObserveView(_PlaceholderView):
             )
         )
         self._project = project
+        self._project_controller = project_controller
         super().__init__(**kwargs)
+        if self._project_controller is not None:
+            self._project_controller.add_listener(self._on_project_event)
+
+    def _on_project_event(self, event: ProjectEvent) -> None:
+        """Project-controller listener: the current project changed -> push
+        it into the observe widget (Start button enable + start_night)."""
+        self._project = event.current
+        self._observe_widget.set_project(event.current)
 
     def _build_content(self) -> None:
         self._observe_widget = ObserveViewWidget(
@@ -265,6 +290,12 @@ class ObserveView(_PlaceholderView):
     def observe_widget(self) -> ObserveViewWidget:
         """The two-pane observe widget (editor + controls | preview + progress)."""
         return self._observe_widget
+
+    @property
+    def project_controller(self) -> ProjectController | None:
+        """The shared project controller this view follows (projects-view
+        ticket 01), or ``None`` when constructed standalone."""
+        return self._project_controller
 
 
 class EnhanceView(_PlaceholderView):
@@ -641,10 +672,279 @@ class LightcurveView(_PlaceholderView):
 
 
 class ProjectsView(_PlaceholderView):
-    """Projects view placeholder (list/create/open come later)."""
+    """Projects view (projects-view ticket 01): list / create / open the
+    projects under the configured project root, wired as the app's current
+    project.
+
+    A thin observer over a pure
+    :class:`~seestar_controller.ui.project_controller.ProjectController`
+    (the app passes its shared instance via :func:`build_view`; a fresh one
+    over a default :class:`~seestar_controller.ui.state.AppState` is created
+    when omitted, so the view also constructs standalone):
+
+    - a **current-project banner** on top (name + path, or a hint that no
+      project is open) and a dim **project-root** line (pointing to Settings
+      when the root is not configured and the default is in use);
+    - a :class:`Gtk.ListBox` of the projects (name, path, created-at from the
+      :class:`~seestar_controller.store.ProjectSummary`), one row each with
+      an **Open** button; the current project's row carries a "current"
+      badge;
+    - a **New project** area: a name :class:`Adw.EntryRow` + a **Create
+      project** button (creates via the controller and opens the new project
+      — it becomes current) + an inline status label for errors (duplicate /
+      invalid name / unwritable root), the same pattern as
+      :class:`~seestar_controller.observing.queue_editor.QueueEditor`.
+
+    The view re-renders on every controller event (it registers as a
+    listener), so changes from anywhere show up.
+    """
 
     view_id = "projects"
     title = "Projects"
+
+    def __init__(
+        self, project_controller: ProjectController | None = None, **kwargs
+    ) -> None:
+        # set before super().__init__(): _build_content() runs inside it
+        self._project_controller = (
+            project_controller
+            if project_controller is not None
+            else ProjectController(AppState())
+        )
+        #: per-row Open buttons, rebuilt with the list
+        self._row_buttons: list[Gtk.Button] = []
+        #: per-row "current" badges, rebuilt with the list
+        self._row_badges: list[Gtk.Label] = []
+        super().__init__(**kwargs)
+
+    def _build_content(self) -> None:
+        # current-project banner + project-root line
+        self._current_label = Gtk.Label(
+            label="", wrap=True, halign=Gtk.Align.START, xalign=0.0
+        )
+        self._content.append(self._current_label)
+        self._root_label = Gtk.Label(
+            label="",
+            wrap=True,
+            halign=Gtk.Align.START,
+            xalign=0.0,
+            css_classes=["dim-label"],
+        )
+        self._content.append(self._root_label)
+
+        # the project list
+        self._list_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self._list_box.add_css_class("boxed-list")
+        scrolled = Gtk.ScrolledWindow(
+            child=self._list_box,
+            vexpand=True,
+            min_content_height=160,
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+        )
+        self._content.append(scrolled)
+
+        # new-project area: name entry + Create button + inline status
+        group = Adw.PreferencesGroup(title="New project")
+        self._name_entry = Adw.EntryRow(title="Project name (e.g. 'M 42')")
+        group.add(self._name_entry)
+        self._content.append(group)
+        buttons = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=8, halign=Gtk.Align.CENTER
+        )
+        self._create_button = Gtk.Button(
+            label="Create project",
+            css_classes=["suggested-action"],
+            tooltip_text="Create a new project under the project root and open it",
+        )
+        self._create_button.connect("clicked", self._on_create_clicked)
+        buttons.append(self._create_button)
+        self._content.append(buttons)
+        self._status_label = Gtk.Label(label="", wrap=True, halign=Gtk.Align.CENTER)
+        self._content.append(self._status_label)
+
+        self._project_controller.add_listener(self._on_project_event)
+        self._rebuild()
+
+    # -- public helpers (also used by the widget tests) ---------------------------
+
+    @property
+    def controller(self) -> ProjectController:
+        """The pure-layer project controller backing this view."""
+        return self._project_controller
+
+    @property
+    def list_box(self) -> Gtk.ListBox:
+        """The project list."""
+        return self._list_box
+
+    @property
+    def current_label(self) -> Gtk.Label:
+        """The current-project banner label."""
+        return self._current_label
+
+    @property
+    def root_label(self) -> Gtk.Label:
+        """The project-root line (dim label)."""
+        return self._root_label
+
+    @property
+    def name_entry(self) -> Adw.EntryRow:
+        """The new-project name entry."""
+        return self._name_entry
+
+    @property
+    def create_button(self) -> Gtk.Button:
+        """The Create project button."""
+        return self._create_button
+
+    @property
+    def status_label(self) -> Gtk.Label:
+        """The inline status label (errors in red, success in green)."""
+        return self._status_label
+
+    def row_count(self) -> int:
+        """The number of project rows currently rendered."""
+        return len(self._row_buttons)
+
+    def row_label(self, index: int) -> str:
+        """The main label text of the row at ``index`` (the project name)."""
+        row = self._list_box.get_row_at_index(index)
+        assert row is not None
+        box = row.get_child()
+        labels = box.get_first_child()  # the vertical label box
+        return labels.get_first_child().get_label()
+
+    def row_subtitle(self, index: int) -> str:
+        """The subtitle of the row at ``index`` (path + created-at)."""
+        row = self._list_box.get_row_at_index(index)
+        assert row is not None
+        box = row.get_child()
+        labels = box.get_first_child()
+        return labels.get_last_child().get_label()
+
+    def is_current_row(self, index: int) -> bool:
+        """Whether the row at ``index`` carries the "current" badge."""
+        return self._row_badges[index].get_visible()
+
+    def click_open(self, index: int) -> None:
+        """Click the Open button of the row at ``index``."""
+        self._row_buttons[index].emit("clicked")
+
+    # -- rendering ------------------------------------------------------------------
+
+    def _on_project_event(self, event: ProjectEvent) -> None:
+        """Controller listener: projects and/or current changed -> re-render."""
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        """Re-render the banner, root line, and project list from the
+        controller."""
+        while (row := self._list_box.get_first_child()) is not None:
+            self._list_box.remove(row)
+        self._row_buttons = []
+        self._row_badges = []
+        current = self._project_controller.current
+        for summary in self._project_controller.projects:
+            self._list_box.append(self._make_row(summary, current))
+        if current is not None:
+            self._current_label.set_label(
+                f"Current project: {current.name} ({current.path})"
+            )
+            self._current_label.remove_css_class("dim-label")
+        else:
+            self._current_label.set_label(
+                "No project open — create or open one below; "
+                "new data is saved into the current project."
+            )
+            self._current_label.add_css_class("dim-label")
+        root = self._project_controller.root
+        if self._project_controller.state.get_setting("project_root").strip():
+            self._root_label.set_label(f"Project root: {root}")
+        else:
+            self._root_label.set_label(
+                f"Project root not set — using the default {root} "
+                "(set a project root in Settings)"
+            )
+
+    def _make_row(self, summary, current: Any) -> Gtk.ListBoxRow:
+        box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=8,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=12,
+            margin_end=12,
+        )
+        labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+        name_label = Gtk.Label(
+            label=summary.name, xalign=0.0, valign=Gtk.Align.CENTER
+        )
+        subtitle_label = Gtk.Label(
+            label=f"{summary.path} · created {summary.created_at}",
+            xalign=0.0,
+            valign=Gtk.Align.CENTER,
+            css_classes=["dim-label"],
+            ellipsize=3,  # Pango.EllipsizeMode.END
+        )
+        labels.append(name_label)
+        labels.append(subtitle_label)
+        box.append(labels)
+        is_current = current is not None and Path(current.path) == summary.path
+        badge = Gtk.Label(
+            label="current",
+            valign=Gtk.Align.CENTER,
+            visible=is_current,
+            css_classes=["success"],
+        )
+        box.append(badge)
+        open_button = Gtk.Button(
+            label="Open",
+            valign=Gtk.Align.CENTER,
+            tooltip_text=f"Open {summary.name} as the current project",
+        )
+        open_button.connect("clicked", lambda _btn, path=summary.path: self._on_open_clicked(path))
+        box.append(open_button)
+        self._row_buttons.append(open_button)
+        self._row_badges.append(badge)
+        return Gtk.ListBoxRow(child=box, activatable=False)
+
+    # -- actions ----------------------------------------------------------------------
+
+    def _set_status(self, text: str, *, error: bool) -> None:
+        self._status_label.set_label(text)
+        for css_class in ("error", "success", "dim-label"):
+            self._status_label.remove_css_class(css_class)
+        if error:
+            self._status_label.add_css_class("error")
+        elif text:
+            self._status_label.add_css_class("success")
+        else:
+            self._status_label.add_css_class("dim-label")
+
+    def _on_create_clicked(self, *_args) -> None:
+        """Create button: create + open through the controller; inline error
+        on failure (duplicate/invalid name, unwritable root)."""
+        name = self._name_entry.get_text().strip()
+        try:
+            project = self._project_controller.create_project(name)
+        except (ProjectError, ValueError, OSError) as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._name_entry.set_text("")
+        self._set_status(
+            f"created and opened {project.name} ({project.path})", error=False
+        )
+
+    def _on_open_clicked(self, path) -> None:
+        """Open button: open the project at ``path`` through the controller;
+        inline error on failure (missing/invalid project)."""
+        try:
+            project = self._project_controller.open_project(path)
+        except (ProjectError, ValueError, OSError) as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._set_status(f"opened {project.name} ({project.path})", error=False)
 
 
 #: view id -> widget class (one entry per pure-layer view).
@@ -672,26 +972,31 @@ def build_view(
     run_controller: RunController | None = None,
     lightcurve_controller: LightcurveController | None = None,
     period_controller: PeriodController | None = None,
+    project_controller: ProjectController | None = None,
     project: Any = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
 
     Raises :class:`~seestar_controller.ui.state.UnknownViewError` for an id
     not in the pure-layer view list. ``queue_controller`` /
-    ``observe_controller`` / ``project`` are forwarded to the Observe view
-    (observing tickets 01 + 03), ``viewer_controller`` /
+    ``observe_controller`` / ``project_controller`` / ``project`` are
+    forwarded to the Observe view (observing tickets 01 + 03, projects-view
+    ticket 01), ``viewer_controller`` /
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
     ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
-    04), and ``lightcurve_controller`` / ``period_controller`` to the
-    Lightcurve view (period-analysis tickets 01 + 03 + 04) — the app window
-    passes its shared controllers; the other views ignore them.
+    04), ``lightcurve_controller`` / ``period_controller`` to the
+    Lightcurve view (period-analysis tickets 01 + 03 + 04), and
+    ``project_controller`` to the Projects view (projects-view ticket 01) —
+    the app window passes its shared controllers; the other views ignore
+    them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
         return ObserveView(
             queue_controller=queue_controller,
             observe_controller=observe_controller,
+            project_controller=project_controller,
             project=project,
         )
     if view_id == EnhanceView.view_id:
@@ -711,4 +1016,6 @@ def build_view(
             lightcurve_controller=lightcurve_controller,
             period_controller=period_controller,
         )
+    if view_id == ProjectsView.view_id:
+        return ProjectsView(project_controller=project_controller)
     return VIEW_CLASSES[view_id]()

@@ -12,12 +12,20 @@ docs/wiki/assumptions.md):
   :mod:`.connection`: the connection state machine
   (:class:`~.connection.ConnectionController`, :class:`~.connection.ConnectionStatus`,
   :class:`~.connection.ConnectionSnapshot`, :class:`~.connection.ConnectionStateError`,
-  :func:`~.connection.describe_scope_state`), and :mod:`.notifications`:
+  :func:`~.connection.describe_scope_state`), :mod:`.notifications`:
   the notification bus + controller (:class:`~.notifications.NotificationBus`,
   :class:`~.notifications.Notification`, :class:`~.notifications.NotificationSeverity`,
-  :class:`~.notifications.NotificationController`, ticket 04). All import
-  **nothing** from ``gi`` — stdlib only, fully unit-testable headless; a
-  subprocess test enforces the boundary.
+  :class:`~.notifications.NotificationController`, ticket 04), and
+  :mod:`.project_controller`: the project controller
+  (:class:`~.project_controller.ProjectController`,
+  :class:`~.project_controller.ProjectEvent`,
+  :func:`~.project_controller.ProjectListener`, projects-view ticket 01 —
+  wraps the store's create/open/list against the settings project root,
+  holds the current project, persists ``last_project``, restores it on
+  startup). All import **nothing** from ``gi`` — stdlib only (the project
+  controller imports only the pure :mod:`seestar_controller.store` and
+  :mod:`.state`), fully unit-testable headless; a subprocess test enforces
+  the boundary.
 - **Widget layer** — :mod:`.views` (the five placeholder view widgets),
   :mod:`.settings_dialog` (the settings dialog), :mod:`.connection_panel`
   (the header-bar connection panel, ticket 03), :mod:`.toast` +
@@ -50,6 +58,11 @@ from .connection import (
     default_device_factory,
     describe_scope_state,
 )
+from .project_controller import (
+    ProjectController,
+    ProjectEvent,
+    ProjectListener,
+)
 from .notifications import (
     CONNECTION_SOURCE,
     DEFAULT_LOG_CAPACITY,
@@ -74,6 +87,7 @@ from .settings import (
 )
 from .state import (
     DEFAULT_COMP_SEARCH_RADIUS_DEG,
+    EDITABLE_SETTINGS_KEYS,
     DEFAULT_CONFIG_DIR,
     DEFAULT_DARK_THEME,
     DEFAULT_KEY_PATH,
@@ -101,6 +115,7 @@ from .state import (
     load_state,
     resolve_settings_path,
     validate_comp_search_radius,
+    validate_last_project,
     validate_path_setting,
     validate_scope_ip,
     view_by_id,
@@ -152,6 +167,7 @@ __all__ = [
     "MAX_WINDOW_SIZE",
     "MAX_WINDOW_COORD",
     "SETTINGS_KEYS",
+    "EDITABLE_SETTINGS_KEYS",
     "DEFAULT_SETTINGS",
     "DEFAULT_COMP_SEARCH_RADIUS_DEG",
     "MAX_COMP_SEARCH_RADIUS_DEG",
@@ -171,6 +187,10 @@ __all__ = [
     "validate_scope_ip",
     "validate_path_setting",
     "validate_comp_search_radius",
+    "validate_last_project",
+    "ProjectController",
+    "ProjectEvent",
+    "ProjectListener",
     "SettingsController",
     "SettingsFieldError",
     "SettingsListener",

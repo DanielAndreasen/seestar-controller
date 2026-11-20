@@ -23,6 +23,10 @@ dialog-level semantics on top of an :class:`~.state.AppState`):
     file is only *flagged* by :func:`flag_settings` and does NOT block saving;
   - ``project_root`` — empty (unset) or a plausible path that IS an existing
     directory (the app writes projects under it, so a typo must not save);
+  - ``last_project`` — empty (unset) or an existing project directory (a
+    directory containing ``project.json``); app-managed (written by the
+    project controller, see :mod:`.project_controller`), not shown in the
+    dialog;
   - ``photometry_comp_search_radius_deg`` — a number of degrees in
     ``(0, 180]`` (the catalog-assist comp-search cone radius, photometry
     ticket 02; reuses :func:`.state.validate_comp_search_radius`);
@@ -54,6 +58,7 @@ from .state import (
     AppState,
     SettingsValidationError,
     validate_comp_search_radius,
+    validate_last_project,
     validate_scope_ip,
 )
 
@@ -111,6 +116,8 @@ def validate_settings(values: Mapping[str, Any]) -> dict[str, str]:
       missing file is only flagged by :func:`flag_settings`);
     - ``project_root`` — empty (unset) or a plausible path that IS an
       existing directory;
+    - ``last_project`` — empty (unset) or an existing project directory
+      (reuses :func:`.state.validate_last_project`);
     - ``photometry_comp_search_radius_deg`` — a number of degrees in
       ``(0, 180]`` (photometry ticket 02);
     - any other key — an "unknown setting" error.
@@ -123,6 +130,11 @@ def validate_settings(values: Mapping[str, Any]) -> dict[str, str]:
         if key == "scope_ip":
             try:
                 validate_scope_ip(value)
+            except SettingsValidationError as exc:
+                errors[key] = str(exc)
+        elif key == "last_project":
+            try:
+                validate_last_project(value)
             except SettingsValidationError as exc:
                 errors[key] = str(exc)
         elif key == "photometry_comp_search_radius_deg":
@@ -248,6 +260,7 @@ class SettingsController:
         scope_ip: Any = None,
         key_path: Any = None,
         project_root: Any = None,
+        last_project: Any = None,
         photometry_comp_search_radius_deg: Any = None,
     ) -> dict[str, str]:
         """Validate, apply, persist, and notify; returns the new settings dict.
@@ -256,22 +269,36 @@ class SettingsController:
         ``""`` = unset a path). Raises :class:`SettingsFieldError` on any hard
         validation error — in that case nothing is applied, nothing is
         persisted, and no listener is notified.
+
+        ``last_project`` is special (documented choice): it is app-managed
+        (the project controller writes it when a project is opened), so when
+        it is NOT overridden here it is excluded from the candidate
+        validation and kept as stored — a value that went stale since load
+        (e.g. the project directory was deleted) must not block saving
+        unrelated settings. :meth:`.state.AppState.load` already drops
+        invalid values at load time.
         """
         candidate = self._state.settings
         overrides = {
             "scope_ip": scope_ip,
             "key_path": key_path,
             "project_root": project_root,
+            "last_project": last_project,
             "photometry_comp_search_radius_deg": photometry_comp_search_radius_deg,
         }
         for key, value in overrides.items():
             if value is not None:
                 candidate[key] = value
-        errors = validate_settings(candidate)
+        validation_candidate = dict(candidate)
+        if last_project is None:
+            validation_candidate.pop("last_project", None)
+        errors = validate_settings(validation_candidate)
         if errors:
             field = next((key for key in SETTINGS_KEYS if key in errors), next(iter(errors)))
             raise SettingsFieldError(field, errors[field], errors)
         for key in SETTINGS_KEYS:
+            if key == "last_project" and last_project is None:
+                continue  # keep the stored value as-is (validated at load/set time)
             self._state.set_setting(key, candidate[key])
         self._state.save()
         new_values = self._state.settings

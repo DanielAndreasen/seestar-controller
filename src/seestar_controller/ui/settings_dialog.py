@@ -17,9 +17,12 @@ Layout: an :class:`Adw.Dialog` titled "Settings" with an
 :class:`Adw.ToolbarView` — an :class:`Adw.HeaderBar` carrying **Cancel**
 (left) and **Save** (right, ``suggested-action``) — and an
 :class:`Adw.PreferencesPage` content with one :class:`Adw.PreferencesGroup`
-holding one :class:`Adw.EntryRow` per settings key (``scope_ip``,
+holding one :class:`Adw.EntryRow` per EDITABLE settings key (``scope_ip``,
 ``key_path``, ``project_root``, ``photometry_comp_search_radius_deg``), each
-with a validation label as its suffix.
+with a validation label as its suffix. The app-managed ``last_project``
+setting (projects-view ticket 01 — written by the project controller when a
+project is opened) is persisted with the rest of the settings but not shown
+as an editable row.
 
 Validation UX (documented choices):
 
@@ -50,7 +53,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk  # noqa: E402
 
 from .settings import SettingsController, SettingsFieldError  # noqa: E402
-from .state import SETTINGS_KEYS  # noqa: E402
+from .state import EDITABLE_SETTINGS_KEYS  # noqa: E402
 
 #: field key -> entry row title.
 FIELD_TITLES: dict[str, str] = {
@@ -98,7 +101,7 @@ class SettingsDialog(Adw.Dialog):
         )
         self._rows: dict[str, Adw.EntryRow] = {}
         self._error_labels: dict[str, Gtk.Label] = {}
-        for key in SETTINGS_KEYS:
+        for key in EDITABLE_SETTINGS_KEYS:
             row = Adw.EntryRow(title=FIELD_TITLES[key])
             row.set_text(controller.values.get(key, ""))
             error_label = Gtk.Label(
@@ -143,7 +146,7 @@ class SettingsDialog(Adw.Dialog):
 
     def values(self) -> dict[str, str]:
         """The current entry texts as a settings dict."""
-        return {key: self._rows[key].get_text() for key in SETTINGS_KEYS}
+        return {key: self._rows[key].get_text() for key in EDITABLE_SETTINGS_KEYS}
 
     def set_field(self, key: str, value: str) -> None:
         """Set one entry's text (triggers live re-validation via ``changed``)."""
@@ -158,7 +161,7 @@ class SettingsDialog(Adw.Dialog):
         values = self.values()
         errors = self._controller.validate(values)
         flags = self._controller.flags(values)
-        for key in SETTINGS_KEYS:
+        for key in EDITABLE_SETTINGS_KEYS:
             label = self._error_labels[key]
             if key in errors:
                 label.set_label(errors[key])
@@ -210,7 +213,7 @@ class SettingsDialog(Adw.Dialog):
             return
         self._updating = True
         try:
-            for key in SETTINGS_KEYS:
+            for key in EDITABLE_SETTINGS_KEYS:
                 text = values.get(key, "")
                 if self._rows[key].get_text() != text:
                     self._rows[key].set_text(text)  # fires changed -> refresh

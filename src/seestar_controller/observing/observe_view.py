@@ -279,6 +279,12 @@ class ObserveView(Gtk.Box):
         return self._start_button
 
     @property
+    def project(self) -> Any:
+        """The project the Start button passes to ``start_night`` (set via
+        the constructor or :meth:`set_project`)."""
+        return self._project
+
+    @property
     def pause_button(self) -> Gtk.Button:
         return self._pause_button
 

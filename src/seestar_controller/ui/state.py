@@ -17,8 +17,9 @@ What lives here:
 - window geometry (width/height/x/y) with validation;
 - the dark-theme flag (default :data:`DEFAULT_DARK_THEME` = ``True`` —
   night-time use must not blind the user);
-- the settings dict (``scope_ip``, ``key_path``, ``project_root``) with
-  defaults + validation;
+- the settings dict (``scope_ip``, ``key_path``, ``project_root``,
+  ``last_project``, ``photometry_comp_search_radius_deg``) with defaults +
+  validation;
 - persistence: one JSON file at ``~/.config/seestar-controller/settings.json``
   (the app config dir — the same dir as the PEM key and the protocol log;
   re-declared here because this package must not import
@@ -38,6 +39,7 @@ On-disk shape (``schema_version`` :data:`SETTINGS_SCHEMA_VERSION`)::
         "scope_ip": "",                                  # unset placeholder
         "key_path": "/home/.../.config/seestar-controller/key.pem",
         "project_root": "/home/.../SeestarProjects",
+        "last_project": "",                              # unset placeholder (projects-view 01)
         "photometry_comp_search_radius_deg": "1.5"        # catalog-assist cone radius
       }
     }
@@ -88,6 +90,11 @@ DEFAULT_KEY_PATH = DEFAULT_CONFIG_DIR / "key.pem"
 #: as ``seestar_controller.store.project.DEFAULT_PROJECT_ROOT`` (re-declared).
 DEFAULT_PROJECT_ROOT = Path.home() / "SeestarProjects"
 
+#: File name of the project settings inside a project directory — the same
+#: value as ``seestar_controller.store.project.PROJECT_FILE`` (re-declared,
+#: same pattern as :data:`DEFAULT_PROJECT_ROOT` above).
+PROJECT_FILE_NAME = "project.json"
+
 @dataclass(frozen=True)
 class View:
     """One navigable view: a stable ``id`` (used as the stack page name and
@@ -133,6 +140,18 @@ SETTINGS_KEYS: tuple[str, ...] = (
     "scope_ip",
     "key_path",
     "project_root",
+    "last_project",
+    "photometry_comp_search_radius_deg",
+)
+
+#: The settings keys the settings DIALOG edits (user-facing entry rows).
+#: ``last_project`` is app-managed (written by the project controller when a
+#: project is opened, see :mod:`.project_controller`) — it is persisted with
+#: the rest of the settings but not shown as an editable dialog row.
+EDITABLE_SETTINGS_KEYS: tuple[str, ...] = (
+    "scope_ip",
+    "key_path",
+    "project_root",
     "photometry_comp_search_radius_deg",
 )
 
@@ -150,6 +169,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "scope_ip": "",
     "key_path": str(DEFAULT_KEY_PATH),
     "project_root": str(DEFAULT_PROJECT_ROOT),
+    "last_project": "",
     "photometry_comp_search_radius_deg": f"{DEFAULT_COMP_SEARCH_RADIUS_DEG:g}",
 }
 
@@ -295,6 +315,30 @@ def validate_path_setting(value: Any, name: str) -> str:
         raise SettingsValidationError(f"{name} must be a string, got {value!r}")
     if not value.strip():
         return ""  # empty = unset
+    return value
+
+
+def validate_last_project(value: Any) -> str:
+    """Validate the ``last_project`` setting (projects-view ticket 01): empty
+    (unset) or a path to an **existing project directory** — a directory
+    containing a ``project.json`` (see
+    :data:`PROJECT_FILE_NAME`). Anything else raises
+    :class:`SettingsValidationError`, so :meth:`AppState.load` drops a stale
+    value (e.g. the project directory was deleted since the last save) and
+    falls back to the default ``""``.
+
+    Public because the settings-dialog layer (:mod:`.settings`) reuses it.
+    """
+    if not isinstance(value, str) or isinstance(value, bool):
+        raise SettingsValidationError(f"last_project must be a string, got {value!r}")
+    if not value.strip():
+        return ""  # empty = unset
+    path = Path(value)
+    if not path.is_dir() or not (path / PROJECT_FILE_NAME).is_file():
+        raise SettingsValidationError(
+            f"last_project {value!r} is not an existing project directory "
+            f"(no {PROJECT_FILE_NAME})"
+        )
     return value
 
 
@@ -489,7 +533,8 @@ class AppState:
     @property
     def settings(self) -> dict[str, str]:
         """A copy of the settings dict (``scope_ip``, ``key_path``,
-        ``project_root``, ``photometry_comp_search_radius_deg``)."""
+        ``project_root``, ``last_project``,
+        ``photometry_comp_search_radius_deg``)."""
         return dict(self._settings)
 
     def get_setting(self, key: str) -> str:
@@ -507,6 +552,8 @@ class AppState:
         - ``scope_ip`` — empty string (unset) or an IPv4 address / hostname;
         - ``key_path`` / ``project_root`` — a path string; empty (unset)
           allowed and normalized to ``""``;
+        - ``last_project`` — empty (unset) or an existing project directory
+          (a directory containing ``project.json``);
         - ``photometry_comp_search_radius_deg`` — a number of degrees in
           ``(0, MAX_COMP_SEARCH_RADIUS_DEG]`` (string or number), normalized
           to its ``%g`` string form.
@@ -520,6 +567,8 @@ class AppState:
             )
         if key == "scope_ip":
             value = validate_scope_ip(value)
+        elif key == "last_project":
+            value = validate_last_project(value)
         elif key == "photometry_comp_search_radius_deg":
             value = validate_comp_search_radius(value)
         else:

@@ -129,11 +129,13 @@ def test_defaults(state):
     assert state.get_setting("key_path") == str(DEFAULT_KEY_PATH)
     assert state.get_setting("project_root") == str(DEFAULT_PROJECT_ROOT)
     assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"
+    assert state.get_setting("last_project") == ""
     assert set(state.settings) == set(SETTINGS_KEYS) == {
         "scope_ip",
         "key_path",
         "project_root",
         "photometry_comp_search_radius_deg",
+        "last_project",
     }
 
 

@@ -152,6 +152,15 @@ passes it to the Lightcurve view, whose
 periodogram (clickable top-N peaks), the manual period entry, and the
 phase-folded lightcurve; every selection is persisted into the project's
 ``project.json`` by the controller.
+
+Projects (projects-view ticket 01): the application owns a shared
+:class:`~seestar_controller.ui.project_controller.ProjectController` over the
+same :class:`~seestar_controller.ui.state.AppState` (project root from the
+settings, ``last_project`` persisted and restored on startup). The window
+passes it to the Projects view (list/create/open) and to the Observe view,
+and attaches it to the observe / viewer / picker / run / lightcurve /
+period controllers, so every current-project change is pushed to all of
+them via their ``set_project``.
 """
 
 from __future__ import annotations
@@ -181,6 +190,7 @@ from .connection import ConnectionController  # noqa: E402
 from .connection_panel import ConnectionPanel  # noqa: E402
 from .notification_log import NotificationLogDialog  # noqa: E402
 from .notifications import NotificationBus, NotificationController  # noqa: E402
+from .project_controller import ProjectController  # noqa: E402
 from .settings import SettingsController, comp_search_radius_deg  # noqa: E402
 from .settings_dialog import SettingsDialog  # noqa: E402
 from .state import (  # noqa: E402
@@ -292,6 +302,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         run_controller: RunController | None = None,
         lightcurve_controller: LightcurveController | None = None,
         period_controller: PeriodController | None = None,
+        project_controller: ProjectController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -421,6 +432,20 @@ class SeestarWindow(Adw.ApplicationWindow):
             if period_controller is not None
             else _shared_from_app(app, "period_controller", lambda: PeriodController(self._lightcurve_controller, invoke_on_main=_invoke_on_main))
         )
+        # Projects-view ticket 01: the shared project controller. When the app
+        # owns one it is used (the app already attached its controllers to it);
+        # otherwise (explicit argument, or a standalone window without an app
+        # controller) a fresh one is created/attached here, so a
+        # current-project change (Projects view create/open) is pushed to all
+        # of the window's controllers via their set_project().
+        if project_controller is not None:
+            self._project_controller = project_controller
+            self._attach_project_followers()
+        elif getattr(app, "project_controller", None) is not None:
+            self._project_controller = app.project_controller
+        else:
+            self._project_controller = ProjectController(state)
+            self._attach_project_followers()
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -471,6 +496,8 @@ class SeestarWindow(Adw.ApplicationWindow):
                     run_controller=self._run_controller,
                     lightcurve_controller=self._lightcurve_controller,
                     period_controller=self._period_controller,
+                    project_controller=self._project_controller,
+                    project=self._project_controller.current,
                 ),
                 view.id,
                 view.title,
@@ -644,6 +671,13 @@ class SeestarWindow(Adw.ApplicationWindow):
         lightcurve controller)."""
         return self._period_controller
 
+    @property
+    def project_controller(self) -> ProjectController:
+        """The shared project controller (projects-view ticket 01 — the
+        Projects view lists/creates/opens through it; it is attached to the
+        observe/viewer/picker/run/lightcurve/period controllers)."""
+        return self._project_controller
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -655,6 +689,18 @@ class SeestarWindow(Adw.ApplicationWindow):
         sidebar = row.get_parent()
         if sidebar is not None:
             sidebar.select_row(row)
+
+    def _attach_project_followers(self) -> None:
+        """Push the current project to every window controller with a
+        ``set_project()`` (projects-view ticket 01), now and on every change."""
+        self._project_controller.attach_controllers(
+            observe=self._observe_controller,
+            viewer=self._viewer_controller,
+            picker=self._picker_controller,
+            run=self._run_controller,
+            lightcurve=self._lightcurve_controller,
+            period=self._period_controller,
+        )
 
     def _on_row_selected(self, sidebar: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
@@ -744,8 +790,9 @@ class SeestarApplication(Adw.Application):
         )
         # Image-enhance ticket 01: the shared viewer controller over the
         # current project's stacks; the window passes it to the Enhance
-        # view. Starts with no project selected (the Projects view is a
-        # later ticket) — set_project() is called once a project is opened.
+        # view. Starts with no project selected — the shared project
+        # controller (projects-view ticket 01) calls set_project() once a
+        # project is opened (see SeestarWindow).
         self.viewer_controller = ViewerController()
         # Image-enhance ticket 03: the shared editor controller over the
         # viewer controller (current pipeline + undo/redo + debounced
@@ -793,6 +840,22 @@ class SeestarApplication(Adw.Application):
         # GLib main loop like the other shared controllers'.
         self.period_controller = PeriodController(
             self.lightcurve_controller, invoke_on_main=_invoke_on_main
+        )
+        # Projects-view ticket 01: the shared project controller over the same
+        # state (project root from settings, last_project persisted). restore()
+        # re-opens the last project when it still exists and clears a stale
+        # last_project otherwise; attach_controllers() then pushes the current
+        # project (restored or not) to every shared controller with a
+        # set_project(), and keeps pushing it on every later change.
+        self.project_controller = ProjectController(self._state)
+        self.project_controller.restore()
+        self.project_controller.attach_controllers(
+            observe=self.observe_controller,
+            viewer=self.viewer_controller,
+            picker=self.picker_controller,
+            run=self.run_controller,
+            lightcurve=self.lightcurve_controller,
+            period=self.period_controller,
         )
         self.settings_controller.add_listener(self._on_settings_changed)
 
