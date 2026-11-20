@@ -4,7 +4,7 @@
 
 **Blocked by:** ui-shell 01, project-store 05
 
-**Status:** implemented in 79013706b4b1793dd804547250163638c8ed108e
+**Status:** implemented in c0e0dcc
 
 - [x] Lightcurve renders mag vs JD from project-store
 - [x] Sessions visually distinguished (color per session)
