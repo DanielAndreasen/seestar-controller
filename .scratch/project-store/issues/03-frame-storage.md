@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** implemented in 6fe5deb
+**Status:** implemented in 736ce41
 
 - [x] `store_frame(project, session_id, kind, fits_bytes, meta)` writes file + db row atomically
 - [x] JD extracted from FITS header DATE-OBS, fallback to file mtime
