@@ -10,13 +10,17 @@ dependency — it needs the system GTK headers to build)::
 
     sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
 
-The Lightcurve view (period-analysis ticket 01) carries the
+The Lightcurve view (period-analysis tickets 01 + 03) carries the
 :class:`~seestar_controller.analysis.lightcurve_view.LightcurveView` widget —
 the mag-vs-JD plot of the current project's lightcurve (one color per
 session + legend, error bars, excluded points marked, inverted mag axis,
-zoom/pan) — driven by the app's shared
-:class:`~seestar_controller.analysis.lightcurve.LightcurveController`
-(following the shared viewer controller's project; passed in via
+zoom/pan) — plus the
+:class:`~seestar_controller.analysis.period_view.PeriodView` widget (ticket
+03: periodogram plot with clickable peaks, manual period entry, phase-folded
+lightcurve) — driven by the app's shared
+:class:`~seestar_controller.analysis.lightcurve.LightcurveController` and
+:class:`~seestar_controller.analysis.fold.PeriodController` (both following
+the shared viewer controller's project; passed in via
 :func:`build_view`). The **Projects** view is still a
 :class:`_PlaceholderView` (a centered label); later tickets replace the
 placeholder content. The
@@ -67,9 +71,12 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Gtk  # noqa: E402
 
-from seestar_controller.analysis import LightcurveController  # noqa: E402
+from seestar_controller.analysis import LightcurveController, PeriodController  # noqa: E402
 from seestar_controller.analysis.lightcurve_view import (  # noqa: E402
     LightcurveView as LightcurveViewWidget,
+)
+from seestar_controller.analysis.period_view import (  # noqa: E402
+    PeriodView as PeriodViewWidget,
 )
 from seestar_controller.enhance import EditorController, ViewerController  # noqa: E402
 from seestar_controller.enhance.enhance_view import (  # noqa: E402
@@ -411,18 +418,24 @@ class PhotometryView(_PlaceholderView):
 
 
 class LightcurveView(_PlaceholderView):
-    """Lightcurve view (period-analysis ticket 01): wraps the
+    """Lightcurve view (period-analysis tickets 01 + 03): wraps the
     :class:`~seestar_controller.analysis.lightcurve_view.LightcurveView`
     widget — the mag-vs-JD plot of the current project's lightcurve with one
     color per session + legend, error bars per point, excluded points marked,
     the inverted mag axis, and zoom (scroll) / pan (drag) / double-click
-    reset.
+    reset — and, below it, the
+    :class:`~seestar_controller.analysis.period_view.PeriodView` widget
+    (ticket 03): the periodogram plot with clickable top-N peaks, the manual
+    period entry, and the phase-folded lightcurve.
 
     ``lightcurve_controller`` is the app's shared
     :class:`~seestar_controller.analysis.lightcurve.LightcurveController`
     (following the shared viewer controller's project — the currently open
-    project); the app window passes it via :func:`build_view`. When omitted,
-    the view creates its own, so it also constructs standalone.
+    project) and ``period_controller`` the app's shared
+    :class:`~seestar_controller.analysis.fold.PeriodController` bound to that
+    same lightcurve controller (so both plots follow the open project); the
+    app window passes both via :func:`build_view`. When omitted, the view
+    creates its own, so it also constructs standalone.
     """
 
     view_id = "lightcurve"
@@ -431,6 +444,7 @@ class LightcurveView(_PlaceholderView):
     def __init__(
         self,
         lightcurve_controller: LightcurveController | None = None,
+        period_controller: PeriodController | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -439,7 +453,12 @@ class LightcurveView(_PlaceholderView):
             if lightcurve_controller is not None
             else LightcurveController()
         )
-        # the inner widget handles its own padding
+        self._period_controller = (
+            period_controller
+            if period_controller is not None
+            else PeriodController(self._lightcurve_controller)
+        )
+        # the inner widgets handle their own padding
         kwargs.setdefault("margin_top", 0)
         kwargs.setdefault("margin_bottom", 0)
         kwargs.setdefault("margin_start", 0)
@@ -450,6 +469,8 @@ class LightcurveView(_PlaceholderView):
     def _build_content(self) -> None:
         self._lightcurve_widget = LightcurveViewWidget(self._lightcurve_controller)
         self.append(self._lightcurve_widget)
+        self._period_widget = PeriodViewWidget(self._period_controller)
+        self.append(self._period_widget)
 
     @property
     def lightcurve_controller(self) -> LightcurveController:
@@ -457,9 +478,21 @@ class LightcurveView(_PlaceholderView):
         return self._lightcurve_controller
 
     @property
+    def period_controller(self) -> PeriodController:
+        """The shared pure-layer period controller (ticket 03) driving the
+        period-analysis panel of this view."""
+        return self._period_controller
+
+    @property
     def lightcurve_widget(self) -> LightcurveViewWidget:
         """The lightcurve plot widget (mag vs JD, zoom/pan)."""
         return self._lightcurve_widget
+
+    @property
+    def period_widget(self) -> PeriodViewWidget:
+        """The period-analysis widget (periodogram + manual entry + folded
+        plot, ticket 03)."""
+        return self._period_widget
 
 
 class ProjectsView(_PlaceholderView):
@@ -493,6 +526,7 @@ def build_view(
     suggest_controller: SuggestionController | None = None,
     run_controller: RunController | None = None,
     lightcurve_controller: LightcurveController | None = None,
+    period_controller: PeriodController | None = None,
     project: Any = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
@@ -504,9 +538,9 @@ def build_view(
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
     ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
-    04), and ``lightcurve_controller`` to the Lightcurve view (period-analysis
-    ticket 01) — the app window passes its shared controllers; the other
-    views ignore them.
+    04), and ``lightcurve_controller`` / ``period_controller`` to the
+    Lightcurve view (period-analysis tickets 01 + 03) — the app window
+    passes its shared controllers; the other views ignore them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
@@ -528,5 +562,8 @@ def build_view(
             run_controller=run_controller,
         )
     if view_id == LightcurveView.view_id:
-        return LightcurveView(lightcurve_controller=lightcurve_controller)
+        return LightcurveView(
+            lightcurve_controller=lightcurve_controller,
+            period_controller=period_controller,
+        )
     return VIEW_CLASSES[view_id]()

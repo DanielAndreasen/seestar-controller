@@ -1,8 +1,8 @@
-"""Widget-layer tests for period-analysis ticket 01 — the Lightcurve view —
-these SKIP in the headless sandbox (no ``gi`` module, no GTK system libs, no
-display; see docs/wiki/assumptions.md) and run on the desktop, where the
-system packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` are installed (or
-under ``xvfb-run -a uv run pytest``).
+"""Widget-layer tests for period-analysis tickets 01 + 03 — the Lightcurve
+view — these SKIP in the headless sandbox (no ``gi`` module, no GTK system
+libs, no display; see docs/wiki/assumptions.md) and run on the desktop, where
+the system packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` are installed
+(or under ``xvfb-run -a uv run pytest``).
 
 Guards, in order: ``pytest.importorskip("gi")`` (no PyGObject at all),
 ``gi.require_version`` for the Gtk 4.0 / Adw 1 typelibs, and a
@@ -22,9 +22,22 @@ one point per measurement with two distinct session colors (the legend
 mapping), the plot/placeholder stack switches correctly (empty project and
 no project show the placeholder label), and ``reset_zoom()`` restores the
 full data window after a zoom.
+
+Ticket 03 adds: the wiring of the shared
+:class:`~seestar_controller.analysis.fold.PeriodController` (bound to the
+shared lightcurve controller; the app owns it, the window passes it down,
+``build_view("lightcurve", period_controller=...)`` hands it to the page), and
+the :class:`~seestar_controller.analysis.period_view.PeriodView` behavior
+against a tmp project with a synthetic sinusoid of known period (P = 0.35 d)
+and against the two-session project — clicking a periodogram peak marker
+selects (and persists) that peak's period, the manual period entry applies
+(and persists) the entered days (an invalid entry surfaces as a red status,
+state unchanged), and the folded plot covers ALL sessions sorted by phase
+with one color per session.
 """
 
 import io
+import json
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -42,10 +55,12 @@ except ValueError as exc:  # typelibs missing
 
 from gi.repository import GLib, Gtk  # noqa: E402
 
-from seestar_controller.analysis import (  # noqa: E402  (LightcurveView is the lazy PEP 562 export)
+from seestar_controller.analysis import (  # noqa: E402  (the views are the lazy PEP 562 exports)
     SESSION_PALETTE,
     LightcurveController,
     LightcurveView,
+    PeriodController,
+    PeriodView,
     full_window,
     zoom_window_at,
 )
@@ -58,6 +73,9 @@ from seestar_controller.store import (  # noqa: E402
     start_session,
     store_frame,
 )
+
+# the synthetic sinusoid (known period) reused from the ticket-02 test module
+from test_analysis_periodogram import P_TRUE, _project_with_sinusoid  # noqa: E402
 
 T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
 JD0 = 2460000.5
@@ -252,3 +270,136 @@ def test_lightcurve_view_reset_zoom_restores_full_window(gtk, project, two_sessi
     view._window = zoom_window_at(view.window, geom, cx, cy, 2.0)
     view.reset_button.emit("clicked")
     assert view.window == full
+
+
+# --- ticket 03: wiring of the shared period controller ------------------------------------------------------
+
+
+def test_build_view_lightcurve_wires_period_controller(gtk):
+    from seestar_controller.ui.views import LightcurveView as LightcurvePage
+    from seestar_controller.ui.views import build_view
+
+    lc = LightcurveController()
+    pc = PeriodController(lc)
+    view = build_view("lightcurve", lightcurve_controller=lc, period_controller=pc)
+    assert isinstance(view, LightcurvePage)
+    assert view.lightcurve_controller is lc
+    assert view.period_controller is pc
+    assert view.period_widget.controller is pc
+    assert view.period_widget.period_controller is pc
+    # standalone: no period controller passed -> one bound to the view's own
+    # lightcurve controller
+    standalone = build_view("lightcurve")
+    assert standalone.period_controller is not pc
+    assert (
+        standalone.period_controller.lightcurve_controller
+        is standalone.lightcurve_controller
+    )
+    assert isinstance(standalone.period_widget, PeriodView)
+
+
+def test_app_owns_shared_period_controller_and_window_passes_it_down(gtk, tmp_path):
+    from seestar_controller.ui.app import SeestarApplication, SeestarWindow
+
+    app = SeestarApplication(settings_path=str(tmp_path / "settings.json"))
+    assert isinstance(app.period_controller, PeriodController)
+    # bound to the shared lightcurve controller (same project, same points)
+    assert app.period_controller.lightcurve_controller is app.lightcurve_controller
+    window = SeestarWindow(app, app.state)
+    assert window.period_controller is app.period_controller
+    page = window.view_stack.get_child_by_name("lightcurve")
+    assert page.period_controller is app.period_controller
+    assert page.period_widget.controller is app.period_controller
+
+
+# --- ticket 03: the PeriodView widget ------------------------------------------------------------------------
+
+
+def test_period_view_peak_click_selects_and_persists_the_period(gtk, project):
+    _project_with_sinusoid(project)
+    pc = PeriodController(project=project)
+    view = PeriodView(pc)
+    pump_main()
+    assert view.peaks() == ()
+    result = pc.compute_periodogram()
+    pump_main()
+    assert view.peaks() == result.peaks
+    assert len(result.peaks) > 0
+    # click at the top peak's marker position -> that peak is selected
+    positions = view.peak_screen_positions()
+    assert len(positions) == len(result.peaks)
+    x, y = positions[0]
+    view._on_peak_pressed(None, 1, x, y)
+    pump_main()
+    assert pc.period == result.peaks[0].period
+    assert pc.source == "peak"
+    assert abs(pc.period - P_TRUE) / P_TRUE < 0.01  # the true period recovered
+    # ...and persisted into project.json
+    persisted = json.loads(project.config_path.read_text(encoding="utf-8"))["period"]
+    assert persisted == pc.period
+    # the folded plot now covers all the points, sorted by phase
+    assert len(view.folded_points()) == len(pc.points)
+    phases = [fp.phase for fp in view.folded_points()]
+    assert phases == sorted(phases)
+    # a click far from every marker selects nothing
+    pc.clear()
+    pump_main()
+    view._on_peak_pressed(None, 1, 1.0, 1.0)  # the corner, outside the plot rect
+    assert pc.period is None
+    # a double-click does not select either
+    view._on_peak_pressed(None, 2, x, y)
+    assert pc.period is None
+
+
+def test_period_view_manual_entry_sets_and_persists_the_period(gtk, project, two_session_project):
+    pc = PeriodController(project=project)
+    view = PeriodView(pc)
+    pump_main()
+    view.period_spin.set_value(0.25)
+    view.set_period_button.emit("clicked")
+    pump_main()
+    assert pc.period == 0.25
+    assert pc.source == "manual"
+    persisted = json.loads(project.config_path.read_text(encoding="utf-8"))["period"]
+    assert persisted == 0.25
+    assert len(view.folded_points()) == 5  # all points folded
+    assert "0.25" in view.status_label.get_label()
+    # an invalid entry (allowed by loosening the adjustment) -> red status,
+    # the state unchanged
+    view.period_spin.get_adjustment().set_lower(-1.0)
+    view.period_spin.set_value(-1.0)
+    view.set_period_button.emit("clicked")
+    pump_main()
+    assert pc.period == 0.25  # unchanged
+    assert "invalid period" in view.status_label.get_label()
+
+
+def test_period_view_folded_plot_covers_all_sessions_with_colors(gtk, project, two_session_project):
+    session_a, session_b = two_session_project
+    pc = PeriodController(project=project)
+    view = PeriodView(pc)
+    pump_main()
+    pc.set_manual_period(0.1)
+    pump_main()
+    folded = view.folded_points()
+    assert len(folded) == 5
+    assert {fp.point.session_id for fp in folded} == {session_a, session_b}
+    phases = [fp.phase for fp in folded]
+    assert phases == sorted(phases)
+    assert all(0.0 <= p < 1.0 for p in phases)
+    # one color per session (the lightcurve view's palette), distinct
+    colors = view.session_colors()
+    assert set(colors) == {session_a, session_b}
+    assert colors[session_a] == SESSION_PALETTE[0]
+    assert colors[session_b] == SESSION_PALETTE[1]
+    # the folded window spans phase 0-1 (padded) on x
+    w = view.folded_window
+    assert w.jd_min == -0.02 and w.jd_max == 1.02
+    # the status reports the period + its origin
+    assert "0.1" in view.status_label.get_label()
+    assert "manual" in view.status_label.get_label()
+    # the periodogram plot is still empty (no periodogram computed) and the
+    # reset helpers return valid windows
+    assert view.periodogram_window.jd_max > view.periodogram_window.jd_min
+    assert view.reset_folded_zoom() == view.folded_window
+    assert view.reset_periodogram_zoom().jd_max > view.reset_periodogram_zoom().jd_min

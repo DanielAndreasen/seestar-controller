@@ -81,9 +81,9 @@ from seestar_controller.store import (
 ANALYSIS_PACKAGE_DIR = Path(analysis.__file__).resolve().parent
 
 #: The pure analysis modules — no ``gi`` import allowed (subprocess-enforced).
-PURE_ANALYSIS_MODULES = ("lightcurve", "periodogram")
+PURE_ANALYSIS_MODULES = ("lightcurve", "periodogram", "fold")
 #: The widget analysis modules — ``import gi`` at module top, lazy export.
-WIDGET_ANALYSIS_MODULES = ("lightcurve_view",)
+WIDGET_ANALYSIS_MODULES = ("lightcurve_view", "period_view")
 
 T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
 JD0 = 2460000.5
@@ -678,6 +678,7 @@ def test_pure_analysis_modules_import_no_gi_no_link_no_ui_no_photometry_and_widg
         "import seestar_controller.analysis;"
         "import seestar_controller.analysis.lightcurve;"
         "import seestar_controller.analysis.periodogram;"
+        "import seestar_controller.analysis.fold;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
@@ -685,6 +686,8 @@ def test_pure_analysis_modules_import_no_gi_no_link_no_ui_no_photometry_and_widg
         "assert 'seestar_controller.enhance' not in sys.modules, 'enhance imported eagerly';"
         "assert 'seestar_controller.analysis.lightcurve_view' not in sys.modules, "
         "'lightcurve_view imported eagerly';"
+        "assert 'seestar_controller.analysis.period_view' not in sys.modules, "
+        "'period_view imported eagerly';"
         "print('clean')"
     )
     result = subprocess.run(
@@ -717,7 +720,10 @@ def test_every_analysis_module_is_pure_or_widget_and_lazy_exported():
         assert gi_lines[0] < repo_line, (
             f"widget module {name}: 'import gi' must come before 'from gi.repository'"
         )
-    assert analysis._WIDGET_EXPORTS == {"LightcurveView": "lightcurve_view"}
+    assert analysis._WIDGET_EXPORTS == {
+        "LightcurveView": "lightcurve_view",
+        "PeriodView": "period_view",
+    }
     assert set(analysis._WIDGET_EXPORTS.values()) == set(WIDGET_ANALYSIS_MODULES)
 
 

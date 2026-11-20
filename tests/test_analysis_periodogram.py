@@ -558,6 +558,7 @@ def test_periodogram_module_imports_no_gi_no_link_no_ui_no_photometry_no_enhance
         "import sys;"
         "import seestar_controller.analysis;"
         "import seestar_controller.analysis.periodogram;"
+        "import seestar_controller.analysis.fold;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
@@ -565,6 +566,8 @@ def test_periodogram_module_imports_no_gi_no_link_no_ui_no_photometry_no_enhance
         "assert 'seestar_controller.enhance' not in sys.modules, 'enhance imported eagerly';"
         "assert 'seestar_controller.analysis.lightcurve_view' not in sys.modules, "
         "'lightcurve_view imported eagerly';"
+        "assert 'seestar_controller.analysis.period_view' not in sys.modules, "
+        "'period_view imported eagerly';"
         "print('clean')"
     )
     result = subprocess.run(
@@ -583,7 +586,9 @@ def test_periodogram_source_has_no_forbidden_imports_and_the_package_lists_it():
     assert not forbidden.search(source), "periodogram.py imports a forbidden module"
     assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE)
     modules = {path.stem for path in ANALYSIS_PACKAGE_DIR.glob("*.py")}
-    assert modules == {"__init__", "lightcurve", "periodogram", "lightcurve_view"}
+    assert modules == {
+        "__init__", "lightcurve", "periodogram", "fold", "lightcurve_view", "period_view",
+    }
     assert periodogram_module.PeriodogramError is PeriodogramError
 
 

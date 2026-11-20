@@ -4,10 +4,10 @@
 
 **Blocked by:** 01, 02, project-store 01
 
-**Status:** ready-for-agent
+**Status:** implemented in f7942424997b6504d0aa111f8c52c74566ac8771
 
-- [ ] Clicking a periodogram peak selects that period; manual entry also possible
-- [ ] Fold: phase = ((jd − jd0) / period) mod 1, jd0 default first observation
-- [ ] Folded plot covers all sessions, phase 0–1
-- [ ] Chosen period persisted in project.json
-- [ ] Tests: fold math on known jd/period; period save/load round-trip
+- [x] Clicking a periodogram peak selects that period; manual entry also possible
+- [x] Fold: phase = ((jd − jd0) / period) mod 1, jd0 default first observation
+- [x] Folded plot covers all sessions, phase 0–1
+- [x] Chosen period persisted in project.json
+- [x] Tests: fold math on known jd/period; period save/load round-trip

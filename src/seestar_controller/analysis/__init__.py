@@ -36,21 +36,40 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   the project's lightcurve), and :class:`~.periodogram.PeriodogramError` under
   :class:`~.lightcurve.AnalysisError`. Also imports **nothing** from ``gi``,
   ``link``, ``ui``, or ``photometry`` — subprocess-enforced.
+- **Pure layer** — :mod:`.fold` (period-analysis ticket 03, period selection
+  + phase fold): stdlib + :mod:`seestar_controller.store` + the sibling pure
+  modules only — :func:`~.fold.phase_of` / :func:`~.fold.fold_points` (the fold
+  math ``phase = ((jd - jd0) / period) mod 1`` with ``jd0`` defaulting to the
+  first observation, returning frozen :class:`~.fold.FoldedPoint`\\ s sorted
+  by phase), :func:`~.fold.folded_window` / :func:`~.fold.periodogram_window`
+  (the plot windows for the folded / periodogram plots, reusing the pure
+  :class:`~.lightcurve.PlotWindow` transforms with ``x = phase`` / ``x =
+  period``), and :class:`~.fold.PeriodController` (the app-level shared
+  controller bound to the shared lightcurve controller's project:
+  :meth:`~.fold.PeriodController.compute_periodogram` on demand,
+  :meth:`~.fold.PeriodController.select_peak` / :meth:`~.fold.PeriodController.set_manual_period`
+  — both PERSISTED into the project's ``project.json`` (``config['period']``)
+  and loaded back on :meth:`~.fold.PeriodController.set_project` — listeners
+  with frozen :class:`~.fold.PeriodSnapshot`\\ s marshalled via
+  ``invoke_on_main``). Also imports **nothing** from ``gi``, ``link``, ``ui``,
+  ``photometry``, or ``enhance`` — subprocess-enforced.
 - **Widget layer** — :mod:`.lightcurve_view` (:class:`~.lightcurve_view.LightcurveView`,
   the Lightcurve view's plot: a :class:`Gtk.DrawingArea` painting mag vs JD
   with one color per session + legend, error bars per point, excluded points
   marked red, the inverted mag axis, and zoom (scroll around the cursor) /
-  pan (drag) / double-click reset driven by the pure transform math). It
-  imports ``gi`` at module top and is re-exported here **lazily** (PEP 562
-  ``__getattr__``), so ``import seestar_controller.analysis`` never imports
-  ``gi``.
+  pan (drag) / double-click reset driven by the pure transform math), and
+  :mod:`.period_view` (:class:`~.period_view.PeriodView`, ticket 03: the
+  periodogram plot with clickable top-N peak markers, the manual period
+  entry, and the phase-folded lightcurve plot). Both import ``gi`` at module
+  top and are re-exported here **lazily** (PEP 562 ``__getattr__``), so
+  ``import seestar_controller.analysis`` never imports ``gi``.
 
 On the desktop, PyGObject is not a pip dependency — install the system
 packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` (see the README).
 
 Ticket 01 covers the lightcurve view; ticket 02 adds the Lomb-Scargle
-periodogram core; later tickets add period selection + phase fold, and CSV
-export / outlier management.
+periodogram core; ticket 03 adds period selection + phase fold; later
+tickets add CSV export / outlier management.
 """
 
 from .lightcurve import (
@@ -83,6 +102,23 @@ from .lightcurve import (
     session_color_index,
     zoom_window_at,
 )
+from .fold import (
+    PERIOD_CONFIG_KEY,
+    SOURCE_MANUAL,
+    SOURCE_PEAK,
+    SOURCES,
+    FoldedPoint,
+    FoldError,
+    PeriodController,
+    PeriodError,
+    PeriodListener,
+    PeriodSnapshot,
+    folded_window,
+    fold_points,
+    periodogram_window,
+    phase_of,
+    validate_period,
+)
 from .periodogram import (
     ALLOWED_NORMALIZATIONS,
     DEFAULT_MIN_CYCLES,
@@ -104,6 +140,7 @@ from .periodogram import (
 #: ``gi`` — only the GUI path does).
 _WIDGET_EXPORTS = {
     "LightcurveView": "lightcurve_view",
+    "PeriodView": "period_view",
 }
 
 
@@ -130,13 +167,19 @@ __all__ = [
     "MAX_GRID_POINTS",
     "MIN_JD_SPAN",
     "MIN_MAG_SPAN",
+    "PERIOD_CONFIG_KEY",
     "PLOT_MARGIN_BOTTOM",
     "PLOT_MARGIN_LEFT",
     "PLOT_MARGIN_RIGHT",
     "PLOT_MARGIN_TOP",
     "SESSION_PALETTE",
+    "SOURCE_MANUAL",
+    "SOURCE_PEAK",
+    "SOURCES",
     "ZOOM_FACTOR",
     "AnalysisError",
+    "FoldedPoint",
+    "FoldError",
     "InvokeOnMain",
     "LightcurveController",
     "LightcurveError",
@@ -144,21 +187,31 @@ __all__ = [
     "LightcurvePoint",
     "LightcurveSnapshot",
     "Peak",
+    "PeriodController",
+    "PeriodError",
+    "PeriodListener",
+    "PeriodSnapshot",
     "PeriodogramError",
     "PeriodogramResult",
     "PlotGeometry",
     "PlotWindow",
     "compute_periodogram",
     "data_to_screen",
+    "folded_window",
+    "fold_points",
     "frequency_grid",
     "full_window",
     "pan_window",
+    "periodogram_window",
+    "phase_of",
     "project_periodogram",
     "screen_to_data",
     "select_peaks",
     "session_color",
     "session_color_index",
+    "validate_period",
     "zoom_window_at",
     # widget layer (lazy, imports gi):
     "LightcurveView",
+    "PeriodView",
 ]

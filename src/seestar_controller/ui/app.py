@@ -136,6 +136,17 @@ controllers. The window passes it to the Lightcurve view, whose
 the mag-vs-JD plot (one color per session + legend, error bars, excluded
 points marked, inverted mag axis) with zoom/pan driven by the pure transform
 math.
+
+Period-analysis (ticket 03): the application also owns a shared
+:class:`~seestar_controller.analysis.fold.PeriodController` — the period
+selection + phase-fold controller — bound to that same shared lightcurve
+controller (so it follows the open project and its points), with its
+``invoke_on_main`` bound to :func:`GLib.idle_add` like the others. The window
+passes it to the Lightcurve view, whose
+:class:`~seestar_controller.analysis.period_view.PeriodView` renders the
+periodogram (clickable top-N peaks), the manual period entry, and the
+phase-folded lightcurve; every selection is persisted into the project's
+``project.json`` by the controller.
 """
 
 from __future__ import annotations
@@ -149,7 +160,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from seestar_controller.analysis import LightcurveController  # noqa: E402
+from seestar_controller.analysis import LightcurveController, PeriodController  # noqa: E402
 from seestar_controller.enhance import EditorController, ViewerController  # noqa: E402
 from seestar_controller.observing import (  # noqa: E402
     ObserveController,
@@ -259,6 +270,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         suggest_controller: SuggestionController | None = None,
         run_controller: RunController | None = None,
         lightcurve_controller: LightcurveController | None = None,
+        period_controller: PeriodController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -387,6 +399,18 @@ class SeestarWindow(Adw.ApplicationWindow):
                 viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
             )
         )
+        # Period-analysis ticket 03: one shared period controller bound to the
+        # shared lightcurve controller (it follows the same project and its
+        # points); the Lightcurve view's period panel renders its snapshots
+        # and binds its peak clicks / manual entry to it. Its invoke_on_main
+        # is GLib.idle_add, so worker-thread store writes + notifications land
+        # on the main loop.
+        self._period_controller = (
+            period_controller
+            if period_controller is not None
+            else getattr(app, "period_controller", None)
+            or PeriodController(self._lightcurve_controller, invoke_on_main=_invoke_on_main)
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -436,6 +460,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     suggest_controller=self._suggest_controller,
                     run_controller=self._run_controller,
                     lightcurve_controller=self._lightcurve_controller,
+                    period_controller=self._period_controller,
                 ),
                 view.id,
                 view.title,
@@ -590,6 +615,13 @@ class SeestarWindow(Adw.ApplicationWindow):
         project)."""
         return self._lightcurve_controller
 
+    @property
+    def period_controller(self) -> PeriodController:
+        """The shared period controller (period-analysis ticket 03 — the
+        Lightcurve view's period panel binds to it; it is bound to the shared
+        lightcurve controller)."""
+        return self._period_controller
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -731,6 +763,14 @@ class SeestarApplication(Adw.Application):
         # shared controllers'.
         self.lightcurve_controller = LightcurveController(
             viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
+        )
+        # Period-analysis ticket 03: the shared period controller bound to the
+        # shared lightcurve controller (same project, same points); the window
+        # passes it to the Lightcurve view's period panel. Store writes
+        # (project.json persistence) and notifications are marshalled onto the
+        # GLib main loop like the other shared controllers'.
+        self.period_controller = PeriodController(
+            self.lightcurve_controller, invoke_on_main=_invoke_on_main
         )
         self.settings_controller.add_listener(self._on_settings_changed)
 
