@@ -15,7 +15,9 @@ expected widget types, one page per view id) and instantiates the application
 window holding the five stack pages; sidebar selection switches the view and
 updates the pure-layer state, the dark-theme helper drives the Adw style
 manager, geometry capture/restore round-trips through the pure settings
-layer, and the settings dialog (ticket 02) live-validates and persists
+layer, the main window opens maximized (``is_maximized()`` right after
+construction — a restored smaller geometry stays the default size but cannot
+un-maximize the window), and the settings dialog (ticket 02) live-validates and persists
 through the pure ``SettingsController``, and the header-bar connection panel
 (ticket 03) reflects the pure ``ConnectionController`` states
 (connect/disconnect button + status label, error styling) and shares the
@@ -159,6 +161,36 @@ def test_geometry_capture_and_restore_round_trip(app, gtk, tmp_path):
     window2 = SeestarWindow(app, reloaded)
     assert window2.get_default_size() == (reloaded.window_width, reloaded.window_height)
     _restore_geometry(window2, reloaded.window_geometry())  # must not raise
+
+
+def test_window_opens_maximized(app, gtk):
+    """The main window opens maximized (user request: "full screen
+    (maximized)", NOT fullscreen): maximize() is requested in the window
+    constructor, after the geometry restore. On GTK 4.14 ``is_maximized()``
+    is already True for an unrealized window carrying a pending maximize
+    request, so this is observable pre-map (no present/main-loop pump)."""
+    from seestar_controller.ui.app import SeestarWindow
+
+    window = SeestarWindow(app, app.state)
+    assert window.is_maximized()
+    # sensible default (unmaximized) size: the state default 1280x800
+    assert window.get_default_size() == (
+        ui_state.DEFAULT_WINDOW_WIDTH,
+        ui_state.DEFAULT_WINDOW_HEIGHT,
+    )
+
+
+def test_restored_smaller_geometry_does_not_unmaximize_the_window(app, gtk, tmp_path):
+    """A saved smaller size is still restored as the default size, but it
+    cannot un-maximize the window on open: maximize() is requested after
+    _restore_geometry in the constructor."""
+    from seestar_controller.ui.app import SeestarWindow
+
+    state = ui_state.AppState(str(tmp_path / "settings.json"))
+    state.set_window_geometry(640, 480, 10, 20)
+    window = SeestarWindow(app, state)
+    assert window.is_maximized()  # maximize still wins on open
+    assert window.get_default_size() == (640, 480)  # restored size kept as default
 
 
 def test_close_request_persists_state(app, gtk, tmp_path):

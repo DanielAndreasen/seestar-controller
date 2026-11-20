@@ -34,7 +34,12 @@ Window geometry: restored on start (``set_default_size`` + ``move`` —
 ``move`` is honored on X11/XFCE, the user's desktop; a Wayland compositor
 may ignore it) and captured on ``close-request`` (``get_width`` /
 ``get_height`` / ``get_position``) into the pure layer, which persists it
-atomically to the settings file.
+atomically to the settings file. The window always opens **maximized**
+("full screen (maximized)", NOT fullscreen): ``maximize()`` is requested in
+the window constructor *after* the geometry restore, so the restored size
+stays only the default (unmaximized) size and a saved smaller size cannot
+un-maximize the window on open; the geometry is still captured on close for
+reference.
 
 Settings (ticket 02): the application owns a
 :class:`~seestar_controller.ui.settings.SettingsController` over the loaded
@@ -179,6 +184,8 @@ from .notifications import NotificationBus, NotificationController  # noqa: E402
 from .settings import SettingsController, comp_search_radius_deg  # noqa: E402
 from .settings_dialog import SettingsDialog  # noqa: E402
 from .state import (  # noqa: E402
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
     AppState,
     SettingsValidationError,
     load_state,
@@ -507,8 +514,18 @@ class SeestarWindow(Adw.ApplicationWindow):
             on_open_log=self._on_notifications_action,
         )
 
-        # Render the persisted state: geometry, theme, initial view.
+        # Render the persisted state: geometry, theme, initial view. A
+        # sensible default (unmaximized) size is set first; the persisted
+        # geometry then overrides it (1280x800 on a fresh state) together
+        # with the position.
+        self.set_default_size(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
         _restore_geometry(self, state.window_geometry())
+        # Always open maximized ("full screen (maximized)", NOT fullscreen):
+        # maximize() is requested AFTER the geometry restore, so a saved
+        # smaller size stays only the default (unmaximized) size and cannot
+        # un-maximize the window on open. Geometry is still captured on
+        # close-request (see _on_close_request) for reference.
+        self.maximize()
         apply_dark_theme(state.dark_theme)
         self.select_view(state.current_view_id)
 
