@@ -4,7 +4,7 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** implemented in 24590f2
+**Status:** implemented in 05d0f61
 
 - [x] Name → candidate list (name, RA/Dec J2000, magnitude) via SIMBAD
 - [x] Unknown name returns a clear "not found" error
