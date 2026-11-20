@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** implemented in 93fcc8d
+**Status:** implemented in 35c23ae
 
 - [x] Controller layer holds app logic, widgets stay thin
 - [x] Controller tests run headless (no display needed)
