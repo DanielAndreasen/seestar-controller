@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02, project-store 01
 
-**Status:** implemented in f7942424997b6504d0aa111f8c52c74566ac8771
+**Status:** implemented in d5c041f
 
 - [x] Clicking a periodogram peak selects that period; manual entry also possible
 - [x] Fold: phase = ((jd − jd0) / period) mod 1, jd0 default first observation
