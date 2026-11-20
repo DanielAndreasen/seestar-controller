@@ -28,11 +28,13 @@ Pure Python, no GTK, no link (module boundary per
   :class:`~.errors.SessionNotFoundError`,
   :class:`~.errors.SessionAlreadyClosedError`
 - :mod:`.frames` — frame storage: :func:`~.frames.store_frame` (atomic FITS
-  write into ``subs/<session>/`` / ``stacks/<session>/`` + the ``frames`` db
-  row), :func:`~.frames.list_frames`, :func:`~.frames.get_frame_path`,
-  :func:`~.frames.read_frame_bytes`, the :class:`~.frames.Frame` record, the
-  kind constants :data:`~.frames.KIND_SUB` / :data:`~.frames.KIND_STACK` /
-  :data:`~.frames.KINDS`, and :class:`~.errors.FrameStoreError`
+  write into ``subs/<session>/`` / ``stacks/<session>/`` /
+  ``enhanced/<session>/`` + the ``frames`` db row), :func:`~.frames.list_frames`,
+  :func:`~.frames.get_frame_path`, :func:`~.frames.read_frame_bytes`, the
+  :class:`~.frames.Frame` record, the kind constants :data:`~.frames.KIND_SUB` /
+  :data:`~.frames.KIND_STACK` / :data:`~.frames.KIND_ENHANCED`,
+  :data:`~.frames.KINDS`, :data:`~.frames.KIND_DIRS` (kind -> directory),
+  :data:`~.frames.ENHANCED_DIR`, and :class:`~.errors.FrameStoreError`
 - :mod:`.stars` — star picks: :func:`~.stars.save_star_picks` (replace all
   picks in one db transaction + mirror into ``project.json``),
   :func:`~.stars.load_star_picks` (target first, then comps by label), the
@@ -50,6 +52,12 @@ Pure Python, no GTK, no link (module boundary per
   points), the :class:`~.measurements.Measurement` record (frame FK +
   joined session_id/utc, jd, mag, mag_err, excluded), and
   :class:`~.errors.MeasurementError`
+- :mod:`.presets` — per-image enhancement presets (image-enhance ticket 04):
+  :func:`~.presets.save_preset` (upsert one frame's pipeline JSON in one db
+  transaction), :func:`~.presets.load_preset` (None when the frame has none),
+  :func:`~.presets.delete_preset`, :func:`~.presets.list_presets`, the
+  :class:`~.presets.Preset` record (frame_id, pipeline dict, updated_at), and
+  :class:`~.errors.PresetError`
 - :mod:`.csv_export` — CSV export: :func:`~.csv_export.export_csv` (atomic
   write of ``lightcurve.csv`` with header :data:`~.csv_export.CSV_HEADER`,
   excluded points omitted unless ``include_excluded=True``), the default
@@ -65,6 +73,7 @@ from .errors import (
     FrameStoreError,
     InvalidProjectError,
     MeasurementError,
+    PresetError,
     ProjectError,
     ProjectExistsError,
     ProjectNotFoundError,
@@ -74,7 +83,10 @@ from .errors import (
     StarPickError,
 )
 from .frames import (
+    ENHANCED_DIR,
     FITS_SUFFIX,
+    KIND_DIRS,
+    KIND_ENHANCED,
     KIND_STACK,
     KIND_SUB,
     KINDS,
@@ -91,6 +103,13 @@ from .measurements import (
     lightcurve,
     measurements_for_frame,
     set_excluded,
+)
+from .presets import (
+    Preset,
+    delete_preset,
+    list_presets,
+    load_preset,
+    save_preset,
 )
 from .project import (
     DB_FILE,
@@ -134,7 +153,10 @@ __all__ = [
     "CSV_HEADER",
     "DB_FILE",
     "DEFAULT_PROJECT_ROOT",
+    "ENHANCED_DIR",
     "FITS_SUFFIX",
+    "KIND_DIRS",
+    "KIND_ENHANCED",
     "KIND_STACK",
     "KIND_SUB",
     "KINDS",
@@ -156,6 +178,8 @@ __all__ = [
     "InvalidProjectError",
     "Measurement",
     "MeasurementError",
+    "Preset",
+    "PresetError",
     "Project",
     "ProjectError",
     "ProjectExistsError",
@@ -171,14 +195,17 @@ __all__ = [
     "close_session",
     "create_project",
     "default_project_root",
+    "delete_preset",
     "export_csv",
     "get_frame_path",
     "get_open_session",
     "initialize_db",
     "lightcurve",
     "list_frames",
+    "list_presets",
     "list_projects",
     "list_sessions",
+    "load_preset",
     "load_star_picks",
     "measurements_for_frame",
     "migrate_db",
@@ -186,6 +213,7 @@ __all__ = [
     "normalize_role",
     "open_project",
     "read_frame_bytes",
+    "save_preset",
     "save_star_picks",
     "set_excluded",
     "slugify",

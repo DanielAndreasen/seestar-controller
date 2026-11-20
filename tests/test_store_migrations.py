@@ -269,7 +269,7 @@ def test_migrate_db_1_to_2_adds_aperture_columns_and_backfills(tmp_path):
         conn.execute(OLD_STARS_DDL)
         conn.execute("INSERT INTO stars (role, label, x, y) VALUES ('comp', 'A', 1.0, 2.0)")
         conn.execute("PRAGMA user_version=1")
-    assert migrate_db(conn) == SCHEMA_VERSION == 2
+    assert migrate_db(conn) == SCHEMA_VERSION == 3
     cols = [row[1] for row in conn.execute("PRAGMA table_info(stars)")]
     assert cols == [
         "id", "role", "label", "x", "y", "ra_deg", "dec_deg",
@@ -541,8 +541,8 @@ def test_public_api_exports_migration_runner():
 
     assert callable(store.migrate_db)
     assert isinstance(store.MIGRATIONS, dict)
-    assert set(store.MIGRATIONS) == {0, 1}
-    assert store.SCHEMA_VERSION == 2
+    assert set(store.MIGRATIONS) == {0, 1, 2}
+    assert store.SCHEMA_VERSION == 3
     assert "migrate_db" in store.__all__
     assert "MIGRATIONS" in store.__all__
     assert issubclass(store.InvalidProjectError, store.ProjectError)

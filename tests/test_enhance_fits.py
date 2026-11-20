@@ -87,6 +87,7 @@ PURE_ENHANCE_MODULES = (
     "ops",
     "pipeline",
     "editor_controller",
+    "persistence",
 )
 
 #: The widget enhance modules — ``gi`` at module top, lazy-exported via PEP 562.

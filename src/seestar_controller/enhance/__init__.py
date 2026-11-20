@@ -28,7 +28,15 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   a validating frozen params dataclass, plus :class:`~.pipeline.Op`,
   :class:`~.pipeline.Pipeline` (ordered, re-runnable, immutable
   :meth:`~.pipeline.Pipeline.with_param`), :func:`~.pipeline.default_pipeline`,
-  :func:`~.pipeline.render_pipeline`). All import **nothing** from ``gi`` —
+  :func:`~.pipeline.render_pipeline`), and — ticket 04 — :mod:`.persistence`
+  (the pure save/export/preset layer: :func:`~.persistence.save_enhanced`
+  renders the pipeline at full resolution and stores it as an ``enhanced``
+  frame in the project — the original stack FITS untouched;
+  :func:`~.persistence.export_render` exports PNG/JPEG via PIL;
+  :func:`~.persistence.save_preset_for` / :func:`~.persistence.load_preset_for`
+  / :func:`~.persistence.delete_preset_for` /
+  :func:`~.persistence.apply_preset_on_open` manage the per-image presets in
+  the project db). All import **nothing** from ``gi`` —
   stdlib + numpy/PIL + store only — fully unit-testable headless; a
   subprocess test enforces the boundary.
 - **Widget layer** — :mod:`.viewer` (:class:`~.viewer.ImageViewer`, the
@@ -45,7 +53,11 @@ packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` (see the README).
 Ticket 01 covers loading + viewing; ticket 02 adds the pure enhancement
 pipeline (:mod:`.ops` + :mod:`.pipeline`); ticket 03 adds the editor
 controller (:mod:`.editor_controller`) + the Enhance view widget
-(:mod:`.enhance_view`).
+(:mod:`.enhance_view`); ticket 04 adds save/export/presets
+(:mod:`.persistence` + the editor-controller methods
+:meth:`~.editor_controller.EditorController.save_preset` /
+:meth:`~.editor_controller.EditorController.save_enhanced` /
+:meth:`~.editor_controller.EditorController.export`).
 """
 
 from .editor_controller import (
@@ -90,6 +102,17 @@ from .pipeline import (
     default_pipeline,
     render_pipeline,
 )
+from .persistence import (
+    DEFAULT_EXPORT_QUALITY,
+    ENHANCED_HISTORY,
+    EXPORT_FORMATS,
+    apply_preset_on_open,
+    delete_preset_for,
+    export_render,
+    load_preset_for,
+    save_enhanced,
+    save_preset_for,
+)
 from .render import (
     ASINH_SOFTNESS,
     DEFAULT_HI_PERCENTILE,
@@ -131,11 +154,14 @@ __all__ = [
     "ASINH_SOFTNESS",
     "BACKGROUND_METHODS",
     "DEFAULT_DEBOUNCE_S",
+    "DEFAULT_EXPORT_QUALITY",
     "DEFAULT_HISTOGRAM_BINS",
     "DEFAULT_HI_PERCENTILE",
     "DEFAULT_LO_PERCENTILE",
     "DEFAULT_MAX_PREVIEW_SIZE",
     "DEFAULT_STRETCH",
+    "ENHANCED_HISTORY",
+    "EXPORT_FORMATS",
     "LOG_BASE",
     "MAX_CACHE_ENTRIES",
     "MAX_UNDO_ENTRIES",
@@ -165,16 +191,22 @@ __all__ = [
     "WhiteBalanceParams",
     "apply_background",
     "apply_denoise",
+    "apply_preset_on_open",
     "apply_sharpen",
     "apply_stretch",
     "apply_white_balance",
     "default_pipeline",
     "default_render_fn",
+    "delete_preset_for",
     "downscale",
+    "export_render",
     "list_project_stacks",
     "load_fits",
+    "load_preset_for",
     "render_pipeline",
     "render_preview",
+    "save_enhanced",
+    "save_preset_for",
     "to_pil_image",
     "tonemap",
     # widget layer (lazy, imports gi):

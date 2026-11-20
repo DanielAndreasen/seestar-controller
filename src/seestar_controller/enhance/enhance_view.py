@@ -1,5 +1,5 @@
 """The Enhance-editor widget — the WIDGET layer of
-:mod:`seestar_controller.enhance` (image-enhance ticket 03).
+:mod:`seestar_controller.enhance` (image-enhance tickets 03 + 04).
 
 This module imports ``gi`` at module top (it is a widget module, the only
 place allowed to): it is never imported by the pure layer
@@ -44,6 +44,17 @@ window passes them down via
 - the two panes sit in a :class:`Gtk.Paned` (same documented choice as the
   Observe view / ImageViewer).
 
+Ticket 04 adds the persistence buttons to the right-pane toolbar:
+**Save enhanced** (render the current pipeline at full resolution and store it
+as an ``enhanced`` frame in the project — the original stack FITS untouched),
+**Save preset** (persist the current pipeline as the open stack's preset in
+the project db), and **Export PNG** / **Export JPEG** (a
+:class:`Gtk.FileDialog` save dialog — async; the chosen path is marshalled
+back via the editor controller's ``invoke_on_main`` before
+:meth:`~seestar_controller.enhance.editor_controller.EditorController.export`
+runs). All four are sensitive only while a stack is open; failures surface in
+the status label.
+
 The widget re-renders on every frozen
 :class:`~seestar_controller.enhance.editor_controller.EditorSnapshot` and
 :class:`~seestar_controller.enhance.viewer_controller.ViewerSnapshot`; it
@@ -62,7 +73,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from .editor_controller import EditorController, EditorSnapshot  # noqa: E402
 from .fits_io import EnhanceError, StackInfo  # noqa: E402
@@ -234,6 +245,33 @@ class EnhanceEditor(Gtk.Box):
         )
         self._reset_button.connect("clicked", lambda *_a: self._editor_controller.reset())
         toolbar.append(self._reset_button)
+        # ticket 04: persistence buttons (save enhanced / save preset / export)
+        self._save_enhanced_button = Gtk.Button(
+            label="Save enhanced",
+            tooltip_text="Save the enhanced image into the project (the original stack is untouched)",
+        )
+        self._save_enhanced_button.connect("clicked", self._on_save_enhanced_clicked)
+        toolbar.append(self._save_enhanced_button)
+        self._save_preset_button = Gtk.Button(
+            label="Save preset",
+            tooltip_text="Save the current parameters as this stack's preset (reapplied on open)",
+        )
+        self._save_preset_button.connect("clicked", self._on_save_preset_clicked)
+        toolbar.append(self._save_preset_button)
+        self._export_png_button = Gtk.Button(
+            label="Export PNG", tooltip_text="Export the enhanced image as a PNG file"
+        )
+        self._export_png_button.connect(
+            "clicked", lambda *_a: self._on_export_clicked("PNG")
+        )
+        toolbar.append(self._export_png_button)
+        self._export_jpeg_button = Gtk.Button(
+            label="Export JPEG", tooltip_text="Export the enhanced image as a JPEG file"
+        )
+        self._export_jpeg_button.connect(
+            "clicked", lambda *_a: self._on_export_clicked("JPEG")
+        )
+        toolbar.append(self._export_jpeg_button)
         self._spinner = Gtk.Spinner(halign=Gtk.Align.END, hexpand=True, visible=False)
         toolbar.append(self._spinner)
         right.append(toolbar)
@@ -330,6 +368,22 @@ class EnhanceEditor(Gtk.Box):
     @property
     def reset_button(self) -> Gtk.Button:
         return self._reset_button
+
+    @property
+    def save_enhanced_button(self) -> Gtk.Button:
+        return self._save_enhanced_button
+
+    @property
+    def save_preset_button(self) -> Gtk.Button:
+        return self._save_preset_button
+
+    @property
+    def export_png_button(self) -> Gtk.Button:
+        return self._export_png_button
+
+    @property
+    def export_jpeg_button(self) -> Gtk.Button:
+        return self._export_jpeg_button
 
     @property
     def spinner(self) -> Gtk.Spinner:
@@ -550,6 +604,63 @@ class EnhanceEditor(Gtk.Box):
         except EnhanceError as exc:
             self._set_status(str(exc), error=True)
 
+    def _on_save_enhanced_clicked(self, *_args) -> None:
+        try:
+            frame = self._editor_controller.save_enhanced()
+        except EnhanceError as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._set_status(f"saved enhanced image: {frame.path}", error=False)
+
+    def _on_save_preset_clicked(self, *_args) -> None:
+        try:
+            preset = self._editor_controller.save_preset()
+        except EnhanceError as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._set_status(
+            f"saved preset for stack {preset.frame_id} ({len(preset.pipeline.get('ops', ()))} ops)",
+            error=False,
+        )
+
+    def _on_export_clicked(self, fmt: str) -> None:
+        """Open a :class:`Gtk.FileDialog` save dialog for ``fmt`` ("PNG" /
+        "JPEG"); the async callback marshals the chosen path back onto the
+        main thread via the editor controller's ``invoke_on_main``."""
+        dialog = Gtk.FileDialog(
+            title=f"Export {fmt}",
+            accept_label=f"Export {fmt}",
+        )
+        suffix = ".png" if fmt == "PNG" else ".jpg"
+        dialog.set_initial_name(f"enhanced{suffix}")
+        dialog.save(
+            self.get_root(),
+            None,
+            lambda dlg, result, fmt=fmt: self._on_export_dialog_finished(dlg, result, fmt),
+        )
+
+    def _on_export_dialog_finished(self, dialog: Gtk.FileDialog, result, fmt: str) -> None:
+        try:
+            file = dialog.save_finish(result)
+        except GLib.Error:
+            return  # cancelled
+        if file is None:
+            return
+        path = file.get_path()
+        if not path:
+            return
+        # the dialog callback is NOT on the main loop's controller context —
+        # marshal the export through invoke_on_main (GLib.idle_add in the app)
+        self._editor_controller.invoke_on_main(lambda: self._do_export(path, fmt))
+
+    def _do_export(self, path: str, fmt: str) -> None:
+        try:
+            written = self._editor_controller.export(path, format=fmt)
+        except EnhanceError as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._set_status(f"exported {written}", error=False)
+
     # -- rendering ---------------------------------------------------------------------
 
     def _on_viewer_snapshot(self, snapshot: ViewerSnapshot) -> None:
@@ -616,11 +727,23 @@ class EnhanceEditor(Gtk.Box):
         self._undo_button.set_sensitive(snapshot.can_undo)
         self._redo_button.set_sensitive(snapshot.can_redo)
         self._reset_button.set_sensitive(snapshot.pipeline is not None)
+        # ticket 04: the persistence buttons need an open stack
+        has_stack = snapshot.stack is not None and snapshot.pipeline is not None
+        self._save_enhanced_button.set_sensitive(has_stack)
+        self._save_preset_button.set_sensitive(has_stack)
+        self._export_png_button.set_sensitive(has_stack)
+        self._export_jpeg_button.set_sensitive(has_stack)
 
         # info label
         if snapshot.stack is not None:
             ops = ", ".join(snapshot.pipeline.names) if snapshot.pipeline else ""
-            self._info_label.set_label(f"{snapshot.stack.label()} · {ops}")
+            extras = []
+            if snapshot.preset_saved:
+                extras.append("preset saved")
+            if snapshot.saved_frame is not None:
+                extras.append(f"saved {snapshot.saved_frame.path}")
+            suffix = f" · {' · '.join(extras)}" if extras else ""
+            self._info_label.set_label(f"{snapshot.stack.label()} · {ops}{suffix}")
         else:
             self._info_label.set_label("")
 

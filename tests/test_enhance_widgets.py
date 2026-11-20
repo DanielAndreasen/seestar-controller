@@ -25,7 +25,12 @@ pipeline, moving a slider calls
 (the pipeline changes, undo becomes available), the Before/After toggle
 switches the preview stack, and the Undo/Redo/Reset buttons drive the
 editor controller (sliders re-sync, sensitivity follows can_undo/can_redo).
-The wiring: ``build_view("enhance", viewer_controller=..., editor_controller=...)``
+Ticket 04 adds the persistence buttons: Save enhanced / Save preset store into
+the project (enhanced frame / preset row, reflected in the info label), the
+Export PNG / JPEG buttons drive a ``Gtk.FileDialog`` whose callback marshals
+the chosen path via ``invoke_on_main`` into the export, and the Enhance view
+exposes the four buttons as pass-through properties. The wiring:
+``build_view("enhance", viewer_controller=..., editor_controller=...)``
 hands the shared controllers to the Enhance view, the app owns one shared
 :class:`~seestar_controller.enhance.ViewerController` and one shared
 :class:`~seestar_controller.enhance.EditorController`, and the window passes
@@ -374,3 +379,84 @@ def test_editor_row_selection_opens_stack(editor, viewer_controller):
     pump_main()
     assert editor.after_picture.get_paintable() is not None
     assert "M 31" in editor.info_label.get_label()
+
+
+# --- ticket 04: persistence buttons (Save enhanced / Save preset / Export PNG / Export JPEG) ----------
+
+
+def test_editor_persistence_buttons_exist_and_follow_stack_state(gtk):
+    from seestar_controller.enhance.enhance_view import EnhanceEditor
+
+    widget = EnhanceEditor(ViewerController())
+    for button in (
+        widget.save_enhanced_button,
+        widget.save_preset_button,
+        widget.export_png_button,
+        widget.export_jpeg_button,
+    ):
+        assert button is not None
+        assert not button.get_sensitive()  # no stack open yet
+
+
+def test_editor_persistence_buttons_sensitive_with_open_stack(editor, viewer_controller):
+    _open_first_stack(editor, viewer_controller)
+    for button in (
+        editor.save_enhanced_button,
+        editor.save_preset_button,
+        editor.export_png_button,
+        editor.export_jpeg_button,
+    ):
+        assert button.get_sensitive()
+
+
+def test_editor_save_preset_button_stores_preset(editor, viewer_controller, project):
+    from seestar_controller.store import load_preset
+
+    _open_first_stack(editor, viewer_controller)
+    ec = editor.controller
+    editor.slider("denoise", "strength").set_value(0.8)
+    assert not ec.snapshot.preset_saved
+    editor.save_preset_button.clicked()
+    assert ec.snapshot.preset_saved
+    assert "preset saved" in editor.info_label.get_label()
+    stack = viewer_controller.current_stack
+    preset = load_preset(project, stack.frame_id)
+    assert preset is not None
+    assert preset.pipeline["ops"][1]["params"]["strength"] == pytest.approx(0.8)
+
+
+def test_editor_save_enhanced_button_stores_enhanced_frame(editor, viewer_controller, project):
+    from seestar_controller.store import get_frame_path, list_frames
+
+    _open_first_stack(editor, viewer_controller)
+    ec = editor.controller
+    stack_ids_before = {f.id for f in list_frames(project)}
+    editor.save_enhanced_button.clicked()
+    frame = ec.snapshot.saved_frame
+    assert frame is not None and frame.kind == "enhanced"
+    assert frame.id not in stack_ids_before
+    assert get_frame_path(project, frame).is_file()
+    assert [f.id for f in list_frames(project, kind="enhanced")] == [frame.id]
+    assert "saved" in editor.info_label.get_label()
+
+
+def test_editor_export_buttons_write_files(editor, viewer_controller, tmp_path):
+    _open_first_stack(editor, viewer_controller)
+    # the FileDialog itself needs a display interaction; drive the export
+    # path the dialog callback marshals into (invoke_on_main -> _do_export)
+    editor._do_export(str(tmp_path / "enhanced.png"), "PNG")
+    editor._do_export(str(tmp_path / "enhanced.jpg"), "JPEG")
+    assert (tmp_path / "enhanced.png").is_file()
+    assert (tmp_path / "enhanced.jpg").is_file()
+    assert "exported" in editor.status_label.get_label()
+
+
+def test_enhance_view_exposes_persistence_buttons(gtk):
+    from seestar_controller.ui.views import EnhanceView, build_view
+
+    view = build_view("enhance")
+    assert isinstance(view, EnhanceView)
+    assert view.save_enhanced_button is view.editor_widget.save_enhanced_button
+    assert view.save_preset_button is view.editor_widget.save_preset_button
+    assert view.export_png_button is view.editor_widget.export_png_button
+    assert view.export_jpeg_button is view.editor_widget.export_jpeg_button

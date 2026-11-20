@@ -499,7 +499,7 @@ def test_frame_api_is_exported_from_package():
     assert callable(store.get_frame_path)
     assert callable(store.read_frame_bytes)
     assert isinstance(store.Frame, type)
-    assert store.KINDS == ("sub", "stack")
+    assert store.KINDS == ("sub", "stack", "enhanced")
     assert store.normalize_kind("sub") == "sub"
     with pytest.raises(ValueError):
         store.normalize_kind("nope")

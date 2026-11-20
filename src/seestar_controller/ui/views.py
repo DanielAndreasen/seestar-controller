@@ -174,10 +174,12 @@ class ObserveView(_PlaceholderView):
 
 
 class EnhanceView(_PlaceholderView):
-    """Enhance view (image-enhance tickets 01 + 03): wraps the
+    """Enhance view (image-enhance tickets 01 + 03 + 04): wraps the
     :class:`~seestar_controller.enhance.enhance_view.EnhanceEditor` widget —
     the project's stack list + per-op parameter sliders on the left, the
-    live before/after preview with undo/redo/reset on the right.
+    live before/after preview with undo/redo/reset on the right, plus the
+    ticket-04 persistence buttons (Save enhanced / Save preset / Export PNG /
+    Export JPEG, exposed as pass-through properties).
 
     ``viewer_controller`` is the app's shared
     :class:`~seestar_controller.enhance.viewer_controller.ViewerController`
@@ -236,6 +238,26 @@ class EnhanceView(_PlaceholderView):
     def editor_widget(self) -> EnhanceEditorWidget:
         """The enhance editor widget (stack list + sliders | before/after preview)."""
         return self._editor
+
+    @property
+    def save_enhanced_button(self) -> Gtk.Button:
+        """The widget's Save enhanced button (image-enhance ticket 04)."""
+        return self._editor.save_enhanced_button
+
+    @property
+    def save_preset_button(self) -> Gtk.Button:
+        """The widget's Save preset button (image-enhance ticket 04)."""
+        return self._editor.save_preset_button
+
+    @property
+    def export_png_button(self) -> Gtk.Button:
+        """The widget's Export PNG button (image-enhance ticket 04)."""
+        return self._editor.export_png_button
+
+    @property
+    def export_jpeg_button(self) -> Gtk.Button:
+        """The widget's Export JPEG button (image-enhance ticket 04)."""
+        return self._editor.export_jpeg_button
 
 
 class PhotometryView(_PlaceholderView):

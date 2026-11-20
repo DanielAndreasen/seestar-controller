@@ -8,11 +8,13 @@ lazy inside the functions that need it — the same pattern as
 ``link``.
 
 A **frame** is one stored FITS file: a **sub-frame** (one individual exposure,
-GLOSSARY.md) or a **Stack** (the stacked FITS image). Files live under the
-project directory::
+GLOSSARY.md), a **Stack** (the stacked FITS image), or an **enhanced** image
+(the pipeline output saved by image-enhance ticket 04 — stored next to the
+stacks, never over the original). Files live under the project directory::
 
-    subs/<session_id>/<frame>.fits      kind "sub"
-    stacks/<session_id>/<stack>.fits    kind "stack"
+    subs/<session_id>/<frame>.fits        kind "sub"
+    stacks/<session_id>/<stack>.fits      kind "stack"
+    enhanced/<session_id>/<frame>.fits    kind "enhanced"
 
 and every file has one row in the ``frames`` table of the project db (see
 :mod:`.schema`): the session FK, ``kind``, the project-relative ``path``, the
@@ -80,8 +82,24 @@ from .project import STACKS_DIR, SUBS_DIR, Project
 KIND_SUB = "sub"
 #: Frame kind: a **Stack** (the stacked FITS image, GLOSSARY.md).
 KIND_STACK = "stack"
+#: Frame kind: an **enhanced** image (the saved pipeline output of a stack —
+#: image-enhance ticket 04; the original stack file is never touched).
+KIND_ENHANCED = "enhanced"
 #: The valid frame kinds.
-KINDS = (KIND_SUB, KIND_STACK)
+KINDS = (KIND_SUB, KIND_STACK, KIND_ENHANCED)
+
+#: Directory for enhanced FITS files (``enhanced/<session>/`` per session) —
+#: image-enhance ticket 04. Like the session subdirectories, it is created
+#: lazily by :func:`store_frame`.
+ENHANCED_DIR = "enhanced"
+
+#: Frame kind -> its top-level directory inside the project (see
+#: :data:`~.project.PROJECT_SUBDIRS`).
+KIND_DIRS = {
+    KIND_SUB: SUBS_DIR,
+    KIND_STACK: STACKS_DIR,
+    KIND_ENHANCED: ENHANCED_DIR,
+}
 
 #: Suffix of the stored FITS files.
 FITS_SUFFIX = ".fits"
@@ -100,7 +118,8 @@ _HEADER_TARGET = "OBJECT"
 
 
 def normalize_kind(kind: Any) -> str:
-    """Validate a frame ``kind`` ("sub" or "stack"); raise ``ValueError``."""
+    """Validate a frame ``kind`` ("sub", "stack", or "enhanced"); raise
+    ``ValueError``."""
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
     return str(kind)
@@ -112,7 +131,7 @@ class Frame:
 
     - ``id`` — the db row id (INTEGER PRIMARY KEY);
     - ``session_id`` — the session FK (also the ``subs/<session>/`` dir name);
-    - ``kind`` — ``"sub"`` or ``"stack"``;
+    - ``kind`` — ``"sub"``, ``"stack"``, or ``"enhanced"``;
     - ``path`` — the FITS file path RELATIVE to the project root, POSIX
       separators (e.g. ``subs/20261120T220000000000Z/2461365.416668.fits``);
     - ``jd`` — the observation time as Julian Date;
@@ -310,8 +329,10 @@ def store_frame(
     - ``session_id`` — the session the frame belongs to; must exist, else
       :class:`~.errors.SessionNotFoundError` is raised before anything is
       written;
-    - ``kind`` — ``"sub"`` or ``"stack"`` (else ``ValueError``); the file goes
-      to ``subs/<session_id>/`` or ``stacks/<session_id>/`` (created lazily);
+    - ``kind`` — ``"sub"``, ``"stack"``, or ``"enhanced"`` (else
+      ``ValueError``); the file goes to ``subs/<session_id>/``,
+      ``stacks/<session_id>/``, or ``enhanced/<session_id>/`` (created
+      lazily, see :data:`KIND_DIRS`);
     - ``fits_bytes`` — the raw FITS file content; must be a readable FITS
       file, else :class:`~.errors.FrameStoreError`;
     - ``meta`` — optional mapping (the scope sidecar) whose ``exposure`` /
@@ -347,7 +368,7 @@ def store_frame(
     header = _read_fits_header(fits_bytes)
     exposure, gain, target = _resolve_meta(meta, header)
 
-    kind_dir = SUBS_DIR if kind == KIND_SUB else STACKS_DIR
+    kind_dir = KIND_DIRS[kind]
     base_dir = project.path / kind_dir / session_id
     base_dir.mkdir(parents=True, exist_ok=True)
 

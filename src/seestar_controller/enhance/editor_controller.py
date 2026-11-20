@@ -1,5 +1,5 @@
 """The Enhance-editor controller — the PURE controller layer of
-:mod:`seestar_controller.enhance` (image-enhance ticket 03).
+:mod:`seestar_controller.enhance` (image-enhance tickets 03 + 04).
 
 This is a PURE module: **no ``gi`` import** (the sandbox has no GTK, see
 docs/wiki/assumptions.md; a subprocess test enforces the boundary) — stdlib +
@@ -47,6 +47,24 @@ shows a different open stack, the editor resets to
 :func:`~.pipeline.default_pipeline`, clears undo/redo, and re-renders both
 previews (a stale in-flight render of the previous stack is discarded by the
 generation counter).
+
+Ticket 04 adds persistence on top (all in :mod:`.persistence`, the pure
+save/export/preset layer):
+
+- **preset on open** — when a stack is opened, a stored per-image preset (the
+  project db's ``presets`` table) is applied INSTEAD of the default pipeline
+  (:func:`~.persistence.apply_preset_on_open`; a corrupt preset is ignored and
+  the default is used);
+- :meth:`save_preset` — persist the current pipeline as the open stack's
+  preset;
+- :meth:`save_enhanced` — render the current pipeline at FULL resolution and
+  store it as a new ``enhanced`` frame in the project (the original stack FITS
+  is never touched);
+- :meth:`export` — render at full resolution, tone-map, and export PNG/JPEG
+  via :func:`~.persistence.export_render`.
+
+The snapshot gains :attr:`EditorSnapshot.preset_saved` and
+:attr:`EditorSnapshot.saved_frame` so the widget can reflect them.
 """
 
 from __future__ import annotations
@@ -56,13 +74,23 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from PIL import Image
 
+from seestar_controller.store.frames import Frame
+from seestar_controller.store.presets import Preset
+
+from . import persistence
 from .fits_io import EnhanceError, FitsImage, StackInfo
 from .pipeline import Pipeline, default_pipeline, render_pipeline
-from .render import DEFAULT_MAX_PREVIEW_SIZE, render_preview
+from .render import (
+    DEFAULT_MAX_PREVIEW_SIZE,
+    render_preview,
+    to_pil_image,
+    tonemap,
+)
 from .viewer_controller import ViewerController, ViewerSnapshot
 
 logger = logging.getLogger(__name__)
@@ -93,7 +121,12 @@ class EditorSnapshot:
     - ``rendering`` — True while a re-render is scheduled or in flight;
     - ``can_undo`` / ``can_redo`` — whether :meth:`EditorController.undo` /
       :meth:`EditorController.redo` would change anything;
-    - ``error`` — the last render error message, else None.
+    - ``error`` — the last render error message, else None;
+    - ``preset_saved`` — whether the open stack has a stored preset (ticket
+      04 — set by :meth:`EditorController.save_preset` and when a stored
+      preset was applied on open);
+    - ``saved_frame`` — the last :meth:`EditorController.save_enhanced` result
+      (the stored ``enhanced`` frame), else None.
     """
 
     stack: StackInfo | None
@@ -104,6 +137,8 @@ class EditorSnapshot:
     can_undo: bool
     can_redo: bool
     error: str | None
+    preset_saved: bool = False
+    saved_frame: Frame | None = None
 
 
 #: An editor listener: called with an :class:`EditorSnapshot` on any change.
@@ -181,6 +216,8 @@ class EditorController:
         self._enhanced_preview: Image.Image | None = None
         self._rendering = False
         self._error: str | None = None
+        self._preset_saved = False
+        self._saved_frame: Frame | None = None
         self._generation = 0
         self._timer: threading.Timer | None = None
         self._worker: threading.Thread | None = None
@@ -193,6 +230,25 @@ class EditorController:
     def viewer_controller(self) -> ViewerController:
         """The viewer controller this editor follows."""
         return self._viewer_controller
+
+    @property
+    def invoke_on_main(self) -> InvokeOnMain:
+        """The marshalling callable for worker results (the widget layer binds
+        ``GLib.idle_add``; the default calls directly)."""
+        return self._invoke_on_main
+
+    @property
+    def preset_saved(self) -> bool:
+        """Whether the open stack currently has a stored preset (ticket 04)."""
+        with self._lock:
+            return self._preset_saved
+
+    @property
+    def saved_frame(self) -> Frame | None:
+        """The last saved enhanced frame of the open stack (ticket 04), else
+        None."""
+        with self._lock:
+            return self._saved_frame
 
     @property
     def stack(self) -> StackInfo | None:
@@ -256,6 +312,8 @@ class EditorController:
             can_undo=bool(self._undo),
             can_redo=bool(self._redo),
             error=self._error,
+            preset_saved=self._preset_saved,
+            saved_frame=self._saved_frame,
         )
 
     # -- listeners --------------------------------------------------------------
@@ -374,12 +432,83 @@ class EditorController:
         self._notify(snapshot)
         return True
 
+    # -- persistence (ticket 04: presets + save enhanced + export) -------------------
+
+    def _open_stack_state(self) -> tuple[StackInfo, Pipeline, FitsImage]:
+        """The current ``(stack, pipeline, image)``; raises
+        :class:`EnhanceError` when no stack is open."""
+        with self._lock:
+            stack, pipeline, image = self._stack, self._pipeline, self._image
+        if stack is None or pipeline is None or image is None:
+            raise EnhanceError(
+                "no stack open — open one via the ViewerController first"
+            )
+        return stack, pipeline, image
+
+    def save_preset(self) -> Preset:
+        """Persist the current pipeline as the open stack's preset (ticket 04:
+        stored as JSON in the project db's ``presets`` table via
+        :func:`~.persistence.save_preset_for`, reapplied on the next open).
+        Returns the stored :class:`~seestar_controller.store.presets.Preset`
+        and marks the snapshot's ``preset_saved``.
+
+        Raises :class:`EnhanceError` when no stack is open, no project is set,
+        or the store write fails.
+        """
+        stack, pipeline, _image = self._open_stack_state()
+        project = getattr(self._viewer_controller, "project", None)
+        preset = persistence.save_preset_for(project, stack, pipeline)
+        with self._lock:
+            self._preset_saved = True
+            snapshot = self._snapshot_locked()
+        self._notify(snapshot)
+        return preset
+
+    def save_enhanced(self) -> Frame:
+        """Render the current pipeline at FULL resolution and store the result
+        as a new ``enhanced`` frame in the project (ticket 04 — the original
+        stack FITS is never touched). Returns the stored
+        :class:`~seestar_controller.store.frames.Frame` and marks the
+        snapshot's ``saved_frame``.
+
+        Raises :class:`EnhanceError` when no stack is open, no project is set,
+        or the store write fails.
+        """
+        stack, pipeline, image = self._open_stack_state()
+        project = getattr(self._viewer_controller, "project", None)
+        frame = persistence.save_enhanced(project, stack, pipeline, image)
+        with self._lock:
+            self._saved_frame = frame
+            snapshot = self._snapshot_locked()
+        self._notify(snapshot)
+        return frame
+
+    def export(
+        self,
+        path: str | Path,
+        format: str = "PNG",
+        quality: int = persistence.DEFAULT_EXPORT_QUALITY,
+    ) -> Path:
+        """Render the current pipeline at FULL resolution, tone-map, and export
+        the open stack to ``path`` as PNG/JPEG (ticket 04 — via
+        :func:`~.persistence.export_render`). Returns the written
+        :class:`~pathlib.Path`.
+
+        Raises :class:`EnhanceError` when no stack is open or the export
+        arguments are invalid.
+        """
+        _stack, pipeline, image = self._open_stack_state()
+        out = pipeline.apply(image.data)  # full resolution, float32
+        pil_image = to_pil_image(tonemap(out))
+        return persistence.export_render(pil_image, path, format=format, quality=quality)
+
     # -- viewer-controller binding -------------------------------------------------
 
     def _on_viewer_snapshot(self, vsnap: ViewerSnapshot) -> None:
         """Viewer listener: a different open stack -> reset the editor state
-        (default pipeline, cleared undo/redo) and re-render both previews;
-        no stack -> clear everything."""
+        (the stored preset when there is one, else the default pipeline —
+        ticket 04; cleared undo/redo) and re-render both previews; no stack ->
+        clear everything."""
         with self._lock:
             current, image = vsnap.current, vsnap.image
             same = (current is None and self._stack is None) or (
@@ -392,8 +521,14 @@ class EditorController:
                 return
             self._stack = current
             self._image = image
+            self._preset_saved = False
+            self._saved_frame = None
             if current is not None and image is not None:
-                self._pipeline = default_pipeline()
+                preset = persistence.apply_preset_on_open(
+                    getattr(self._viewer_controller, "project", None), current
+                )
+                self._pipeline = preset if preset is not None else default_pipeline()
+                self._preset_saved = preset is not None
                 self._error = None
                 start = self._schedule_locked()
             else:

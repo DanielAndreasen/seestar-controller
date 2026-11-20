@@ -58,3 +58,9 @@ class MeasurementError(ProjectError):
     :mod:`.measurements`): the frame FK does not exist, the measurement id is
     unknown, or a ``jd``/``mag``/``mag_err`` value is invalid (non-numeric,
     non-finite, or a negative ``mag_err``)."""
+
+
+class PresetError(ProjectError):
+    """A per-image enhancement preset could not be saved or read (see
+    :mod:`.presets`): the frame id is invalid or unknown, the pipeline is not
+    a JSON-able mapping, or the stored preset row is corrupt."""

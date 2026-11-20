@@ -9,10 +9,11 @@ One project database holds the whole observing campaign (GLOSSARY.md):
   (also the name of its ``subs/<session>/`` / ``stacks/<session>/`` dirs),
   ``started_at``/``ended_at`` are UTC ISO-8601 strings (``ended_at`` is NULL
   while the session is open);
-- ``frames`` — one row per stored FITS file (sub-frame or stack): the session
-  FK, ``kind`` (``sub``/``stack``), the project-relative ``path``, the
-  observation time as both ``jd`` (Julian Date — the photometry standard) and
-  ``utc`` (ISO-8601), plus ``exposure``/``gain``/``target`` metadata;
+- ``frames`` — one row per stored FITS file (sub-frame, stack, or enhanced
+  image): the session FK, ``kind`` (``sub``/``stack``/``enhanced``), the
+  project-relative ``path``, the observation time as both ``jd`` (Julian Date
+  — the photometry standard) and ``utc`` (ISO-8601), plus
+  ``exposure``/``gain``/``target`` metadata;
 - ``stars`` — the saved star picks (see :mod:`.stars`): ``role`` is ``target``
   or ``comp``, with the pixel position (``x``/``y``, required — image
   coordinates) and the sky position (``ra_deg``/``dec_deg``, J2000 degrees,
@@ -20,7 +21,10 @@ One project database holds the whole observing campaign (GLOSSARY.md):
   (``aperture_radius``, ``sky_annulus_inner``/``sky_annulus_outer``, all in
   pixels);
 - ``measurements`` — one differential-magnitude data point per frame: the
-  frame FK, ``jd``, ``mag``, ``mag_err``, and the ``excluded`` outlier flag.
+  frame FK, ``jd``, ``mag``, ``mag_err``, and the ``excluded`` outlier flag;
+- ``presets`` — one per-image enhancement preset (image-enhance ticket 04,
+  see :mod:`.presets`): the frame id (TEXT primary key), the pipeline as a
+  JSON dict, and the last-update time.
 
 All writes go through SQLite transactions (``with conn:``); the database runs
 in WAL mode (``PRAGMA journal_mode=WAL``, set once by :func:`initialize_db`,
@@ -51,9 +55,18 @@ Migration history:
   ``NOT NULL DEFAULT``, which keeps the columns ``NOT NULL`` exactly like in
   a fresh v2 db. (``x``/``y`` nullability cannot be altered in place; the
   store always writes ``x``/``y``.)
+- **2 -> 3** — image-enhance ticket 04: create the ``presets`` table and
+  widen the ``frames.kind`` CHECK to also allow ``'enhanced'`` (the enhanced
+  images saved next to the stacks). SQLite cannot alter a CHECK in place, so
+  the ``frames`` table is REBUILT (create ``frames__v3`` with the widened
+  CHECK, copy the rows, drop the old table, rename, recreate the indexes).
+  The rebuild runs with foreign-key enforcement OFF (see :func:`migrate_db`)
+  because with FK ON a ``DROP TABLE`` would fire the implicit ``DELETE FROM``
+  and cascade-delete the ``measurements`` rows; a ``PRAGMA foreign_key_check``
+  after the rebuild proves nothing was lost.
 
-:func:`initialize_db` creates the v2 schema directly (the current
-:data:`SCHEMA_STATEMENTS`).
+:func:`initialize_db` creates the current schema by running the migrations
+on a fresh db (0 -> 1 -> ... -> :data:`SCHEMA_VERSION`).
 """
 
 from __future__ import annotations
@@ -64,7 +77,7 @@ from collections.abc import Callable
 from .errors import InvalidProjectError
 
 #: The schema version this build writes and supports.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: The tables every project database must have (checked on open).
 SCHEMA_TABLES = ("sessions", "frames", "stars", "measurements")
@@ -170,6 +183,75 @@ def _add_stars_aperture_columns(conn: sqlite3.Connection) -> None:
             )
 
 
+#: The ``frames`` table DDL at v3 — identical to the 0 -> 1 DDL except the
+#: ``kind`` CHECK also allows ``'enhanced'`` (image-enhance ticket 04). Used
+#: by the 2 -> 3 migration to rebuild the table (SQLite cannot alter a CHECK
+#: constraint in place).
+_FRAMES_V3_DDL = """
+CREATE TABLE frames__v3 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('sub', 'stack', 'enhanced')),
+    path TEXT NOT NULL,
+    jd REAL NOT NULL,
+    utc TEXT NOT NULL,
+    exposure REAL,
+    gain REAL,
+    target TEXT
+)
+"""
+
+#: The ``presets`` table DDL (v3, image-enhance ticket 04): one enhancement
+#: preset per frame — ``frame_id`` (TEXT primary key, the frames row id as a
+#: string), ``pipeline`` (the pipeline as a JSON dict), ``updated_at`` (UTC
+#: ISO-8601).
+_PRESETS_DDL = """
+CREATE TABLE IF NOT EXISTS presets (
+    frame_id TEXT PRIMARY KEY NOT NULL,
+    pipeline TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+
+def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
+    """Migration step 2 -> 3 (image-enhance ticket 04): create the
+    ``presets`` table and widen the ``frames.kind`` CHECK to allow
+    ``'enhanced'``.
+
+    The CHECK cannot be altered in place, so the ``frames`` table is rebuilt:
+    create ``frames__v3`` with the widened CHECK, copy all rows, drop the old
+    table, rename, and recreate the two indexes. This runs with foreign-key
+    enforcement OFF (see :func:`migrate_db`) — with FK ON the ``DROP TABLE``
+    would fire an implicit ``DELETE FROM frames`` and cascade-delete every
+    ``measurements`` row. A ``PRAGMA foreign_key_check`` afterwards proves the
+    rebuild lost nothing (a violation raises, rolling the migration back).
+
+    The rebuild is skipped when the ``frames`` table already allows
+    ``'enhanced'`` (idempotence guard — e.g. a re-run after a crash between
+    the db bump and the project.json mirror write).
+    """
+    conn.execute(_PRESETS_DDL)
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='frames'"
+    ).fetchone()
+    if row is not None and "'enhanced'" not in (row[0] or ""):
+        conn.execute(_FRAMES_V3_DDL)
+        conn.execute(
+            "INSERT INTO frames__v3 (id, session_id, kind, path, jd, utc, exposure, gain, target) "
+            "SELECT id, session_id, kind, path, jd, utc, exposure, gain, target FROM frames"
+        )
+        conn.execute("DROP TABLE frames")
+        conn.execute("ALTER TABLE frames__v3 RENAME TO frames")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_session_id ON frames (session_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_jd ON frames (jd)")
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise InvalidProjectError(
+                f"2 -> 3 migration would break foreign keys: {violations!r}"
+            )
+
+
 #: The migrations, keyed by the version they migrate FROM: applying
 #: ``MIGRATIONS[v]`` to a db at ``user_version == v`` brings it to ``v + 1``.
 #: :func:`migrate_db` walks the keys in ascending order up to
@@ -177,6 +259,7 @@ def _add_stars_aperture_columns(conn: sqlite3.Connection) -> None:
 MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
     0: tuple(SCHEMA_STATEMENTS),  # empty db -> v1: create the schema
     1: (_add_stars_aperture_columns,),  # dev-build v1 -> v2: aperture columns
+    2: (_migrate_2_to_3,),  # v2 -> v3: presets table + frames.kind 'enhanced'
 }
 
 
@@ -192,6 +275,13 @@ def migrate_db(conn: sqlite3.Connection) -> int:
     the migration. Returns the resulting version, always
     :data:`SCHEMA_VERSION` on success (a db already at
     :data:`SCHEMA_VERSION` is left untouched).
+
+    When migrations are pending, foreign-key enforcement is switched OFF for
+    their duration and restored afterwards (both pragmas run OUTSIDE any
+    transaction — the pragma is a no-op inside one). This is required by the
+    2 -> 3 ``frames`` table rebuild: with FK ON, ``DROP TABLE frames`` would
+    cascade-delete the ``measurements`` rows. A db already at
+    :data:`SCHEMA_VERSION` is not touched at all (no pragma, no transaction).
 
     ``conn`` must not have an open transaction (``open_project`` guarantees
     that). The caller owns the connection and is responsible for WAL mode.
@@ -216,27 +306,39 @@ def migrate_db(conn: sqlite3.Connection) -> int:
     if user_version < 0:
         raise InvalidProjectError(f"db user_version {user_version} is invalid (corrupt db)")
     version = user_version
-    while version < SCHEMA_VERSION:
-        steps = MIGRATIONS.get(version)
-        if steps is None:
-            raise InvalidProjectError(
-                f"no migration path from db user_version {version} to "
-                f"SCHEMA_VERSION {SCHEMA_VERSION}"
-            )
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            for step in steps:
-                if callable(step):
-                    step(conn)
-                else:
-                    conn.execute(step)
-            conn.execute(f"PRAGMA user_version={version + 1}")
-        except BaseException:
+    # FK enforcement must be off while migrations run (the 2 -> 3 frames
+    # rebuild drops a parent table); only touch the pragma when there is
+    # actually something to migrate, and always restore the previous state.
+    fk_was_on = False
+    if version < SCHEMA_VERSION:
+        fk_was_on = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+        if fk_was_on:
+            conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        while version < SCHEMA_VERSION:
+            steps = MIGRATIONS.get(version)
+            if steps is None:
+                raise InvalidProjectError(
+                    f"no migration path from db user_version {version} to "
+                    f"SCHEMA_VERSION {SCHEMA_VERSION}"
+                )
+            conn.execute("BEGIN IMMEDIATE")
             try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass  # the transaction is already gone
-            raise
-        conn.execute("COMMIT")
-        version += 1
+                for step in steps:
+                    if callable(step):
+                        step(conn)
+                    else:
+                        conn.execute(step)
+                conn.execute(f"PRAGMA user_version={version + 1}")
+            except BaseException:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass  # the transaction is already gone
+                raise
+            conn.execute("COMMIT")
+            version += 1
+    finally:
+        if fk_was_on:
+            conn.execute("PRAGMA foreign_keys=ON")
     return version
