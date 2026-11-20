@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, seestar-link 06, project-store 03
 
-**Status:** implemented in 9448906
+**Status:** implemented in a4fbe09
 
 - [x] Frames arriving during stacking are downloaded into the session directory
 - [x] Each stored frame has its metadata row in the project db
