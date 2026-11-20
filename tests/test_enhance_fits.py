@@ -79,7 +79,7 @@ from seestar_controller.store import (
 ENHANCE_PACKAGE_DIR = Path(enhance.__file__).resolve().parent
 
 #: The pure enhance modules — no ``gi`` import allowed (subprocess-enforced).
-PURE_ENHANCE_MODULES = ("__init__", "fits_io", "render", "viewer_controller")
+PURE_ENHANCE_MODULES = ("__init__", "fits_io", "render", "viewer_controller", "ops", "pipeline")
 
 #: The widget enhance modules — ``gi`` at module top, lazy-exported via PEP 562.
 WIDGET_ENHANCE_MODULES = ("viewer",)

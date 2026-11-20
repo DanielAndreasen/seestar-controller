@@ -4,9 +4,20 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** ready-for-agent
+**Status:** implemented in e7b2c12
 
-- [ ] Each op is a pure function with a params object
-- [ ] Pipeline applies ops in order and is re-runnable from the original
-- [ ] Stretch preserves ordering; denoise reduces injected noise; sharpen increases edge contrast; WB neutralizes a cast; background subtraction flattens a gradient
-- [ ] Tests: synthetic FITS per op + golden-hash regression for fixed input+params
+- [x] Each op is a pure function with a params object
+- [x] Pipeline applies ops in order and is re-runnable from the original
+- [x] Stretch preserves ordering; denoise reduces injected noise; sharpen increases edge contrast; WB neutralizes a cast; background subtraction flattens a gradient
+- [x] Tests: synthetic FITS per op + golden-hash regression for fixed input+params
+
+## Comments
+
+Pure only, no widget code (the sandbox has no GTK; the subprocess + source-scan boundary in tests now covers `ops` and `pipeline` too). numpy only — no scipy needed.
+
+- New pure `enhance/ops.py`: one module with a frozen, validating params dataclass + a pure apply function per op, all on float32 `(H, W)` / `(H, W, 3)` arrays, NaN-safe with the **NaN mask preserved** (NaN in → NaN out; statistics over finite values only; the gaussian blur fills NaN with the finite mean and the mask is restored). Input is never mutated (each op copies). `StretchParams(kind='linear'|'asinh'|'histogram', sigma, bins)` + `apply_stretch` (min-max to [0,1], asinh `asinh(sigma*x)/asinh(sigma)`, histogram equalization via numpy histogram+cdf — all monotonic); `DenoiseParams(strength∈[0,1], radius)` + `apply_denoise` (numpy separable gaussian conv with edge padding, `out=(1-s)*img+s*blur`); `SharpenParams(amount∈[0,3], radius)` + `apply_sharpen` (unsharp mask `img+amount*(img-blur)`); `WhiteBalanceParams(mode='gray-world'|'gains', gains=(r,g,b))` + `apply_white_balance` (gray-world scales per-channel finite means to the global mean; RGB only, grayscale no-op); `BackgroundParams(method='median'|'poly', degree)` + `apply_background` (per-block median grid nearest-upsampled, or a degree-`degree` polynomial least-squares fit to downsampled block means, subtracted; RGB per channel). Every params dataclass raises `EnhanceError` on out-of-range values and serializes via `to_dict`/`from_dict` (ticket 04 persistence). `OPS` registry maps op name → `OpSpec(name, params_type, apply)`.
+- New pure `enhance/pipeline.py`: `Op` frozen `(name, params)` (validated against `OPS`); `Pipeline(ops)` frozen — `apply(image: FitsImage|ndarray)` runs the ops **in order starting from the original data every call** (re-runnable, input never mutated), `with_param(name, **changes)` returns a new Pipeline via `dataclasses.replace` (immutable, re-validated), `to_dict`/`from_dict` round-trip; `default_pipeline()` = asinh stretch → denoise(0.25) → sharpen(0.5); `render_pipeline(pipeline, fits_image, max_size)` = apply then downscale-first + `render.tonemap` → PIL preview.
+- `enhance/__init__.py` eagerly exports the whole pure API (still no `gi`); `tests/test_enhance_fits.py` boundary lists extended with `ops`/`pipeline`.
+- Tests: `tests/test_enhance_pipeline.py` (112 pure headless): per-op synthetic tests (stretch monotonic on a ramp for all 3 kinds + asinh midtone lift + histogram two-value → {0,1}; denoise reduces std of injected gaussian noise on a flat field while preserving the mean, strength 0 = identity; sharpen increases the step-edge gradient; gray-world neutralizes a R=150/G=100/B=50 cast to equal channel means, gains mode, grayscale no-op; median/poly background flatten a linear gradient, residual std << original), params validation + dict round-trips, Op/Pipeline validation, order matters (stretch↔denoise), re-runnable from original + unmutated (ndarray and FitsImage), `with_param` immutability, `to_dict`/`from_dict`, `render_pipeline` L/RGB, NaN mask preserved by every op + all-NaN no-crash, purity sweep, golden-hash regression (fixed synthetic input + `default_pipeline()` → sha256 `d6e97c34b431754a230646a8d99a1ad77f7ff6015248868d19a89a8b9b69dd7f` over dtype+shape+bytes), subprocess no-gi + source scan + exports. Full suite: 1264 passed + 3 skipped (1152 + 112 new; the 3 skips are the gi widget modules).
+
+Assumptions: NaN pixels are preserved as NaN through every op (mask-preserving, documented in ops.py); stretch always min-max normalizes to [0,1] first (constant image → 0); pipeline ops work on float data, tonemap stays display-only in `render`; sharpen may overshoot outside [0,1] after a stretch (expected for unsharp masking); numpy only, no scipy.
