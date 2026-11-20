@@ -47,6 +47,18 @@ from gi.repository import Adw, Gtk  # noqa: E402
 from seestar_controller.ui import state as ui_state  # noqa: E402
 
 
+def _has_ancestor(widget, cls) -> bool:
+    """True when ``cls`` appears among ``widget``'s ancestors (Adw.HeaderBar
+    packs children into an internal Gtk.Box, so get_parent() alone is not
+    enough)."""
+    parent = widget.get_parent()
+    while parent is not None:
+        if isinstance(parent, cls):
+            return True
+        parent = parent.get_parent()
+    return False
+
+
 @pytest.fixture()
 def gtk():
     """GTK initialized, or skip when no display is available (headless)."""
@@ -93,12 +105,12 @@ def test_smoke_every_view_constructs_and_adds_to_a_view_stack(gtk):
         assert widget.view_id == view.id
         assert widget.title == view.title
         stack.add_titled(widget, view.id, view.title)  # must not raise
-    assert stack.get_n_pages() == len(ui_state.VIEWS)
+    assert stack.get_pages().get_n_items() == len(ui_state.VIEWS)
     for view in ui_state.VIEWS:
         page = stack.get_child_by_name(view.id)
         assert page is not None
         assert page.view_id == view.id
-        assert stack.get_title(page) == view.title
+        assert stack.get_page(page).get_title() == view.title
 
 
 def test_window_has_five_stack_pages_and_sidebar_switches_views(app, gtk):
@@ -373,7 +385,7 @@ def test_window_header_has_connection_panel_and_shared_controller(app, gtk):
     assert window.connection_controller is app.connection_controller
     assert window.connection_panel.controller is app.connection_controller
     # the panel is packed into the header bar (left side)
-    assert isinstance(window.connection_panel.get_parent(), Adw.HeaderBar)
+    assert _has_ancestor(window.connection_panel, Adw.HeaderBar)
 
 
 # --- notifications + error surfacing (ticket 04) ---------------------------------------
@@ -414,7 +426,7 @@ def test_window_wraps_content_in_toast_overlay_and_shares_the_bus(app, gtk):
     assert window.toast_presenter.overlay is window.toast_overlay
     # header-bar notifications button + win.notifications action
     assert window.lookup_action("notifications") is not None
-    assert isinstance(window.notifications_button.get_parent(), Adw.HeaderBar)
+    assert _has_ancestor(window.notifications_button, Adw.HeaderBar)
 
 
 def test_toast_presenter_adds_non_modal_toast_per_bus_push(gtk):

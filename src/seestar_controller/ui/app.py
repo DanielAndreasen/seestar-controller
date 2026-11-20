@@ -207,6 +207,17 @@ def _invoke_on_main(callback) -> int:
     return GLib.idle_add(callback)
 
 
+def _shared_from_app(app, name: str, make_default):
+    """Read a shared controller off ``app``, falling back to ``make_default()``.
+
+    The fallback must not rely on truthiness: some shared objects define
+    ``__len__`` (an empty :class:`NotificationBus` or plan queue is falsy), so
+    ``getattr(app, name, None) or default`` would wrongly build a new one.
+    """
+    value = getattr(app, name, None)
+    return value if value is not None else make_default()
+
+
 def apply_dark_theme(dark: bool) -> None:
     """Apply the dark-theme flag via the libadwaita style manager.
 
@@ -225,6 +236,9 @@ def _capture_geometry(window: Gtk.Window) -> dict:
     ``x``/``y`` are ``None`` when the backend cannot report a position.
     """
     width, height = window.get_width(), window.get_height()
+    if width <= 0 or height <= 0:
+        # not mapped yet: fall back to the default size instead of 0x0
+        width, height = window.get_default_size()
     x = y = None
     get_position = getattr(window, "get_position", None)
     if get_position is not None:
@@ -279,8 +293,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._settings_controller = (
             settings_controller
             if settings_controller is not None
-            else getattr(app, "settings_controller", None)
-            or SettingsController(state)
+            else _shared_from_app(app, "settings_controller", lambda: SettingsController(state))
         )
         # Ticket 03: one shared connection controller; the header panel
         # observes it (its invoke_on_main is GLib.idle_add, so worker-thread
@@ -288,8 +301,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._connection_controller = (
             connection_controller
             if connection_controller is not None
-            else getattr(app, "connection_controller", None)
-            or ConnectionController(self._settings_controller, invoke_on_main=_invoke_on_main)
+            else _shared_from_app(app, "connection_controller", lambda: ConnectionController(self._settings_controller, invoke_on_main=_invoke_on_main))
         )
         # Ticket 04: one shared notification bus; the notification controller
         # translates connection snapshots + device events into bus
@@ -297,24 +309,23 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._notification_bus = (
             notification_bus
             if notification_bus is not None
-            else getattr(app, "notification_bus", None)
-            or NotificationBus()
+            else _shared_from_app(app, "notification_bus", lambda: NotificationBus())
         )
-        self._notification_controller = (
-            getattr(app, "notification_controller", None)
-            or NotificationController(
+        self._notification_controller = _shared_from_app(
+            app,
+            "notification_controller",
+            lambda: NotificationController(
                 self._notification_bus,
                 self._connection_controller,
                 invoke_on_main=_invoke_on_main,
-            )
+            ),
         )
         # Observing ticket 01: one shared plan-queue controller; the Observe
         # view's queue editor edits through it.
         self._queue_controller = (
             queue_controller
             if queue_controller is not None
-            else getattr(app, "queue_controller", None)
-            or PlanQueueController()
+            else _shared_from_app(app, "queue_controller", lambda: PlanQueueController())
         )
         # Observing ticket 03: one shared observe controller (connection +
         # queue + executor + preview + bus); the Observe view renders its
@@ -322,13 +333,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._observe_controller = (
             observe_controller
             if observe_controller is not None
-            else getattr(app, "observe_controller", None)
-            or ObserveController(
+            else _shared_from_app(app, "observe_controller", lambda: ObserveController(
                 self._connection_controller,
                 self._queue_controller,
                 self._notification_bus,
                 invoke_on_main=_invoke_on_main,
-            )
+            ))
         )
         # Image-enhance ticket 01: one shared viewer controller (project
         # stacks + open stack + preview); the Enhance view renders its
@@ -337,8 +347,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._viewer_controller = (
             viewer_controller
             if viewer_controller is not None
-            else getattr(app, "viewer_controller", None)
-            or ViewerController()
+            else _shared_from_app(app, "viewer_controller", lambda: ViewerController())
         )
         # Image-enhance ticket 03: one shared editor controller over the
         # viewer controller (current pipeline + undo/redo + debounced
@@ -348,8 +357,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._editor_controller = (
             editor_controller
             if editor_controller is not None
-            else getattr(app, "editor_controller", None)
-            or EditorController(self._viewer_controller, invoke_on_main=_invoke_on_main)
+            else _shared_from_app(app, "editor_controller", lambda: EditorController(self._viewer_controller, invoke_on_main=_invoke_on_main))
         )
         # Photometry ticket 01: one shared pick controller following the
         # viewer controller (the open stack becomes the pick session's
@@ -358,8 +366,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._picker_controller = (
             picker_controller
             if picker_controller is not None
-            else getattr(app, "picker_controller", None)
-            or PickController(viewer_controller=self._viewer_controller)
+            else _shared_from_app(app, "picker_controller", lambda: PickController(viewer_controller=self._viewer_controller))
         )
         # Photometry ticket 02: one shared catalog-assist controller bound to
         # the pick controller (it follows the target pick); the Photometry
@@ -369,8 +376,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._suggest_controller = (
             suggest_controller
             if suggest_controller is not None
-            else getattr(app, "suggest_controller", None)
-            or SuggestionController(picker_controller=self._picker_controller)
+            else _shared_from_app(app, "suggest_controller", lambda: SuggestionController(picker_controller=self._picker_controller))
         )
         # Photometry ticket 04: one shared run + results controller bound to
         # the pick controller (its picks are measured; the stored picks are
@@ -381,10 +387,9 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._run_controller = (
             run_controller
             if run_controller is not None
-            else getattr(app, "run_controller", None)
-            or RunController(
+            else _shared_from_app(app, "run_controller", lambda: RunController(
                 picker_controller=self._picker_controller, invoke_on_main=_invoke_on_main
-            )
+            ))
         )
         # Period-analysis ticket 01: one shared lightcurve controller
         # following the shared viewer controller (the open project becomes the
@@ -394,10 +399,9 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._lightcurve_controller = (
             lightcurve_controller
             if lightcurve_controller is not None
-            else getattr(app, "lightcurve_controller", None)
-            or LightcurveController(
+            else _shared_from_app(app, "lightcurve_controller", lambda: LightcurveController(
                 viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
-            )
+            ))
         )
         # Period-analysis ticket 03: one shared period controller bound to the
         # shared lightcurve controller (it follows the same project and its
@@ -408,8 +412,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._period_controller = (
             period_controller
             if period_controller is not None
-            else getattr(app, "period_controller", None)
-            or PeriodController(self._lightcurve_controller, invoke_on_main=_invoke_on_main)
+            else _shared_from_app(app, "period_controller", lambda: PeriodController(self._lightcurve_controller, invoke_on_main=_invoke_on_main))
         )
 
         toolbar_view = Adw.ToolbarView()
@@ -485,8 +488,10 @@ class SeestarWindow(Adw.ApplicationWindow):
         )
 
         split = Adw.NavigationSplitView()
-        split.set_sidebar(scrolled)
-        split.set_content(self._stack)
+        # NavigationSplitView's sidebar/content must be Adw.NavigationPages,
+        # not bare widgets.
+        split.set_sidebar(Adw.NavigationPage.new(scrolled, "Views"))
+        split.set_content(Adw.NavigationPage.new(self._stack, "View"))
         toolbar_view.set_content(split)
         # Ticket 04: the whole content sits inside an Adw.ToastOverlay, so
         # bus notifications surface as non-modal toasts over the current view.
