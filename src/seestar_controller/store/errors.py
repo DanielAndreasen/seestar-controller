@@ -21,3 +21,17 @@ class InvalidProjectError(ProjectError):
     """The path looks like a project but is invalid, corrupt, or unsupported
     (unparseable ``project.json``, missing/corrupt ``db.sqlite``, unsupported
     ``schema_version``)."""
+
+
+class SessionOpenError(ProjectError):
+    """A session is already open in the project; starting another one while
+    one is open is rejected (see :mod:`.sessions`)."""
+
+
+class SessionNotFoundError(ProjectError):
+    """No session with the given id exists in the project."""
+
+
+class SessionAlreadyClosedError(ProjectError):
+    """The session is already closed (``ended_at`` is set); closing it again
+    is rejected."""

@@ -5,7 +5,10 @@ Pure Python, no GTK, no link (module boundary per
 
 - :mod:`.errors` — the error hierarchy: :class:`~.errors.ProjectError` base,
   with :class:`~.errors.ProjectExistsError`,
-  :class:`~.errors.ProjectNotFoundError`, :class:`~.errors.InvalidProjectError`
+  :class:`~.errors.ProjectNotFoundError`, :class:`~.errors.InvalidProjectError`,
+  and the session errors :class:`~.errors.SessionOpenError`,
+  :class:`~.errors.SessionNotFoundError`,
+  :class:`~.errors.SessionAlreadyClosedError`
 - :mod:`.schema` — the ``db.sqlite`` schema (sessions, frames, stars,
   measurements) and :data:`~.schema.SCHEMA_VERSION`, initialized in one
   transaction with WAL journal mode
@@ -15,6 +18,12 @@ Pure Python, no GTK, no link (module boundary per
   ``.name``, ``.config``, ``.db``, atomic ``save_config()``) and
   :class:`~.project.ProjectSummary`, plus the project-root resolution
   (``~/SeestarProjects/`` default, ``SEESTAR_PROJECT_ROOT`` override)
+- :mod:`.sessions` — the session lifecycle: :func:`~.sessions.start_session`,
+  :func:`~.sessions.close_session`, :func:`~.sessions.list_sessions`,
+  :func:`~.sessions.get_open_session`, the :class:`~.sessions.Session` record,
+  and the session errors :class:`~.errors.SessionOpenError`,
+  :class:`~.errors.SessionNotFoundError`,
+  :class:`~.errors.SessionAlreadyClosedError`
 
 Module boundary (see ``.scratch/project-store/spec.md``): nothing in this
 package imports GTK or :mod:`seestar_controller.link`.
@@ -25,6 +34,9 @@ from .errors import (
     ProjectError,
     ProjectExistsError,
     ProjectNotFoundError,
+    SessionAlreadyClosedError,
+    SessionNotFoundError,
+    SessionOpenError,
 )
 from .project import (
     DB_FILE,
@@ -45,6 +57,13 @@ from .project import (
     utc_now_iso,
 )
 from .schema import SCHEMA_TABLES, SCHEMA_VERSION, initialize_db
+from .sessions import (
+    Session,
+    close_session,
+    get_open_session,
+    list_sessions,
+    start_session,
+)
 
 __all__ = [
     "DB_FILE",
@@ -63,11 +82,19 @@ __all__ = [
     "ProjectExistsError",
     "ProjectNotFoundError",
     "ProjectSummary",
+    "Session",
+    "SessionAlreadyClosedError",
+    "SessionNotFoundError",
+    "SessionOpenError",
+    "close_session",
     "create_project",
     "default_project_root",
+    "get_open_session",
     "initialize_db",
     "list_projects",
+    "list_sessions",
     "open_project",
     "slugify",
+    "start_session",
     "utc_now_iso",
 ]
