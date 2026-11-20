@@ -96,6 +96,15 @@ is selected at startup (the Projects view is a later ticket), so the
 controllers start empty and the view shows a "no project" placeholder until
 :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.set_project`
 is called.
+
+Photometry (ticket 01): the application owns a shared
+:class:`~seestar_controller.photometry.picking.PickController` following the
+shared viewer controller (every stack opened on the Enhance view becomes the
+pick session's current image). The window passes both to the Photometry view,
+whose :class:`~seestar_controller.photometry.star_picker.StarPickerView`
+renders the clickable preview with the aperture overlay, the role/aperture
+controls, the picks list and the Save picks button (persisting the picks into
+the project via :mod:`seestar_controller.store.stars`).
 """
 
 from __future__ import annotations
@@ -114,6 +123,7 @@ from seestar_controller.observing import (  # noqa: E402
     ObserveController,
     PlanQueueController,
 )
+from seestar_controller.photometry import PickController  # noqa: E402
 
 from .connection import ConnectionController  # noqa: E402
 from .connection_panel import ConnectionPanel  # noqa: E402
@@ -209,6 +219,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         observe_controller: ObserveController | None = None,
         viewer_controller: ViewerController | None = None,
         editor_controller: EditorController | None = None,
+        picker_controller: PickController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -289,6 +300,16 @@ class SeestarWindow(Adw.ApplicationWindow):
             else getattr(app, "editor_controller", None)
             or EditorController(self._viewer_controller, invoke_on_main=_invoke_on_main)
         )
+        # Photometry ticket 01: one shared pick controller following the
+        # viewer controller (the open stack becomes the pick session's
+        # image); the Photometry view renders its snapshots and binds its
+        # click/role/aperture/save controls to it.
+        self._picker_controller = (
+            picker_controller
+            if picker_controller is not None
+            else getattr(app, "picker_controller", None)
+            or PickController(viewer_controller=self._viewer_controller)
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -334,6 +355,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     observe_controller=self._observe_controller,
                     viewer_controller=self._viewer_controller,
                     editor_controller=self._editor_controller,
+                    picker_controller=self._picker_controller,
                 ),
                 view.id,
                 view.title,
@@ -463,6 +485,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         Enhance view's sliders/buttons bind to it)."""
         return self._editor_controller
 
+    @property
+    def picker_controller(self) -> PickController:
+        """The shared pick controller (photometry ticket 01 — the Photometry
+        view renders its snapshots and binds its controls to it)."""
+        return self._picker_controller
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -570,6 +598,10 @@ class SeestarApplication(Adw.Application):
         self.editor_controller = EditorController(
             self.viewer_controller, invoke_on_main=_invoke_on_main
         )
+        # Photometry ticket 01: the shared pick controller following the
+        # shared viewer controller (the open stack becomes the pick
+        # session's image); the window passes it to the Photometry view.
+        self.picker_controller = PickController(viewer_controller=self.viewer_controller)
 
     @property
     def state(self) -> AppState:

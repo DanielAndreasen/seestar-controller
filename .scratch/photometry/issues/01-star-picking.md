@@ -4,10 +4,21 @@
 
 **Blocked by:** ui-shell 01, image-enhance 01, project-store 04, catalog 02
 
-**Status:** ready-for-agent
+**Status:** implemented in 1eb3882
 
-- [ ] Click on image selects a star (nearest detected source or exact pixel)
-- [ ] Click pixel → RA/Dec via FITS WCS
-- [ ] Target/comp roles assignable per picked star; apertures drawn on the image
-- [ ] Picks saved to the project and restored on reopen
-- [ ] Tests: WCS round-trip; pick save/load on temp project
+- [x] Click on image selects a star (nearest detected source or exact pixel)
+- [x] Click pixel → RA/Dec via FITS WCS
+- [x] Target/comp roles assignable per picked star; apertures drawn on the image
+- [x] Picks saved to the project and restored on reopen
+- [x] Tests: WCS round-trip; pick save/load on temp project
+
+## Comments
+
+New package `src/seestar_controller/photometry/` with the strict pure/widget split (subprocess + source-scan enforced, mirroring image-enhance 01):
+
+- Pure `photometry/picking.py` (stdlib + numpy + store + catalog only; `astropy.wcs` lazy inside the WCS helpers; `FitsImage` only under TYPE_CHECKING so enhance is never imported at runtime): `PickingError(ValueError)`; `pixel_to_sky(header, x, y)` / `sky_to_pixel(header, coord)` via `astropy.wcs.WCS(header).all_pix2world/all_world2pix` — 0-based pixels (x=column, y=row), 1-based WCS internally, documented; missing WCS (blank CTYPE — `WCS({})` does not raise) or non-finite input/output -> `PickingError`; `ApertureParams` frozen (radius_px=4.0, sky_in_px=8.0, sky_out_px=12.0 defaults matching the store schema, validated: positive, in<out, bools rejected); `StarPickSpec` frozen (role target|comp, x, y, coord J2000Coord|None, label, `describe()`); `PickSession` frozen snapshot (image, picks tuple, aperture); `PickController(project=None, viewer_controller=None)` — `pick_at(x, y, role, label=, snap=True)` (bounds + WCS required; snap = brightness-weighted centroid `clip(v - median, 0)` in a 9x9 window, exact pixel when no source/flat/NaN window; pixel -> J2000 via WCS; one target with replace semantics, comps accumulate), `remove_pick`, `set_role` (target replaces), `clear`, `set_aperture`/`set_aperture_params` (invalid combo leaves the previous aperture), `set_image`, `attach_viewer` (follows the shared ViewerController's open stack), `set_project` (loads stored picks), `save()`/`load()` via `store.stars.save_star_picks`/`load_star_picks` (session aperture written into every per-pick row; on load taken from the first stored pick; store errors wrapped into PickingError; empty save clears), listeners idempotent/decorator-capable/isolated with frozen snapshots.
+- Widget `photometry/star_picker.py` (gi at top, lazy PEP 562 export via `_WIDGET_EXPORTS`): `StarPickerView` — Gtk.Paned with the stack ListBox + Refresh on the left plus a role DropDown (Target/Comp), aperture SpinButtons (radius/sky-in/sky-out), the picks ListBox + Remove selected, and the Save picks button; on the right a Gtk.Picture (CONTAIN) fed from `render_preview` via the PIL->PNG->Gdk.Texture path of `enhance.viewer.texture_from_pil`, overlaid with a transparent Gtk.DrawingArea: a Gtk.GestureClick maps widget coords -> 0-based image pixels (CONTAIN scale/offset + preview-vs-FITS downscale, `widget_to_image`/`image_to_widget`) into `pick_at`, and the draw func paints each pick's aperture circle + dashed sky annulus + label (target green, comp blue; `pick_marks()`/`_compute_marks()` exposed for tests).
+- Wiring: `SeestarApplication` owns `picker_controller = PickController(viewer_controller=self.viewer_controller)`; `SeestarWindow` takes/passes it to `build_view(view.id, ..., picker_controller=...)`; `PhotometryView` (ui/views.py) now embeds the `StarPickerView` instead of the placeholder (pass-through properties `picker_controller`/`viewer_controller`/`picker_widget`/`save_button`).
+- Tests: `tests/test_photometry_picking.py` (22 pure headless: WCS CAR/TAN pixel<->sky round-trip within 1e-6, CRPIX->CRVAL, missing-WCS/bad-input -> PickingError, ApertureParams/StarPickSpec validation + frozen, pick_at snap-to-centroid/exact-pixel/target-replace/comps/remove/set_role/clear, aperture setters, listeners + frozen snapshot, save/load round-trip on a tmp project with a WCS stack incl. the project.json mirror + aperture restore + comps-only rejection + empty-save clears, viewer-follows-open-stack, subprocess + source-scan boundary + public API) and `tests/test_photometry_widgets.py` (importorskip gi; skips in sandbox, runs on desktop/xvfb: build_view wiring, app owns the shared controller and the window passes it down, stack list + preview texture, click -> pick with dropdown role, one aperture mark per pick, radius spin -> aperture, Save picks button -> `load_star_picks`). Full suite: 1328 passed + 4 skipped.
+
+Assumptions: pixel convention 0-based (x=column, y=row) with the 1-based WCS handled internally; a pick always carries its sky coord (WCS required to click; pixel-only picks can only be loaded); snap is the documented simple brightness-centroid in a 9x9 window; aperture is session-level in the controller and per-pick in the store (written on save, read from the first row on load); no project-selection UI yet, so the project is set programmatically via `set_project()`; widget tests skip in the sandbox (no GTK).

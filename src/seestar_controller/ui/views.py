@@ -10,8 +10,9 @@ dependency — it needs the system GTK headers to build)::
 
     sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
 
-Most views are still :class:`_PlaceholderView`\\ s (a centered label); later
-tickets (photometry, period-analysis) replace the placeholder content. The
+The Lightcurve and Projects views are still :class:`_PlaceholderView`\\ s (a
+centered label); later tickets (period-analysis, projects) replace the
+placeholder content. The
 **Observe** view (observing tickets 01 + 03) already carries the real
 content: the two-pane
 :class:`~seestar_controller.observing.observe_view.ObserveView` widget — the
@@ -31,7 +32,15 @@ shared
 :class:`~seestar_controller.enhance.viewer_controller.ViewerController` and
 :class:`~seestar_controller.enhance.editor_controller.EditorController`
 (both passed in via :func:`build_view`; with no project set yet the view
-shows a "no project" placeholder — the Projects view is a later ticket).
+shows a "no project" placeholder — the Projects view is a later ticket). The
+**Photometry** view (photometry ticket 01) carries the
+:class:`~seestar_controller.photometry.star_picker.StarPickerView` widget —
+the project's stack list + role/aperture controls + picks list + Save picks
+on the left, the clickable preview with the aperture overlay on the right —
+driven by the app's shared
+:class:`~seestar_controller.photometry.picking.PickController` (which follows
+the shared viewer controller's open stack) and that same viewer controller
+(both passed in via :func:`build_view`).
 :data:`VIEW_CLASSES` maps the pure-layer view ids
 (:mod:`seestar_controller.ui.state`) to the widget classes, and
 :func:`build_view` is the factory the app window uses.
@@ -60,6 +69,10 @@ from seestar_controller.observing.observe_view import (  # noqa: E402
     ObserveView as ObserveViewWidget,
 )
 from seestar_controller.observing.queue_editor import QueueEditor  # noqa: E402
+from seestar_controller.photometry import PickController  # noqa: E402
+from seestar_controller.photometry.star_picker import (  # noqa: E402
+    StarPickerView as StarPickerWidget,
+)
 
 from .connection import ConnectionController  # noqa: E402
 from .settings import SettingsController  # noqa: E402
@@ -261,10 +274,78 @@ class EnhanceView(_PlaceholderView):
 
 
 class PhotometryView(_PlaceholderView):
-    """Photometry view placeholder (star picking + run come later)."""
+    """Photometry view (photometry ticket 01): wraps the
+    :class:`~seestar_controller.photometry.star_picker.StarPickerView` widget —
+    the project's stack list + role selector + aperture spins + picks list +
+    Save picks on the left, the clickable preview with the aperture overlay
+    on the right.
+
+    ``picker_controller`` is the app's shared
+    :class:`~seestar_controller.photometry.picking.PickController` (it follows
+    the shared viewer controller's open stack) and ``viewer_controller`` the
+    shared
+    :class:`~seestar_controller.enhance.viewer_controller.ViewerController`
+    (the app window passes both via :func:`build_view`); when omitted, the
+    view creates its own, so it also constructs standalone. With no project
+    set on the viewer controller the view shows a "no stack open" placeholder
+    (the Projects view is a later ticket; the project can be set later via
+    :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.set_project`).
+    """
 
     view_id = "photometry"
     title = "Photometry"
+
+    def __init__(
+        self,
+        picker_controller: PickController | None = None,
+        viewer_controller: ViewerController | None = None,
+        **kwargs,
+    ) -> None:
+        # set before super().__init__(): _build_content() runs inside it
+        if viewer_controller is None and picker_controller is not None:
+            viewer_controller = picker_controller.viewer_controller
+        self._viewer_controller = (
+            viewer_controller if viewer_controller is not None else ViewerController()
+        )
+        self._picker_controller = (
+            picker_controller
+            if picker_controller is not None
+            else PickController(viewer_controller=self._viewer_controller)
+        )
+        # the inner widget handles its own padding
+        kwargs.setdefault("margin_top", 0)
+        kwargs.setdefault("margin_bottom", 0)
+        kwargs.setdefault("margin_start", 0)
+        kwargs.setdefault("margin_end", 0)
+        kwargs.setdefault("spacing", 0)
+        super().__init__(**kwargs)
+
+    def _build_content(self) -> None:
+        self._picker_widget = StarPickerWidget(
+            picker_controller=self._picker_controller,
+            viewer_controller=self._viewer_controller,
+        )
+        self.append(self._picker_widget)
+
+    @property
+    def picker_controller(self) -> PickController:
+        """The shared pure-layer pick controller driving this view."""
+        return self._picker_controller
+
+    @property
+    def viewer_controller(self) -> ViewerController:
+        """The shared pure-layer viewer controller backing this view."""
+        return self._viewer_controller
+
+    @property
+    def picker_widget(self) -> StarPickerWidget:
+        """The star-picker widget (stack list + controls | preview + overlay)."""
+        return self._picker_widget
+
+    @property
+    def save_button(self) -> Gtk.Button:
+        """The widget's Save picks button (photometry ticket 01)."""
+        return self._picker_widget.save_button
 
 
 class LightcurveView(_PlaceholderView):
@@ -301,6 +382,7 @@ def build_view(
     observe_controller: ObserveController | None = None,
     viewer_controller: ViewerController | None = None,
     editor_controller: EditorController | None = None,
+    picker_controller: PickController | None = None,
     project: Any = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
@@ -308,10 +390,11 @@ def build_view(
     Raises :class:`~seestar_controller.ui.state.UnknownViewError` for an id
     not in the pure-layer view list. ``queue_controller`` /
     ``observe_controller`` / ``project`` are forwarded to the Observe view
-    (observing tickets 01 + 03) and ``viewer_controller`` /
-    ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03)
-    — the app window passes its shared controllers; the other views ignore
-    them.
+    (observing tickets 01 + 03), ``viewer_controller`` /
+    ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
+    and ``picker_controller`` / ``viewer_controller`` to the Photometry view
+    (photometry ticket 01) — the app window passes its shared controllers;
+    the other views ignore them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
@@ -324,5 +407,10 @@ def build_view(
         return EnhanceView(
             viewer_controller=viewer_controller,
             editor_controller=editor_controller,
+        )
+    if view_id == PhotometryView.view_id:
+        return PhotometryView(
+            picker_controller=picker_controller,
+            viewer_controller=viewer_controller,
         )
     return VIEW_CLASSES[view_id]()
