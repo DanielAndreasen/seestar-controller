@@ -4,9 +4,9 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** ready-for-agent
+**Status:** implemented in 575fe94
 
-- [ ] Frequency grid spans from ~2 cycles over the baseline up to the cadence limit
-- [ ] Returns top-N peaks (period + power), sorted
-- [ ] Handles uneven sampling and gaps (that's the point of Lomb-Scargle)
-- [ ] Tests: synthetic sinusoid recovery; pure noise → no dominant peak; excluded points honored
+- [x] Frequency grid spans from ~2 cycles over the baseline up to the cadence limit
+- [x] Returns top-N peaks (period + power), sorted
+- [x] Handles uneven sampling and gaps (that's the point of Lomb-Scargle)
+- [x] Tests: synthetic sinusoid recovery; pure noise → no dominant peak; excluded points honored
