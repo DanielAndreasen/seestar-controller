@@ -10,7 +10,7 @@ New features are developed on a new branch off `main`, not on `main` itself. Mer
 
 ## Worktrees
 
-New work (tickets, bug fixes) is done in its own git worktree under `$VIBE_HOME/worktrees/` (default `~/.vibe/worktrees/`, per-repo bucket), on a new branch off `main` — not as a branch in the main checkout. The main agent merges finished, reviewed work into `main` and resolves any merge conflicts itself; if a conflict is difficult, it may ask the implementing subagent for help. Worktrees are cleaned up after their branch is merged.
+New work (tickets, bug fixes) is done in its own git worktree under `$VIBE_HOME/worktrees/` (default `~/.vibe/worktrees/`, per-repo bucket), on a new branch off `main` — not as a branch in the main checkout. The main agent merges finished, reviewed work into `main` and resolves any merge conflicts itself; if a conflict is difficult, it may ask the implementing subagent for help. When a branch is successfully merged into `main`, the main agent cleans up its worktree (`git worktree remove` + delete the branch) so no stale worktrees accumulate.
 
 ## Lint/typecheck (last implementation step)
 
