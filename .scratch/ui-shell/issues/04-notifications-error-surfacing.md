@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 03
 
-**Status:** implemented in 321685a
+**Status:** implemented in 413a85a, review fix 37dae99
 
 - [x] Link events/errors surface as toast notifications
 - [x] No modal dialogs for background events
