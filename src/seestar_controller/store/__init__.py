@@ -48,11 +48,17 @@ Pure Python, no GTK, no link (module boundary per
   points), the :class:`~.measurements.Measurement` record (frame FK +
   joined session_id/utc, jd, mag, mag_err, excluded), and
   :class:`~.errors.MeasurementError`
+- :mod:`.csv_export` — CSV export: :func:`~.csv_export.export_csv` (atomic
+  write of ``lightcurve.csv`` with header :data:`~.csv_export.CSV_HEADER`,
+  excluded points omitted unless ``include_excluded=True``), the default
+  file name :data:`~.csv_export.CSV_FILE`, and the header columns
+  :data:`~.csv_export.CSV_HEADER`
 
 Module boundary (see ``.scratch/project-store/spec.md``): nothing in this
 package imports GTK or :mod:`seestar_controller.link`.
 """
 
+from .csv_export import CSV_FILE, CSV_HEADER, export_csv
 from .errors import (
     FrameStoreError,
     InvalidProjectError,
@@ -122,6 +128,8 @@ from .stars import (
 )
 
 __all__ = [
+    "CSV_FILE",
+    "CSV_HEADER",
     "DB_FILE",
     "DEFAULT_PROJECT_ROOT",
     "FITS_SUFFIX",
@@ -160,6 +168,7 @@ __all__ = [
     "close_session",
     "create_project",
     "default_project_root",
+    "export_csv",
     "get_frame_path",
     "get_open_session",
     "initialize_db",

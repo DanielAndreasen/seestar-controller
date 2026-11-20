@@ -1,11 +1,15 @@
 # 06: CSV export
 
-**What to build:** exporting the lightcurve as `lightcurve.csv` in the project directory with columns `jd, utc, mag, mag_err, session, target`, re-parseable by standard tools. Demoable: export a project's lightcurve, re-parse the CSV, values match the db.
+**What to build:** exporting the lightcurve as `lightcurve.csv` in the project directory with columns `jd,utc,mag,mag_err,session,target`, re-parseable by standard tools. Demoable: export a project's lightcurve, re-parse the CSV, values match the db.
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** implemented in 10d087a
 
-- [ ] `export_csv(project)` writes `lightcurve.csv` with header `jd,utc,mag,mag_err,session,target`
-- [ ] Export reflects exclusion flags (excluded rows omitted or marked — pick one, document it)
-- [ ] Tests: export → re-parse round-trip matches db values
+- [x] `export_csv(project)` writes `lightcurve.csv` with header `jd,utc,mag,mag_err,session,target`
+- [x] Export reflects exclusion flags (excluded rows omitted or marked — pick one, document it)
+- [x] Tests: export → re-parse round-trip matches db values
+
+## Comments
+
+Implemented in `src/seestar_controller/store/csv_export.py` (pure Python, stdlib only — `csv`/`os`/`tempfile`; no GTK / no link imports, subprocess-enforced in tests), exported from `store/__init__.py` (`export_csv`, `CSV_FILE`, `CSV_HEADER`). No schema change. API: `export_csv(project, path=None, include_excluded=False) -> Path` — `path=None` writes `<project>/lightcurve.csv` (`CSV_FILE`), an explicit string/Path writes there (parent dirs created); rows come from `lightcurve(project, include_excluded=...)` so the file order is by `jd` (ties by id) across all sessions. Documented choices: (1) **exclusion policy: OMIT** — excluded points are not written by default, `include_excluded=True` writes them too (same semantics as `lightcurve()`); omitting keeps the file directly plottable, the db keeps the full history; (2) header exactly `jd,utc,mag,mag_err,session,target` (`CSV_HEADER`), UTF-8, `\n` line terminator (`csv.writer(lineterminator="\n")`), fields with commas/quotes quoted by the csv module; (3) formatting: `jd`/`mag`/`mag_err` as `repr(float)` (round-trips exactly through `float()`), `mag_err` NULL -> empty field, `utc` as the stored ISO string, `session` = session id, `target` = `config['target']['name']` (mapping), a plain string as-is, else `""` when unset; (4) **atomic write**: temp file in the same dir + flush + fsync + `os.replace`, temp removed on any failure incl. `KeyboardInterrupt` (same pattern as `save_config`), so a crash never leaves a partial CSV or a `*.tmp`; (5) `include_excluded` non-bool or a bad `path` type -> `TypeError`, `OSError` from the write propagates with the previous file intact. Tests: `tests/test_store_csv.py` (18 tests, tmp_path only, no network; frames inserted as db rows directly, sessions via `start_session` with a frozen clock): file at project root + returned path, exact header (raw first line, no `\r`, csv.reader row), re-parse round-trip vs db rows exactly (repr float round-trip incl. `0.1+0.2` ugly floats, NULL mag_err -> `""`, session, target from config), `include_excluded=True` variant vs db, excluded omitted by default + flags set afterwards reflected, `include_excluded` non-bool -> `TypeError`, empty lightcurve -> header-only file, atomic write (patched `os.replace` failure keeps previous CSV + no tmp; `KeyboardInterrupt` at fsync leaves no partial file + no tmp), no tmp after success, custom path (Path + str, parent created, nothing at default spot), bad path type -> `TypeError`, target empty when unset, target name with comma quoted + exact re-parse, export after reopen identical, public-API export test, module-boundary subprocess test. `uv run pytest`: 693 passed (675 + 18).
