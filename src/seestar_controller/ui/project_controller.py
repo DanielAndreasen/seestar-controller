@@ -13,6 +13,10 @@ What lives here:
 
 - :class:`ProjectEvent` — the frozen listener event fired on every change
   (the project list and/or the current project);
+- :class:`ProjectRootError` — an :class:`OSError` raised when the project
+  root cannot be used (not a directory, or not writable); the message always
+  carries the hint to set a project root in Settings (projects-view ticket
+  02);
 - :class:`ProjectController` — wraps the store's
   :func:`~seestar_controller.store.create_project` /
   :func:`~seestar_controller.store.open_project` /
@@ -25,7 +29,10 @@ What lives here:
   opened project path in the ``last_project`` setting (validated: empty or
   an existing project directory containing ``project.json``), restores it
   on startup via :meth:`ProjectController.restore`, and notifies listeners
-  with a frozen :class:`ProjectEvent` on every change;
+  with a frozen :class:`ProjectEvent` on every change. A **missing root is
+  created on demand** by :meth:`ProjectController.create_project` (ticket
+  02); :attr:`ProjectController.root_error` reports an existing-but-unusable
+  root (not a directory / not writable) with the Settings hint;
 - :meth:`ProjectController.attach_controllers` — registers the app's shared
   controllers (observe / viewer / pick / run / lightcurve / period) so
   ``set_project(current)`` is called on each whenever the current project
@@ -34,13 +41,15 @@ What lives here:
 Store errors (:class:`~seestar_controller.store.errors.ProjectExistsError`,
 :class:`~seestar_controller.store.errors.ProjectNotFoundError`,
 :class:`~seestar_controller.store.errors.InvalidProjectError`,
-``ValueError`` for an unusable name, ``OSError`` for an unwritable root)
-propagate to the caller — the widget layer shows them inline; on failure the
-current project and the persisted ``last_project`` are left unchanged.
+``ValueError`` for an unusable name, :class:`ProjectRootError` /
+``OSError`` for an unusable root) propagate to the caller — the widget layer
+shows them inline; on failure the current project and the persisted
+``last_project`` are left unchanged.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +70,17 @@ from .state import AppState
 #: A project-change listener: called with a frozen :class:`ProjectEvent`
 #: after every successful change (list refresh, create, open, restore).
 ProjectListener = Callable[["ProjectEvent"], None]
+
+
+class ProjectRootError(OSError):
+    """The project root cannot be used (projects-view ticket 02).
+
+    Raised by :meth:`ProjectController.create_project` when the root is not a
+    directory or not writable (or cannot be created). Subclasses
+    :class:`OSError`, so the widget layer's existing ``except OSError``
+    inline-error handling catches it; the message always carries the hint to
+    set a (writable) project root in Settings.
+    """
 
 
 @dataclass(frozen=True)
@@ -85,13 +105,17 @@ class ProjectController:
 
     - :attr:`root` — the project root in use (explicit ``root=`` argument >
       the ``project_root`` setting > the store default);
+    - :attr:`root_error` — ``None`` when the root is usable, else a message
+      (with the Settings hint) for an existing-but-unusable root; a missing
+      root is created on demand by :meth:`create_project`;
     - :attr:`projects` — the listed projects (refreshed by
       :meth:`refresh` and after every create/open/restore);
     - :attr:`current` — the open project (``None`` until one is created or
       opened);
     - :meth:`create_project` / :meth:`open_project` — create/open a project
       and make it current (persisting ``last_project``); store errors
-      propagate and change nothing;
+      (including :class:`ProjectRootError` for an unusable root) propagate
+      and change nothing;
     - :meth:`restore` — startup: open the persisted ``last_project`` when it
       still exists, else clear the stale setting;
     - :meth:`attach_controllers` — push the current project to the app's
@@ -139,6 +163,25 @@ class ProjectController:
         return default_project_root()
 
     @property
+    def root_error(self) -> str | None:
+        """A human-readable problem with :attr:`root`, or ``None`` when the
+        root is usable (projects-view ticket 02).
+
+        A **missing** root is NOT an error — it is created on demand by
+        :meth:`create_project`. An existing root that is not a directory, or
+        is not writable, is an error whose message points to Settings (the
+        Projects view shows it in its root line).
+        """
+        root = self.root
+        if not root.exists():
+            return None  # created on demand at create time
+        if not root.is_dir():
+            return f"project root {root} is not a directory — set a project root in Settings"
+        if not os.access(root, os.W_OK | os.X_OK):
+            return f"project root {root} is not writable — set a writable project root in Settings"
+        return None
+
+    @property
     def projects(self) -> tuple[ProjectSummary, ...]:
         """The listed projects under :attr:`root` (oldest first)."""
         return self._projects
@@ -180,12 +223,26 @@ class ProjectController:
         """Create a project named ``name`` under :attr:`root`, make it the
         current project, and persist it as ``last_project``; returns it.
 
-        Raises ``ValueError`` (unusable name), :class:`ProjectExistsError`
-        (slug collision), or ``OSError`` (unwritable root) — in all cases the
-        current project, the list, and the persisted setting are unchanged
-        and no event is fired.
+        A missing root is created on demand here (the store's
+        ``mkdir(parents=True)`` creates it together with the project
+        directory). Raises ``ValueError`` (unusable name),
+        :class:`ProjectExistsError` (slug collision), or
+        :class:`ProjectRootError` (root not a directory / not writable /
+        not creatable — the message carries the Settings hint) — in all
+        cases the current project, the list, and the persisted setting are
+        unchanged and no event is fired.
         """
-        project = create_project(name, root=self.root)
+        root_error = self.root_error
+        if root_error is not None:
+            raise ProjectRootError(root_error)
+        try:
+            project = create_project(name, root=self.root)
+        except OSError as exc:
+            # e.g. the root (or a parent) turned out unwritable mid-create
+            raise ProjectRootError(
+                f"cannot create a project under {self.root}: {exc} — "
+                "set a writable project root in Settings"
+            ) from exc
         self._projects = tuple(list_projects(self.root))
         self._set_current(project)
         return project

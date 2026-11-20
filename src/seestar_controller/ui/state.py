@@ -19,7 +19,11 @@ What lives here:
   night-time use must not blind the user);
 - the settings dict (``scope_ip``, ``key_path``, ``project_root``,
   ``last_project``, ``photometry_comp_search_radius_deg``) with defaults +
-  validation;
+  validation. ``project_root`` defaults to **unset** (``""`` — projects-view
+  ticket 02): the project controller then falls back to the store default
+  (:func:`seestar_controller.store.default_project_root`, i.e.
+  ``SEESTAR_PROJECT_ROOT`` > ``~/SeestarProjects/``, created on demand), so a
+  fresh install never hard-errors on a not-yet-existing default root;
 - persistence: one JSON file at ``~/.config/seestar-controller/settings.json``
   (the app config dir — the same dir as the PEM key and the protocol log;
   re-declared here because this package must not import
@@ -38,7 +42,7 @@ On-disk shape (``schema_version`` :data:`SETTINGS_SCHEMA_VERSION`)::
       "settings": {
         "scope_ip": "",                                  # unset placeholder
         "key_path": "/home/.../.config/seestar-controller/key.pem",
-        "project_root": "/home/.../SeestarProjects",
+        "project_root": "",                              # unset -> store default (projects-view 02)
         "last_project": "",                              # unset placeholder (projects-view 01)
         "photometry_comp_search_radius_deg": "1.5"        # catalog-assist cone radius
       }
@@ -87,8 +91,11 @@ SETTINGS_SCHEMA_VERSION = 1
 #: module docstring).
 DEFAULT_KEY_PATH = DEFAULT_CONFIG_DIR / "key.pem"
 
-#: Default project root mirrored into the settings defaults — the same value
-#: as ``seestar_controller.store.project.DEFAULT_PROJECT_ROOT`` (re-declared).
+#: Default project root mirrored for reference — the same value as
+#: ``seestar_controller.store.project.DEFAULT_PROJECT_ROOT`` (re-declared).
+#: The ``project_root`` SETTING defaults to unset (``""``, projects-view
+#: ticket 02); the fallback to this default lives in
+#: :class:`~seestar_controller.ui.project_controller.ProjectController.root`.
 DEFAULT_PROJECT_ROOT = Path.home() / "SeestarProjects"
 
 #: File name of the project settings inside a project directory — the same
@@ -165,11 +172,14 @@ DEFAULT_COMP_SEARCH_RADIUS_DEG = 1.5
 MAX_COMP_SEARCH_RADIUS_DEG = 180.0
 
 #: The default settings dict (``scope_ip`` empty = unset placeholder, see
-#: docs/wiki/assumptions.md).
+#: docs/wiki/assumptions.md). ``project_root`` is empty (unset) on a fresh
+#: install — the project controller falls back to the store default root
+#: (:data:`DEFAULT_PROJECT_ROOT` / ``SEESTAR_PROJECT_ROOT``), created on
+#: demand (projects-view ticket 02).
 DEFAULT_SETTINGS: dict[str, str] = {
     "scope_ip": "",
     "key_path": str(DEFAULT_KEY_PATH),
-    "project_root": str(DEFAULT_PROJECT_ROOT),
+    "project_root": "",
     "last_project": "",
     "photometry_comp_search_radius_deg": f"{DEFAULT_COMP_SEARCH_RADIUS_DEG:g}",
 }

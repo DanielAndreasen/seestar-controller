@@ -1,9 +1,16 @@
-"""Pure-Python project controller tests (projects-view ticket 01) — no gi.
+"""Pure-Python project controller tests (projects-view tickets 01 + 02) — no gi.
 
 Every test runs against a ``tmp_path`` project root + settings file, so
-nothing touches the real ``~/SeestarProjects`` or ``~/.config``. The
-module-boundary tests run a subprocess / scan the source asserting the pure
-layer never imports ``gi`` or ``link`` (mirrors tests/test_ui_harness.py).
+nothing touches the real ``~/SeestarProjects`` or ``~/.config``. Ticket 02
+adds the end-to-end create behavior: an unset ``project_root`` falls back to
+the store default (``SEESTAR_PROJECT_ROOT`` > ``~/SeestarProjects``), a
+missing root is created on demand at create time, an existing-but-unusable
+root (not a directory / not writable) raises :class:`ProjectRootError` with
+a Settings hint and changes nothing, and the created project is persisted
+as ``last_project`` and restored (and pushed to the attached controllers)
+after a "restart". The module-boundary tests run a subprocess / scan the
+source asserting the pure layer never imports ``gi`` or ``link`` (mirrors
+tests/test_ui_harness.py).
 """
 
 import dataclasses
@@ -18,6 +25,7 @@ from seestar_controller.store import (
     PROJECT_ROOT_ENV_VAR,
     Project,
     create_project,
+    default_project_root,
     list_projects,
     open_project,
 )
@@ -29,6 +37,7 @@ from seestar_controller.store.errors import (
 from seestar_controller.ui.project_controller import (
     ProjectController,
     ProjectEvent,
+    ProjectRootError,
 )
 from seestar_controller.ui.state import (
     AppState,
@@ -379,3 +388,129 @@ def test_store_helpers_still_work_against_the_controller_root(controller, root):
     controller.create_project("M 42")
     assert [s.name for s in list_projects(root)] == ["M 42"]
     assert open_project(root / "m-42").name == "M 42"
+
+
+# --- ticket 02: root fallback, on-demand creation, root errors ---------------------------
+
+
+def test_root_falls_back_to_the_store_default_when_setting_and_env_unset(settings_file, monkeypatch):
+    """Fresh settings (project_root unset, no env var) -> the store default
+    ``~/SeestarProjects`` (projects-view ticket 02)."""
+    monkeypatch.delenv(PROJECT_ROOT_ENV_VAR, raising=False)
+    state = AppState(settings_file)
+    assert state.get_setting("project_root") == ""  # unset on a fresh state
+    controller = ProjectController(state)
+    assert controller.root == default_project_root() == Path.home() / "SeestarProjects"
+
+
+def test_missing_root_is_created_on_demand_on_create(settings_file, tmp_path, monkeypatch):
+    """A missing root is NOT an error: create_project creates it (with the
+    project) on demand (projects-view ticket 02)."""
+    missing = tmp_path / "missing-root"
+    monkeypatch.setenv(PROJECT_ROOT_ENV_VAR, str(missing))
+    state = AppState(settings_file)
+    state.set_setting("project_root", "")  # unset -> env var default
+    controller = ProjectController(state)
+    assert controller.root == missing
+    assert not missing.exists()
+    assert controller.root_error is None  # missing is not an error
+    assert controller.projects == ()
+    project = controller.create_project("M 42")
+    assert missing.is_dir()  # the root was created on demand
+    assert project.path == missing / "m-42"
+    assert (project.path / "project.json").is_file()
+    assert controller.current is project
+    assert state.get_setting("last_project") == str(project.path)
+    assert [s.name for s in controller.projects] == ["M 42"]
+
+
+def test_root_error_is_none_for_a_missing_or_writable_root(settings_file, tmp_path, monkeypatch):
+    monkeypatch.setenv(PROJECT_ROOT_ENV_VAR, str(tmp_path / "missing"))
+    state = AppState(settings_file)
+    assert ProjectController(state).root_error is None  # missing -> created on demand
+    root = tmp_path / "projects"
+    root.mkdir()
+    state.set_setting("project_root", str(root))
+    assert ProjectController(state).root_error is None  # writable -> fine
+
+
+def test_unwritable_root_raises_project_root_error_with_settings_hint(settings_file, tmp_path):
+    """An existing but unwritable root: create raises ProjectRootError (an
+    OSError) whose message points to Settings, and nothing changes
+    (projects-view ticket 02)."""
+    root = tmp_path / "projects"
+    root.mkdir()
+    root.chmod(0o500)  # r-x: readable/listable, not writable (we are not root)
+    try:
+        state = AppState(settings_file)
+        state.set_setting("project_root", str(root))
+        controller = ProjectController(state)
+        assert controller.root_error is not None
+        assert "not writable" in controller.root_error
+        assert "Settings" in controller.root_error
+        events: list[ProjectEvent] = []
+        controller.add_listener(events.append)
+        with pytest.raises(ProjectRootError) as exc_info:
+            controller.create_project("M 42")
+        assert isinstance(exc_info.value, OSError)  # the widget layer's except OSError catches it
+        assert "Settings" in str(exc_info.value)
+        assert controller.current is None
+        assert state.get_setting("last_project") == ""
+        assert events == []  # no event fired
+        assert controller.projects == ()
+        assert not (root / "m-42").exists()  # nothing was created
+    finally:
+        root.chmod(0o700)  # let tmp_path cleanup succeed
+
+
+def test_root_that_is_a_file_raises_project_root_error(settings_file, tmp_path):
+    file_root = tmp_path / "not-a-dir"
+    file_root.write_text("x", encoding="utf-8")
+    state = AppState(settings_file)
+    state.set_setting("project_root", str(file_root))
+    controller = ProjectController(state)
+    assert controller.root_error is not None
+    assert "not a directory" in controller.root_error
+    assert "Settings" in controller.root_error
+    with pytest.raises(ProjectRootError):
+        controller.create_project("M 42")
+    assert controller.current is None
+    assert state.get_setting("last_project") == ""
+
+
+def test_create_persists_last_project_and_a_restart_restores_it_on_all_controllers(
+    settings_file, tmp_path, monkeypatch
+):
+    """End-to-end persistence (projects-view ticket 02): create -> the
+    settings file carries last_project -> a "restart" (fresh state loaded
+    from the same file + fresh controller) restores the project and pushes
+    it to every attached shared controller."""
+    root = tmp_path / "projects"
+    monkeypatch.setenv(PROJECT_ROOT_ENV_VAR, str(root))
+    state = AppState(settings_file)
+    controller = ProjectController(state)
+    project = controller.create_project("M 42")
+
+    fresh = load_state(settings_file)  # the "restart"
+    assert fresh.get_setting("last_project") == str(project.path)
+    restarted = ProjectController(fresh)
+    assert restarted.current is None  # not restored until restore() is called
+    followers = [_Follower() for _ in range(6)]  # observe/viewer/picker/run/lightcurve/period
+    restarted.attach_controllers(
+        observe=followers[0],
+        viewer=followers[1],
+        picker=followers[2],
+        run=followers[3],
+        lightcurve=followers[4],
+        period=followers[5],
+    )
+    assert all(f.seen == [None] for f in followers)  # no current yet, applied immediately
+    restored = restarted.restore()
+    assert restored is not None
+    assert restored.path == project.path
+    assert restarted.current is restored
+    assert all(f.seen[-1] is restored for f in followers)  # pushed to all six
+    # and a later create on the restarted controller reaches them too
+    other = restarted.create_project("M 31")
+    assert all(f.seen[-1] is other for f in followers)
+    assert load_state(settings_file).get_setting("last_project") == str(other.path)

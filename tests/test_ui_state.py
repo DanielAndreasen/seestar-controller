@@ -20,7 +20,6 @@ from seestar_controller.ui.state import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_DARK_THEME,
     DEFAULT_KEY_PATH,
-    DEFAULT_PROJECT_ROOT,
     DEFAULT_SETTINGS,
     DEFAULT_VIEW_ID,
     DEFAULT_WINDOW_HEIGHT,
@@ -125,7 +124,9 @@ def test_defaults(state):
     assert state.settings == DEFAULT_SETTINGS
     assert state.get_setting("scope_ip") == ""
     assert state.get_setting("key_path") == str(DEFAULT_KEY_PATH)
-    assert state.get_setting("project_root") == str(DEFAULT_PROJECT_ROOT)
+    # unset on a fresh state — the project controller falls back to the
+    # store default root (projects-view ticket 02)
+    assert state.get_setting("project_root") == ""
     assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"
     assert state.get_setting("last_project") == ""
     assert set(state.settings) == set(SETTINGS_KEYS) == {
@@ -301,7 +302,9 @@ def test_load_partial_fields_fall_back_per_field(settings_file):
     }
     assert state.get_setting("scope_ip") == ""
     assert state.get_setting("key_path") == "/tmp/k.pem"
-    assert state.get_setting("project_root") == str(DEFAULT_PROJECT_ROOT)
+    # unset on a fresh state — the project controller falls back to the
+    # store default root (projects-view ticket 02)
+    assert state.get_setting("project_root") == ""
     assert set(state.settings) == set(SETTINGS_KEYS)  # unknown key not stored
 
 
