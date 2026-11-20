@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 03, project-store 06
 
-**Status:** implemented in 636087f
+**Status:** implemented in a0c46b0
 
 - [x] Export lightcurve CSV (jd, utc, mag, mag_err, session, target) and folded CSV (+ phase)
 - [x] Outlier points markable/excludable from the plot UI
