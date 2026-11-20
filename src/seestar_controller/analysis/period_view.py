@@ -99,9 +99,10 @@ from .lightcurve import (  # noqa: E402
 from .periodogram import Peak  # noqa: E402
 
 #: Initial drawing-area content size (pixels) — the geometry used by the
-#: zoom/pan handlers until the first draw reports the real size.
-INITIAL_PLOT_WIDTH = 360
-INITIAL_PLOT_HEIGHT = 240
+#: zoom/pan handlers until the first draw reports the real size. Kept small
+#: so the plots (and the window) keep a small minimum size on laptop screens.
+INITIAL_PLOT_WIDTH = 300
+INITIAL_PLOT_HEIGHT = 200
 
 #: Hit-test radius (pixels) around a peak marker for the click-to-select.
 PEAK_HIT_RADIUS_PX = 10.0
