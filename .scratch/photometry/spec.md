@@ -1,6 +1,6 @@
 # Spec: photometry
 
-Status: completed 2026-11-20 — all 4 issues implemented and reviewed
+Status: completed 2026-11-20 — issues 01-04 implemented and reviewed; 05 ready-for-agent (picking fails on real Seestar frames: no WCS subs, RGB stacks)
 
 ## Problem Statement
 
