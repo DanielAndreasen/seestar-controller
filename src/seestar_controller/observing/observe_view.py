@@ -151,6 +151,11 @@ class ObserveView(Gtk.Box):
         # Gtk.Box has no wrap property in GTK4; a FlowBox wraps the buttons
         # onto several lines on narrow windows, so the row's minimum width is
         # one button (not the sum) and the window keeps a small minimum size.
+        # The FlowBox MUST keep the default halign=FILL: with halign=CENTER
+        # the parent Box allocates only the FlowBox's natural width (one
+        # button) while the height was negotiated at the full pane width, so
+        # the wrapped lines overflow the allocation and the buttons end up
+        # clipped below the window (off-screen, unreachable).
         controls = Gtk.FlowBox(
             selection_mode=Gtk.SelectionMode.NONE,
             homogeneous=False,
@@ -158,7 +163,6 @@ class ObserveView(Gtk.Box):
             max_children_per_line=6,
             row_spacing=8,
             column_spacing=8,
-            halign=Gtk.Align.CENTER,
         )
         self._start_button = Gtk.Button(
             label="Start night", css_classes=["suggested-action"],

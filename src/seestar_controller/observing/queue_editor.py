@@ -123,6 +123,11 @@ class QueueEditor(Gtk.Box):
         # A FlowBox (not a Box: GTK4 boxes do not wrap) so the controls wrap
         # onto several lines on narrow windows — the row's minimum width is
         # one control, not the sum, keeping the window's minimum size small.
+        # The FlowBox MUST keep the default halign=FILL: with halign=CENTER
+        # the parent Box allocates only the FlowBox's natural width (one
+        # control) while the height was negotiated at the full pane width,
+        # so the wrapped lines overflow the allocation and the controls end
+        # up clipped below the window (off-screen, unreachable).
         controls = Gtk.FlowBox(
             selection_mode=Gtk.SelectionMode.NONE,
             homogeneous=False,
@@ -130,7 +135,6 @@ class QueueEditor(Gtk.Box):
             max_children_per_line=3,
             row_spacing=8,
             column_spacing=16,
-            halign=Gtk.Align.CENTER,
         )
         mosaic_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
         mosaic_box.append(Gtk.Label(label="Mosaic", valign=Gtk.Align.CENTER))
