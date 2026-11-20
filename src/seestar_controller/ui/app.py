@@ -69,6 +69,12 @@ notifications button (``win.notifications`` action) that opens the
 user-invoked :class:`~seestar_controller.ui.notification_log.NotificationLogDialog`
 listing the bus log with a Clear button — background events never open
 modal dialogs.
+
+Observing (ticket 01): the application owns a shared
+:class:`~seestar_controller.observing.queue_controller.PlanQueueController`
+(tonight's plan queue, in memory for the session — not persisted to disk yet),
+and the window passes it to the Observe view, whose
+:class:`~seestar_controller.observing.queue_editor.QueueEditor` edits it.
 """
 
 from __future__ import annotations
@@ -81,6 +87,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+
+from seestar_controller.observing import PlanQueueController  # noqa: E402
 
 from .connection import ConnectionController  # noqa: E402
 from .connection_panel import ConnectionPanel  # noqa: E402
@@ -172,6 +180,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         settings_controller: SettingsController | None = None,
         connection_controller: ConnectionController | None = None,
         notification_bus: NotificationBus | None = None,
+        queue_controller: PlanQueueController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -208,6 +217,14 @@ class SeestarWindow(Adw.ApplicationWindow):
                 self._connection_controller,
                 invoke_on_main=_invoke_on_main,
             )
+        )
+        # Observing ticket 01: one shared plan-queue controller; the Observe
+        # view's queue editor edits through it.
+        self._queue_controller = (
+            queue_controller
+            if queue_controller is not None
+            else getattr(app, "queue_controller", None)
+            or PlanQueueController()
         )
 
         toolbar_view = Adw.ToolbarView()
@@ -247,7 +264,11 @@ class SeestarWindow(Adw.ApplicationWindow):
         # Content: one stack page per view.
         self._stack = Adw.ViewStack()
         for view in state.views:
-            self._stack.add_titled(build_view(view.id), view.id, view.title)
+            self._stack.add_titled(
+                build_view(view.id, queue_controller=self._queue_controller),
+                view.id,
+                view.title,
+            )
 
         # Sidebar: a ListBox with one row per view (documented choice, see
         # module docstring).
@@ -349,6 +370,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         """The view stack holding the five view pages."""
         return self._stack
 
+    @property
+    def queue_controller(self) -> PlanQueueController:
+        """The shared plan-queue controller (observing ticket 01 — the
+        Observe view's queue editor edits through it)."""
+        return self._queue_controller
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -428,6 +455,10 @@ class SeestarApplication(Adw.Application):
             self.connection_controller,
             invoke_on_main=_invoke_on_main,
         )
+        # Observing ticket 01: the shared plan-queue controller (tonight's
+        # plan, in memory for the session — not persisted to disk yet); the
+        # window passes it to the Observe view's queue editor.
+        self.queue_controller = PlanQueueController()
 
     @property
     def state(self) -> AppState:
