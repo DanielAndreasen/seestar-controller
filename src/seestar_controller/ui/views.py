@@ -11,9 +11,9 @@ dependency — it needs the system GTK headers to build)::
     sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
 
 Most views are still :class:`_PlaceholderView`\\ s (a centered label); later
-tickets (image-enhance, photometry, period-analysis) replace the placeholder
-content. The **Observe** view (observing tickets 01 + 03) already carries the
-real content: the two-pane
+tickets (photometry, period-analysis) replace the placeholder content. The
+**Observe** view (observing tickets 01 + 03) already carries the real
+content: the two-pane
 :class:`~seestar_controller.observing.observe_view.ObserveView` widget — the
 :class:`~seestar_controller.observing.queue_editor.QueueEditor` plus the
 night controls on the left, the live preview + queue progress on the right —
@@ -22,7 +22,14 @@ driven by the app's shared
 and
 :class:`~seestar_controller.observing.queue_controller.PlanQueueController`
 (both passed in by the app window via :func:`build_view`; fresh controllers
-are created when omitted, so the view also constructs standalone).
+are created when omitted, so the view also constructs standalone). The
+**Enhance** view (image-enhance ticket 01) carries the
+:class:`~seestar_controller.enhance.viewer.ImageViewer` widget — the
+project's stack list on the left, the tone-mapped preview on the right —
+driven by the app's shared
+:class:`~seestar_controller.enhance.viewer_controller.ViewerController`
+(also passed in via :func:`build_view`; with no project set yet the view
+shows a "no project" placeholder — the Projects view is a later ticket).
 :data:`VIEW_CLASSES` maps the pure-layer view ids
 (:mod:`seestar_controller.ui.state`) to the widget classes, and
 :func:`build_view` is the factory the app window uses.
@@ -39,6 +46,10 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Gtk  # noqa: E402
 
+from seestar_controller.enhance import ViewerController  # noqa: E402
+from seestar_controller.enhance.viewer import (  # noqa: E402
+    ImageViewer as ImageViewerWidget,
+)
 from seestar_controller.observing import (  # noqa: E402
     ObserveController,
     PlanQueueController,
@@ -161,10 +172,53 @@ class ObserveView(_PlaceholderView):
 
 
 class EnhanceView(_PlaceholderView):
-    """Enhance view placeholder (image + sliders come later)."""
+    """Enhance view (image-enhance ticket 01): wraps the
+    :class:`~seestar_controller.enhance.viewer.ImageViewer` widget — the
+    project's stack list on the left, the tone-mapped stack preview on the
+    right.
+
+    ``viewer_controller`` is the app's shared
+    :class:`~seestar_controller.enhance.viewer_controller.ViewerController`
+    (the app window passes it via :func:`build_view`); when omitted, the view
+    creates its own, so it also constructs standalone. With no project set on
+    the controller the view shows a "no project" placeholder (the Projects
+    view is a later ticket; the project can be set later via
+    :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.set_project`).
+    """
 
     view_id = "enhance"
     title = "Enhance"
+
+    def __init__(
+        self,
+        viewer_controller: ViewerController | None = None,
+        **kwargs,
+    ) -> None:
+        # set before super().__init__(): _build_content() runs inside it
+        self._viewer_controller = (
+            viewer_controller if viewer_controller is not None else ViewerController()
+        )
+        # the inner widget handles its own padding
+        kwargs.setdefault("margin_top", 0)
+        kwargs.setdefault("margin_bottom", 0)
+        kwargs.setdefault("margin_start", 0)
+        kwargs.setdefault("margin_end", 0)
+        kwargs.setdefault("spacing", 0)
+        super().__init__(**kwargs)
+
+    def _build_content(self) -> None:
+        self._viewer = ImageViewerWidget(self._viewer_controller)
+        self.append(self._viewer)
+
+    @property
+    def viewer_controller(self) -> ViewerController:
+        """The shared pure-layer viewer controller backing this view."""
+        return self._viewer_controller
+
+    @property
+    def viewer_widget(self) -> ImageViewerWidget:
+        """The image viewer widget (stack list | preview)."""
+        return self._viewer
 
 
 class PhotometryView(_PlaceholderView):
@@ -206,6 +260,7 @@ def build_view(
     *,
     queue_controller: PlanQueueController | None = None,
     observe_controller: ObserveController | None = None,
+    viewer_controller: ViewerController | None = None,
     project: Any = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
@@ -213,8 +268,9 @@ def build_view(
     Raises :class:`~seestar_controller.ui.state.UnknownViewError` for an id
     not in the pure-layer view list. ``queue_controller`` /
     ``observe_controller`` / ``project`` are forwarded to the Observe view
-    (observing tickets 01 + 03) — the app window passes its shared
-    controllers; the other views ignore them.
+    (observing tickets 01 + 03) and ``viewer_controller`` to the Enhance view
+    (image-enhance ticket 01) — the app window passes its shared controllers;
+    the other views ignore them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
@@ -223,4 +279,6 @@ def build_view(
             observe_controller=observe_controller,
             project=project,
         )
+    if view_id == EnhanceView.view_id:
+        return EnhanceView(viewer_controller=viewer_controller)
     return VIEW_CLASSES[view_id]()

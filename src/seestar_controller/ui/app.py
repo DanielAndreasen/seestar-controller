@@ -80,6 +80,17 @@ bus (its ``invoke_on_main`` is :func:`GLib.idle_add`, like the connection
 controller's). The window passes both to the Observe view, whose queue
 editor edits the queue and whose preview/progress/controls render the
 observe controller's snapshots.
+
+Image-enhance (ticket 01): the application owns a shared
+:class:`~seestar_controller.enhance.viewer_controller.ViewerController`
+(the current project's stack list + open stack + tone-mapped preview). The
+window passes it to the Enhance view, whose
+:class:`~seestar_controller.enhance.viewer.ImageViewer` renders its
+snapshots. No project is selected at startup (the Projects view is a later
+ticket), so the controller starts empty and the view shows a "no project"
+placeholder until
+:meth:`~seestar_controller.enhance.viewer_controller.ViewerController.set_project`
+is called.
 """
 
 from __future__ import annotations
@@ -93,6 +104,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
+from seestar_controller.enhance import ViewerController  # noqa: E402
 from seestar_controller.observing import (  # noqa: E402
     ObserveController,
     PlanQueueController,
@@ -190,6 +202,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         notification_bus: NotificationBus | None = None,
         queue_controller: PlanQueueController | None = None,
         observe_controller: ObserveController | None = None,
+        viewer_controller: ViewerController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -249,6 +262,16 @@ class SeestarWindow(Adw.ApplicationWindow):
                 invoke_on_main=_invoke_on_main,
             )
         )
+        # Image-enhance ticket 01: one shared viewer controller (project
+        # stacks + open stack + preview); the Enhance view renders its
+        # snapshots. Starts with no project (the Projects view is a later
+        # ticket) — set_project() is called once a project is opened.
+        self._viewer_controller = (
+            viewer_controller
+            if viewer_controller is not None
+            else getattr(app, "viewer_controller", None)
+            or ViewerController()
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -292,6 +315,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     view.id,
                     queue_controller=self._queue_controller,
                     observe_controller=self._observe_controller,
+                    viewer_controller=self._viewer_controller,
                 ),
                 view.id,
                 view.title,
@@ -409,6 +433,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         view renders its snapshots and binds its controls to it)."""
         return self._observe_controller
 
+    @property
+    def viewer_controller(self) -> ViewerController:
+        """The shared viewer controller (image-enhance ticket 01 — the
+        Enhance view renders its snapshots)."""
+        return self._viewer_controller
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -503,6 +533,11 @@ class SeestarApplication(Adw.Application):
             self.notification_bus,
             invoke_on_main=_invoke_on_main,
         )
+        # Image-enhance ticket 01: the shared viewer controller over the
+        # current project's stacks; the window passes it to the Enhance
+        # view. Starts with no project selected (the Projects view is a
+        # later ticket) — set_project() is called once a project is opened.
+        self.viewer_controller = ViewerController()
 
     @property
     def state(self) -> AppState:
