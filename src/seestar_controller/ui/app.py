@@ -35,6 +35,15 @@ Window geometry: restored on start (``set_default_size`` + ``move`` —
 may ignore it) and captured on ``close-request`` (``get_width`` /
 ``get_height`` / ``get_position``) into the pure layer, which persists it
 atomically to the settings file.
+
+Settings (ticket 02): the application owns a
+:class:`~seestar_controller.ui.settings.SettingsController` over the loaded
+:class:`~seestar_controller.ui.state.AppState` (startup load already happens
+in :func:`~seestar_controller.ui.state.load_state`; the scope IP it holds is
+what ticket 03's connect will use). The header bar carries a menu button
+whose **Settings** item activates the window-level ``win.settings`` action,
+which presents a :class:`~seestar_controller.ui.settings_dialog.SettingsDialog`
+bound to that controller.
 """
 
 from __future__ import annotations
@@ -48,6 +57,8 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, Gtk  # noqa: E402
 
+from .settings import SettingsController  # noqa: E402
+from .settings_dialog import SettingsDialog  # noqa: E402
 from .state import (  # noqa: E402
     AppState,
     SettingsValidationError,
@@ -111,13 +122,38 @@ class SeestarWindow(Adw.ApplicationWindow):
     theme) and writes back to it (view selection, geometry on close).
     """
 
-    def __init__(self, app: Adw.Application, state: AppState) -> None:
+    def __init__(
+        self,
+        app: Adw.Application,
+        state: AppState,
+        settings_controller: SettingsController | None = None,
+    ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
+        # One shared controller: the settings dialog edits through it and the
+        # window listens to it (observer), so the UI refreshes on change.
+        self._settings_controller = (
+            settings_controller
+            if settings_controller is not None
+            else getattr(app, "settings_controller", None)
+            or SettingsController(state)
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         header.set_title_widget(Gtk.Label(label=APP_NAME))
+        # Settings menu button (ticket 02): one item activating win.settings.
+        settings_action = Gio.SimpleAction.new("settings", None)
+        settings_action.connect("activate", self._on_settings_action)
+        self.add_action(settings_action)
+        menu = Gio.Menu()
+        menu.append("Settings", "win.settings")
+        self._settings_button = Gtk.MenuButton(
+            menu_model=menu,
+            icon_name="emblem-system-symbolic",
+            tooltip_text="Settings",
+        )
+        header.pack_end(self._settings_button)
         toolbar_view.add_top_bar(header)
 
         # Content: one stack page per view.
@@ -154,12 +190,22 @@ class SeestarWindow(Adw.ApplicationWindow):
         apply_dark_theme(state.dark_theme)
         self.select_view(state.current_view_id)
 
+        # Reflect settings changes in the header (scope IP in the tooltip;
+        # ticket 03's connect reads the same controller).
+        self._settings_controller.add_listener(self._on_settings_changed)
+        self._on_settings_changed(self._settings_controller.values)
+
         self.connect("close-request", self._on_close_request)
 
     @property
     def state(self) -> AppState:
         """The pure-layer app state backing this window."""
         return self._state
+
+    @property
+    def settings_controller(self) -> SettingsController:
+        """The shared settings controller (dialog edits + observer)."""
+        return self._settings_controller
 
     @property
     def view_stack(self) -> Adw.ViewStack:
@@ -185,6 +231,18 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._stack.set_visible_child_name(view_id)
         self._state.select_view(view_id)
 
+    def _on_settings_action(self, *_args) -> None:
+        """Open the settings dialog (the ``win.settings`` action handler)."""
+        self._settings_dialog = SettingsDialog(self._settings_controller)
+        self._settings_dialog.present(self)
+
+    def _on_settings_changed(self, values: dict[str, str]) -> None:
+        """Observer: settings changed -> reflect the scope IP in the header."""
+        scope_ip = values.get("scope_ip", "")
+        self._settings_button.set_tooltip_text(
+            f"Settings (scope: {scope_ip})" if scope_ip else "Settings"
+        )
+
     def _on_close_request(self, *_args) -> bool:
         """Persist geometry + state on close; never block closing."""
         geometry = _capture_geometry(self)
@@ -209,7 +267,10 @@ class SeestarApplication(Adw.Application):
         env: dict | None = None,
     ) -> None:
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        # Startup: load the settings file (missing/corrupt -> defaults, never
+        # raises) and wrap it in the shared settings controller.
         self._state = load_state(settings_path, env=env)
+        self.settings_controller = SettingsController(self._state)
 
     @property
     def state(self) -> AppState:
@@ -221,7 +282,7 @@ class SeestarApplication(Adw.Application):
         apply_dark_theme(self._state.dark_theme)
 
     def do_activate(self) -> None:
-        window = SeestarWindow(self, self._state)
+        window = SeestarWindow(self, self._state, self.settings_controller)
         window.present()
 
 

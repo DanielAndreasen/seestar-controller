@@ -163,7 +163,7 @@ class UnknownViewError(UIStateError, ValueError):
 
 class SettingsValidationError(UIStateError, ValueError):
     """An invalid settings value: unknown settings key, bad scope address,
-    empty path setting, or out-of-range window geometry.
+    non-string path setting, or out-of-range window geometry.
 
     Subclasses both :class:`UIStateError` and :class:`ValueError`.
     """
@@ -240,9 +240,12 @@ def _validate_geometry_field(value: Any, name: str) -> Any:
     return value
 
 
-def _validate_scope_ip(value: Any) -> str:
+def validate_scope_ip(value: Any) -> str:
     """Validate a scope address: empty (unset), an IPv4 address (octets
-    0-255), or a hostname string."""
+    0-255), or a hostname string.
+
+    Public (not underscore-private) because the settings-dialog layer
+    (:mod:`.settings`) reuses it for per-field validation."""
     if not isinstance(value, str):
         raise SettingsValidationError(f"scope_ip must be a string, got {value!r}")
     address = value.strip()
@@ -263,15 +266,19 @@ def _validate_scope_ip(value: Any) -> str:
     return address
 
 
-def _validate_path_setting(value: Any, name: str) -> str:
-    """Validate a path setting: a non-empty string."""
+def validate_path_setting(value: Any, name: str) -> str:
+    """Validate a path setting: a string; empty (or whitespace-only) means
+    "unset" and is normalized to ``""``.
+
+    Empty is allowed (the settings dialog lets the user unset a path — e.g.
+    the PEM key may not have been extracted yet, see
+    docs/wiki/assumptions.md); existence is NOT checked here. Public because
+    the settings-dialog layer (:mod:`.settings`) reuses it.
+    """
     if not isinstance(value, str) or isinstance(value, bool):
         raise SettingsValidationError(f"{name} must be a string, got {value!r}")
     if not value.strip():
-        raise SettingsValidationError(
-            f"{name} must not be empty — point it at a path (the default is "
-            f"{DEFAULT_SETTINGS[name]!r})"
-        )
+        return ""  # empty = unset
     return value
 
 
@@ -457,7 +464,8 @@ class AppState:
         """Set one settings ``key`` to ``value`` (validated); returns it.
 
         - ``scope_ip`` — empty string (unset) or an IPv4 address / hostname;
-        - ``key_path`` / ``project_root`` — a non-empty path string.
+        - ``key_path`` / ``project_root`` — a path string; empty (unset)
+          allowed and normalized to ``""``.
 
         Raises :class:`SettingsValidationError` for an unknown key or an
         invalid value.
@@ -467,9 +475,9 @@ class AppState:
                 f"unknown setting {key!r} — valid settings are {', '.join(SETTINGS_KEYS)}"
             )
         if key == "scope_ip":
-            value = _validate_scope_ip(value)
+            value = validate_scope_ip(value)
         else:
-            value = _validate_path_setting(value, key)
+            value = validate_path_setting(value, key)
         self._settings[key] = value
         return value
 

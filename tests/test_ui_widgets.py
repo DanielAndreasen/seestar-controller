@@ -8,8 +8,10 @@ Guards, in order: ``pytest.importorskip("gi")`` (no PyGObject at all),
 ``Gtk.init_check()`` fixture (no display -> skip). What is asserted when
 they run: every view widget constructs, the window holds the five stack
 pages, sidebar selection switches the view and updates the pure-layer
-state, the dark-theme helper drives the Adw style manager, and geometry
-capture/restore round-trips through the pure settings layer.
+state, the dark-theme helper drives the Adw style manager, geometry
+capture/restore round-trips through the pure settings layer, and the
+settings dialog (ticket 02) live-validates and persists through the pure
+``SettingsController``.
 """
 
 import importlib.util
@@ -131,7 +133,89 @@ def test_widget_layer_is_reachable_lazily_from_the_package(gtk):
     assert "gi" in sys.modules  # the widget layer really imported gi here
     assert ui.SeestarApplication is not None
     assert ui.build_view("observe") is not None
+    assert ui.SettingsDialog is not None
     assert set(ui.VIEW_CLASSES) == set(ui_state.VIEW_IDS)
+
+
+# --- settings dialog (ticket 02) ------------------------------------------------------
+
+
+def _settings_controller(tmp_path):
+    from seestar_controller.ui.settings import SettingsController
+
+    state = ui_state.AppState(str(tmp_path / "settings.json"))
+    state.set_setting("project_root", str(tmp_path))  # an existing directory
+    return SettingsController(state), state
+
+
+def test_settings_dialog_live_validation_and_save(app, gtk, tmp_path):
+    from seestar_controller.ui.settings_dialog import SettingsDialog
+
+    controller, state = _settings_controller(tmp_path)
+    dialog = SettingsDialog(controller)
+
+    # entries are initialized from the controller values; defaults are valid
+    assert dialog.values() == controller.values
+    assert dialog.save_sensitive()
+
+    # invalid IP -> error label visible, save blocked, nothing persisted
+    dialog.set_field("scope_ip", "999.1.1.1")
+    label = dialog.error_label_for("scope_ip")
+    assert label.get_visible() and "scope_ip" in label.get_label()
+    assert not dialog.save_sensitive()
+    assert dialog.save() is False
+    assert not state.settings_path.exists()
+
+    # valid again -> save enabled; save persists + notifies listeners
+    seen = []
+    controller.add_listener(seen.append)
+    dialog.set_field("scope_ip", "192.168.1.50")
+    assert dialog.save_sensitive()
+    assert dialog.save() is True
+    assert seen == [controller.values]
+    reloaded = ui_state.load_state(str(state.settings_path))
+    assert reloaded.get_setting("scope_ip") == "192.168.1.50"
+    assert reloaded.get_setting("project_root") == str(tmp_path)
+
+
+def test_settings_dialog_flags_missing_key_file_but_save_allowed(app, gtk, tmp_path):
+    from seestar_controller.ui.settings_dialog import SettingsDialog
+
+    controller, state = _settings_controller(tmp_path)
+    dialog = SettingsDialog(controller)
+    missing = tmp_path / "missing.pem"
+    dialog.set_field("key_path", str(missing))
+    label = dialog.error_label_for("key_path")
+    assert label.get_visible() and "not found" in label.get_label()
+    assert dialog.save_sensitive()  # a soft flag never blocks saving
+    assert dialog.save() is True
+    reloaded = ui_state.load_state(str(state.settings_path))
+    assert reloaded.get_setting("key_path") == str(missing)
+
+
+def test_settings_dialog_missing_project_root_blocks_save(app, gtk, tmp_path):
+    from seestar_controller.ui.settings_dialog import SettingsDialog
+
+    controller, state = _settings_controller(tmp_path)
+    dialog = SettingsDialog(controller)
+    dialog.set_field("project_root", str(tmp_path / "no-such-dir"))
+    label = dialog.error_label_for("project_root")
+    assert label.get_visible() and "not an existing directory" in label.get_label()
+    assert not dialog.save_sensitive()
+    assert dialog.save() is False
+    assert not state.settings_path.exists()
+
+
+def test_window_header_has_settings_action_and_shared_controller(app, gtk):
+    from seestar_controller.ui.app import SeestarWindow
+    from seestar_controller.ui.settings_dialog import SettingsDialog
+
+    window = SeestarWindow(app, app.state)
+    assert window.lookup_action("settings") is not None
+    assert window.settings_controller is app.settings_controller
+    window._on_settings_action()  # presents the dialog without raising
+    assert isinstance(window._settings_dialog, SettingsDialog)
+    assert window._settings_dialog.controller is app.settings_controller
 
 
 def test_python_m_ui_app_module_exists():

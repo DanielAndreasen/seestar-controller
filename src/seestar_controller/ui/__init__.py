@@ -6,10 +6,14 @@ docs/wiki/assumptions.md):
 - **Pure layer** — :mod:`.state`: app state + navigation controller
   (:class:`~.state.AppState`, the five :class:`~.state.View`\\ s, window
   geometry, dark-theme flag, the settings dict, JSON persistence under the
-  app config dir). Imports **nothing** from ``gi`` — stdlib only, fully
-  unit-testable headless; a subprocess test enforces the boundary.
-- **Widget layer** — :mod:`.views` (the five placeholder view widgets) and
-  :mod:`.app` (:class:`~.app.SeestarApplication` / :class:`~.app.SeestarWindow`,
+  app config dir) and :mod:`.settings`: the settings-dialog controller
+  (:class:`~.settings.SettingsController`, :func:`~.settings.validate_settings`
+  / :func:`~.settings.flag_settings`, :class:`~.settings.SettingsFieldError`).
+  Both import **nothing** from ``gi`` — stdlib only, fully unit-testable
+  headless; a subprocess test enforces the boundary.
+- **Widget layer** — :mod:`.views` (the five placeholder view widgets),
+  :mod:`.settings_dialog` (the settings dialog) and :mod:`.app`
+  (:class:`~.app.SeestarApplication` / :class:`~.app.SeestarWindow`,
   header bar + sidebar navigation, dark theme, geometry save/restore).
   These import ``gi`` at module top and are re-exported here **lazily** (PEP
   562 ``__getattr__``), so ``import seestar_controller.ui`` never imports
@@ -21,6 +25,13 @@ packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` and launch with
 (see the README).
 """
 
+from .settings import (
+    SettingsController,
+    SettingsFieldError,
+    SettingsListener,
+    flag_settings,
+    validate_settings,
+)
 from .state import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_DARK_THEME,
@@ -50,14 +61,16 @@ from .state import (
     view_by_id,
 )
 
-#: Widget-layer names re-exported lazily from :mod:`.app` / :mod:`.views`
-#: (importing them pulls in ``gi`` — only the ``gui`` entry point does).
+#: Widget-layer names re-exported lazily from :mod:`.app` / :mod:`.views` /
+#: :mod:`.settings_dialog` (importing them pulls in ``gi`` — only the ``gui``
+#: entry point does).
 _WIDGET_EXPORTS = {
     "SeestarApplication": "app",
     "SeestarWindow": "app",
     "apply_dark_theme": "app",
     "run": "app",
     "main": "app",
+    "SettingsDialog": "settings_dialog",
     "ObserveView": "views",
     "EnhanceView": "views",
     "PhotometryView": "views",
@@ -104,12 +117,18 @@ __all__ = [
     "resolve_settings_path",
     "load_state",
     "view_by_id",
+    "SettingsController",
+    "SettingsFieldError",
+    "SettingsListener",
+    "validate_settings",
+    "flag_settings",
     # widget layer (lazy, imports gi):
     "SeestarApplication",
     "SeestarWindow",
     "apply_dark_theme",
     "run",
     "main",
+    "SettingsDialog",
     "ObserveView",
     "EnhanceView",
     "PhotometryView",

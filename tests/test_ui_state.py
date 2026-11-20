@@ -405,10 +405,20 @@ def test_set_scope_ip_invalid(state, bad):
 
 
 @pytest.mark.parametrize("key", ["key_path", "project_root"])
-@pytest.mark.parametrize("bad", ["", "   ", 42, None, True])
-def test_path_settings_reject_empty_and_non_str(state, key, bad):
+@pytest.mark.parametrize("bad", [42, None, True, ["/tmp"]])
+def test_path_settings_reject_non_str(state, key, bad):
     with pytest.raises(SettingsValidationError):
         state.set_setting(key, bad)
+
+
+@pytest.mark.parametrize("key", ["key_path", "project_root"])
+@pytest.mark.parametrize("empty", ["", "   "])
+def test_path_settings_allow_empty_unset(settings_file, state, key, empty):
+    # empty (unset) is allowed since ticket 02 and normalized to ""
+    assert state.set_setting(key, empty) == ""
+    assert state.get_setting(key) == ""
+    state.save()
+    assert AppState(settings_file).load().get_setting(key) == ""  # round-trips
 
 
 def test_path_settings_accept_paths_and_round_trip(settings_file, state):
