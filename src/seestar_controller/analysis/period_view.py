@@ -498,7 +498,7 @@ class PeriodView(Gtk.Box):
         lc_sessions = self._controller.lightcurve_controller.snapshot.sessions
         key = (
             id(snapshot.result),
-            tuple(p.measurement_id for p in snapshot.folded),
+            tuple(p.point.measurement_id for p in snapshot.folded),
             snapshot.period,
             lc_sessions,
         )
