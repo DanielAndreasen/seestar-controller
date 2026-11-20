@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** implemented
+**Status:** implemented in 7239c42
 
 - [x] Dropped connection triggers reconnect with exponential backoff
 - [x] Reconnect re-runs the handshake and restores subscriptions
