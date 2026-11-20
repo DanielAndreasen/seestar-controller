@@ -64,3 +64,10 @@ class PresetError(ProjectError):
     """A per-image enhancement preset could not be saved or read (see
     :mod:`.presets`): the frame id is invalid or unknown, the pipeline is not
     a JSON-able mapping, or the stored preset row is corrupt."""
+
+
+class QualityError(ProjectError):
+    """A per-frame quality record could not be saved or read (see
+    :mod:`.quality`): the frame FK does not exist, a metric value is invalid
+    (non-numeric, non-finite, or a negative star count), the flag/reasons are
+    malformed, or a stored row is corrupt."""

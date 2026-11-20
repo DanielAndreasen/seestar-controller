@@ -24,7 +24,11 @@ One project database holds the whole observing campaign (GLOSSARY.md):
   frame FK, ``jd``, ``mag``, ``mag_err``, and the ``excluded`` outlier flag;
 - ``presets`` — one per-image enhancement preset (image-enhance ticket 04,
   see :mod:`.presets`): the frame id (TEXT primary key), the pipeline as a
-  JSON dict, and the last-update time.
+  JSON dict, and the last-update time;
+- ``frame_quality`` — one per-frame quality record (frame-quality ticket 01,
+  see :mod:`.quality`): the frame id (INTEGER primary key), the metrics
+  (``fwhm``, ``bg_median``, ``bg_std``, ``star_count``), the outlier flag
+  (``flagged`` + the JSON ``flag_reasons`` list), and the scoring time.
 
 All writes go through SQLite transactions (``with conn:``); the database runs
 in WAL mode (``PRAGMA journal_mode=WAL``, set once by :func:`initialize_db`,
@@ -64,6 +68,11 @@ Migration history:
   because with FK ON a ``DROP TABLE`` would fire the implicit ``DELETE FROM``
   and cascade-delete the ``measurements`` rows; a ``PRAGMA foreign_key_check``
   after the rebuild proves nothing was lost.
+- **3 -> 4** — frame-quality ticket 01: create the ``frame_quality`` table
+  (one quality record per frame: FWHM, background median/std, star count,
+  outlier flag + reasons, scoring time). ``IF NOT EXISTS`` keeps the step
+  idempotent (a re-run after a crash between the db bump and the
+  project.json mirror write is a no-op).
 
 :func:`initialize_db` creates the current schema by running the migrations
 on a fresh db (0 -> 1 -> ... -> :data:`SCHEMA_VERSION`).
@@ -77,7 +86,7 @@ from collections.abc import Callable
 from .errors import InvalidProjectError
 
 #: The schema version this build writes and supports.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: The tables every project database must have (checked on open).
 SCHEMA_TABLES = ("sessions", "frames", "stars", "measurements")
@@ -213,6 +222,26 @@ CREATE TABLE IF NOT EXISTS presets (
 )
 """
 
+#: The ``frame_quality`` table DDL (v4, frame-quality ticket 01): one quality
+#: record per frame — ``frame_id`` (INTEGER primary key, the ``frames`` row
+#: id, cascade-deleted with the frame), the metrics (``fwhm`` in pixels,
+#: nullable when no star was detected; ``bg_median``/``bg_std`` from
+#: sigma-clipped stats; ``star_count``), the outlier flag (``flagged`` plus
+#: ``flag_reasons``, a JSON list of the metric names whose robust z-score
+#: exceeded the session threshold), and ``scored_at`` (UTC ISO-8601).
+_FRAME_QUALITY_DDL = """
+CREATE TABLE IF NOT EXISTS frame_quality (
+    frame_id INTEGER PRIMARY KEY NOT NULL REFERENCES frames (id) ON DELETE CASCADE,
+    fwhm REAL,
+    bg_median REAL NOT NULL,
+    bg_std REAL NOT NULL,
+    star_count INTEGER NOT NULL CHECK (star_count >= 0),
+    flagged INTEGER NOT NULL DEFAULT 0 CHECK (flagged IN (0, 1)),
+    flag_reasons TEXT NOT NULL DEFAULT '[]',
+    scored_at TEXT NOT NULL
+)
+"""
+
 
 def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
     """Migration step 2 -> 3 (image-enhance ticket 04): create the
@@ -260,6 +289,7 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
     0: tuple(SCHEMA_STATEMENTS),  # empty db -> v1: create the schema
     1: (_add_stars_aperture_columns,),  # dev-build v1 -> v2: aperture columns
     2: (_migrate_2_to_3,),  # v2 -> v3: presets table + frames.kind 'enhanced'
+    3: (_FRAME_QUALITY_DDL,),  # v3 -> v4: frame_quality table (ticket 01)
 }
 
 

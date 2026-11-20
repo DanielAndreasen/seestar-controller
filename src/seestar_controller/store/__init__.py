@@ -58,6 +58,15 @@ Pure Python, no GTK, no link (module boundary per
   :func:`~.presets.delete_preset`, :func:`~.presets.list_presets`, the
   :class:`~.presets.Preset` record (frame_id, pipeline dict, updated_at), and
   :class:`~.errors.PresetError`
+- :mod:`.quality` — per-frame quality records (frame-quality ticket 01):
+  :func:`~.quality.save_frame_quality` (upsert one frame's metrics + outlier
+  flag in one db transaction), :func:`~.quality.frame_quality_for_frame`
+  (None when the frame has none), :func:`~.quality.session_quality` (one
+  session's quality table joined with its frames, ordered by ``jd``, as a
+  :class:`~.quality.SessionQuality` with the summary: median FWHM,
+  % rejected, ...), the :class:`~.quality.FrameQuality` record (frame FK +
+  joined session_id, fwhm, bg_median, bg_std, star_count, flagged,
+  flag_reasons, scored_at), and :class:`~.errors.QualityError`
 - :mod:`.csv_export` — CSV export: :func:`~.csv_export.export_csv` (atomic
   write of ``lightcurve.csv`` with header :data:`~.csv_export.CSV_HEADER`,
   excluded points omitted unless ``include_excluded=True``), the default
@@ -77,6 +86,7 @@ from .errors import (
     ProjectError,
     ProjectExistsError,
     ProjectNotFoundError,
+    QualityError,
     SessionAlreadyClosedError,
     SessionNotFoundError,
     SessionOpenError,
@@ -129,6 +139,13 @@ from .project import (
     slugify,
     utc_now_iso,
 )
+from .quality import (
+    FrameQuality,
+    SessionQuality,
+    frame_quality_for_frame,
+    save_frame_quality,
+    session_quality,
+)
 from .schema import MIGRATIONS, SCHEMA_TABLES, SCHEMA_VERSION, initialize_db, migrate_db
 from .sessions import (
     Session,
@@ -174,6 +191,7 @@ __all__ = [
     "STAR_PICK_FIELDS",
     "SUBS_DIR",
     "Frame",
+    "FrameQuality",
     "FrameStoreError",
     "InvalidProjectError",
     "Measurement",
@@ -185,10 +203,12 @@ __all__ = [
     "ProjectExistsError",
     "ProjectNotFoundError",
     "ProjectSummary",
+    "QualityError",
     "Session",
     "SessionAlreadyClosedError",
     "SessionNotFoundError",
     "SessionOpenError",
+    "SessionQuality",
     "StarPick",
     "StarPickError",
     "add_measurement",
@@ -197,6 +217,7 @@ __all__ = [
     "default_project_root",
     "delete_preset",
     "export_csv",
+    "frame_quality_for_frame",
     "get_frame_path",
     "get_open_session",
     "initialize_db",
@@ -213,8 +234,10 @@ __all__ = [
     "normalize_role",
     "open_project",
     "read_frame_bytes",
+    "save_frame_quality",
     "save_preset",
     "save_star_picks",
+    "session_quality",
     "set_excluded",
     "slugify",
     "start_session",
