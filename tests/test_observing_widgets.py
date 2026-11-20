@@ -352,6 +352,7 @@ class StubObserveController:
         self.listeners: list = []
         self.calls: list = []
         self.start_error: Exception | None = None
+        self.capture = None  # ticket 04: the SessionCapture, when a night ran
 
     @property
     def queue_controller(self):
@@ -563,3 +564,116 @@ def test_app_owns_shared_observe_controller_and_window_passes_it_down(app, gtk):
     assert observe_page.observe_controller is app.observe_controller
     assert observe_page.observe_widget.controller is app.observe_controller
     assert observe_page.queue_editor.controller is app.queue_controller
+
+
+# --- observing ticket 04: the session log dialog + the Observe-view button --------
+
+
+def _capture_for_session(tmp_path):
+    """A real (pure) SessionCapture over a tmp project with one open session
+    — the device is a bare stub: the dialog only reads the log + frames."""
+    from seestar_controller.observing import SessionCapture
+    from seestar_controller.store.project import create_project
+    from seestar_controller.store.sessions import start_session
+
+    project = create_project("Log Night", root=tmp_path / "projects")
+    session = start_session(project)
+    capture = SessionCapture(object(), project, session)
+    return project, session, capture
+
+
+def test_observe_view_has_a_session_log_button(gtk, controller, observe_stub):
+    from seestar_controller.ui.views import build_view
+
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    assert widget.log_button is not None
+    assert widget.log_button.get_label() == "Session log"
+    assert widget.log_dialog is None
+
+
+def test_observe_view_log_button_without_capture_shows_status(gtk, controller, observe_stub):
+    from seestar_controller.ui.views import build_view
+
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    assert observe_stub.capture is None
+    widget.log_button.emit("clicked")
+    assert widget.log_dialog is None  # no dialog without a capture
+    assert "no session yet" in widget.status_label.get_label()
+
+
+def test_observe_view_log_button_opens_the_dialog(gtk, controller, observe_stub, tmp_path):
+    from seestar_controller.observing import SessionLogDialog
+    from seestar_controller.ui.views import build_view
+
+    _project, _session, capture = _capture_for_session(tmp_path)
+    observe_stub.capture = capture
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    # present() needs a root window
+    window = Gtk.Window()
+    window.set_child(view)
+    widget.log_button.emit("clicked")
+    assert isinstance(widget.log_dialog, SessionLogDialog)
+    assert widget.log_dialog.capture is capture
+    window.destroy()
+
+
+def test_session_log_dialog_lists_events_and_refreshes(gtk, tmp_path):
+    from seestar_controller.observing import KIND_ERROR, KIND_GOTO, SessionLogDialog
+
+    _project, session, capture = _capture_for_session(tmp_path)
+    capture.log.append(KIND_GOTO, "goto RA 5.5000h Dec -5.0000°", source="executor", state="slewing")
+    capture.log.append(KIND_ERROR, "error on entry 0: RpcError: boom", source="executor")
+    dialog = SessionLogDialog(capture)
+
+    assert dialog.row_count() == len(capture.events()) == 2
+    assert session in dialog.summary_label.get_label()
+    assert "2 event(s)" in dialog.summary_label.get_label()
+    assert "0 frame(s) stored" in dialog.summary_label.get_label()
+    assert KIND_GOTO in dialog.row_label(0) and "goto RA 5.5000h" in dialog.row_label(0)
+    assert KIND_ERROR in dialog.row_label(1) and "boom" in dialog.row_label(1)
+    assert dialog.rows()[1].event.kind == KIND_ERROR  # test hook
+    assert dialog.rows()[1].get_child().get_last_child().has_css_class("error")
+
+    # a new event while the dialog is open refreshes it automatically
+    capture.log.append(KIND_GOTO, "goto RA 10.0000h Dec +20.0000°", source="executor")
+    assert dialog.row_count() == 3
+    # the Refresh button rebuilds too
+    dialog.refresh_button.emit("clicked")
+    assert dialog.row_count() == 3
+    dialog.close()
+
+
+def test_session_log_dialog_summary_counts_stored_frames(gtk, tmp_path):
+    from datetime import datetime, timezone
+
+    from seestar_controller.link.mock_scope import make_fits_bytes
+    from seestar_controller.observing import SessionLogDialog
+    from seestar_controller.store.frames import store_frame
+
+    project, session, capture = _capture_for_session(tmp_path)
+    dialog = SessionLogDialog(capture)
+    assert "0 frame(s) stored (0 sub, 0 stack)" in dialog.summary_label.get_label()
+    store_frame(
+        project,
+        session,
+        "sub",
+        make_fits_bytes(when=datetime.now(timezone.utc), exposure=10.0, gain=50),
+    )
+    store_frame(
+        project,
+        session,
+        "stack",
+        make_fits_bytes(when=datetime.now(timezone.utc), exposure=10.0, gain=80),
+    )
+    dialog.refresh()
+    assert "2 frame(s) stored (1 sub, 1 stack)" in dialog.summary_label.get_label()
+    dialog.close()

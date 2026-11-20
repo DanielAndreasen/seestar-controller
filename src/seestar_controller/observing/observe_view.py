@@ -19,9 +19,10 @@ dependency — it needs the system GTK headers to build)::
 
 - **left pane** — the :class:`~.queue_editor.QueueEditor` (ticket 01) plus the
   night controls: **Start night**, **Pause/Resume** (one toggle button), **Skip**,
-  **Stop**, **Park** — all bound to the controller's passthroughs, with an
-  inline status label for errors (start without connection/project, park
-  while disconnected);
+  **Stop**, **Park**, **Session log** (ticket 04 — opens the per-session event
+  log + stored frames dialog) — all bound to the controller's passthroughs,
+  with an inline status label for errors (start without connection/project,
+  park while disconnected);
 - **right pane** — the live preview (a :class:`Gtk.Picture` fed from the
   latest decoded frame: the ndarray is encoded to PNG via PIL and wrapped in
   a :class:`Gdk.Texture` with ``Gdk.Texture.new_from_bytes`` — marshalled
@@ -64,6 +65,7 @@ from .observe_controller import (  # noqa: E402
 )
 from .queue_controller import PlanQueueController  # noqa: E402
 from .queue_editor import QueueEditor  # noqa: E402
+from .session_log_dialog import SessionLogDialog  # noqa: E402
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
 LEFT_PANE_POSITION = 560
@@ -116,6 +118,7 @@ class ObserveView(Gtk.Box):
         )
         self._project = project
         self._last_frame_id: int | None = None
+        self._log_dialog: SessionLogDialog | None = None
 
         paned = Gtk.Paned(
             orientation=Gtk.Orientation.HORIZONTAL,
@@ -162,12 +165,18 @@ class ObserveView(Gtk.Box):
         self._stop_button.connect("clicked", lambda *_a: self._controller.stop())
         self._park_button = Gtk.Button(label="Park", tooltip_text="Park the scope now")
         self._park_button.connect("clicked", self._on_park_clicked)
+        self._log_button = Gtk.Button(
+            label="Session log",
+            tooltip_text="Open the event log + stored frames of the current session",
+        )
+        self._log_button.connect("clicked", self._on_log_clicked)
         for button in (
             self._start_button,
             self._pause_button,
             self._skip_button,
             self._stop_button,
             self._park_button,
+            self._log_button,
         ):
             controls.append(button)
         left.append(controls)
@@ -273,6 +282,16 @@ class ObserveView(Gtk.Box):
     @property
     def park_button(self) -> Gtk.Button:
         return self._park_button
+
+    @property
+    def log_button(self) -> Gtk.Button:
+        """The 'Session log' button (opens the per-session log dialog)."""
+        return self._log_button
+
+    @property
+    def log_dialog(self) -> SessionLogDialog | None:
+        """The currently open session log dialog (None when closed/never opened)."""
+        return self._log_dialog
 
     @property
     def status_label(self) -> Gtk.Label:
@@ -415,3 +434,14 @@ class ObserveView(Gtk.Box):
             self._set_status(str(exc), error=True)
             return
         self._set_status("scope parked", error=False)
+
+    def _on_log_clicked(self, *_args) -> None:
+        """Session log: open the per-session log dialog for the current/last
+        night's capture (inline status when no session was captured yet)."""
+        capture = getattr(self._controller, "capture", None)
+        if capture is None:
+            self._set_status("no session yet — start a night first", error=False)
+            return
+        self._log_dialog = SessionLogDialog(capture)
+        parent = self.get_root()
+        self._log_dialog.present(parent if parent is not None else self)

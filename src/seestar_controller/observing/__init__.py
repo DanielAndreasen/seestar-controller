@@ -1,5 +1,5 @@
-"""Observing — tonight's plan (queue) + editor, the night executor, and the
-Observe view wiring (ticket 03).
+"""Observing — tonight's plan (queue) + editor, the night executor, the
+Observe view wiring (ticket 03), and session capture (ticket 04).
 
 Spec: ``.scratch/observing/spec.md``. Strict two-layer split (the sandbox has
 no GTK, see docs/wiki/assumptions.md):
@@ -20,18 +20,23 @@ no GTK, see docs/wiki/assumptions.md):
   :mod:`.observe_controller` (:class:`~.observe_controller.ObserveController`
   + :class:`~.observe_controller.ObserveViewState`, the pure binding of
   connection + queue + executor + preview stream + notification bus that the
-  Observe view renders — ticket 03). Both import **no ``gi``** but do import
-  the link + store + ui controllers (stdlib + link + store + ui.connection /
-  ui.notifications + :mod:`.queue`), so they are re-exported here **lazily**
-  (PEP 562) — importing this package alone never pulls the link into
-  ``sys.modules``.
+  Observe view renders — ticket 03); and :mod:`.capture`
+  (:class:`~.capture.SessionCapture` + :class:`~.capture.SessionLog`,
+  :class:`~.capture.LogEvent` — sub-frames/Stacks downloaded into the current
+  session as they arrive + the per-session event log — ticket 04). These
+  import **no ``gi``** but do import the link + store + ui controllers
+  (stdlib + link + store + ui.connection / ui.notifications +
+  :mod:`.queue`), so they are re-exported here **lazily** (PEP 562) —
+  importing this package alone never pulls the link into ``sys.modules``.
 - **Widget layer** — :mod:`.queue_editor` (:class:`~.queue_editor.QueueEditor`,
   the Gtk.ListBox editor with per-row reorder/remove/duplicate buttons and the
-  add-by-name / add-by-RA-Dec area) and :mod:`.observe_view`
+  add-by-name / add-by-RA-Dec area), :mod:`.observe_view`
   (:class:`~.observe_view.ObserveView`, the two-pane Observe view: queue
-  editor + night controls on the left, live preview + progress on the right).
-  Both import ``gi`` at module top and are re-exported here **lazily**
-  (PEP 562 ``__getattr__``), so ``import seestar_controller.observing``
+  editor + night controls on the left, live preview + progress on the right),
+  and :mod:`.session_log_dialog` (:class:`~.session_log_dialog.SessionLogDialog`,
+  the per-session event log + stored frames dialog opened from the Observe
+  view — ticket 04). All import ``gi`` at module top and are re-exported here
+  **lazily** (PEP 562 ``__getattr__``), so ``import seestar_controller.observing``
   never imports ``gi``.
 
 On the desktop, PyGObject is not a pip dependency — install the system
@@ -76,11 +81,13 @@ from .queue_controller import PlanQueueController
 _WIDGET_EXPORTS = {
     "ObserveView": "observe_view",
     "QueueEditor": "queue_editor",
+    "SessionLogDialog": "session_log_dialog",
 }
 
-#: Executor-layer names re-exported lazily from :mod:`.executor` and
-#: :mod:`.observe_controller` (importing them pulls in the link + store —
-#: only the executor path does; importing this package alone stays link-free).
+#: Executor-layer names re-exported lazily from :mod:`.executor`,
+#: :mod:`.observe_controller` and :mod:`.capture` (importing them pulls in the
+#: link + store — only the executor path does; importing this package alone
+#: stays link-free).
 _EXECUTOR_EXPORTS = {
     "EXECUTOR_STATES": "executor",
     "ERROR_POLICIES": "executor",
@@ -92,7 +99,27 @@ _EXECUTOR_EXPORTS = {
     "ExecutorState": "executor",
     "ExecutorStateError": "executor",
     "NightExecutor": "executor",
+    "CAPTURE_SOURCE": "capture",
+    "KIND_CAPTURE": "capture",
+    "KIND_ERROR": "capture",
+    "KIND_EXECUTOR": "capture",
+    "KIND_FRAME": "capture",
+    "KIND_GOTO": "capture",
+    "KIND_SESSION": "capture",
+    "KIND_STACK": "capture",
+    "LOG_KINDS": "capture",
+    "LOG_SOURCE_CAPTURE": "capture",
+    "LOG_SOURCE_EXECUTOR": "capture",
+    "LOG_SOURCES": "capture",
+    "SESSION_LOG_FILE": "capture",
+    "LogEvent": "capture",
+    "LogListener": "capture",
+    "SessionCapture": "capture",
+    "SessionLog": "capture",
+    "classify_executor_event": "capture",
+    "session_log_path": "capture",
     "DEFAULT_PREVIEW_MAX_FPS": "observe_controller",
+    "CaptureFactory": "observe_controller",
     "ExecutorFactory": "observe_controller",
     "InvokeOnMain": "observe_controller",
     "OBSERVE_SOURCE": "observe_controller",
@@ -102,6 +129,7 @@ _EXECUTOR_EXPORTS = {
     "ObserveViewState": "observe_controller",
     "PreviewFrameListener": "observe_controller",
     "PreviewStreamFactory": "observe_controller",
+    "default_capture_factory": "observe_controller",
     "default_executor_factory": "observe_controller",
     "default_preview_stream_factory": "observe_controller",
     "format_elapsed": "observe_controller",
@@ -165,8 +193,29 @@ __all__ = [
     "ExecutorState",
     "ExecutorStateError",
     "NightExecutor",
+    # session capture (lazy, imports link + store + ui.notifications):
+    "CAPTURE_SOURCE",
+    "KIND_CAPTURE",
+    "KIND_ERROR",
+    "KIND_EXECUTOR",
+    "KIND_FRAME",
+    "KIND_GOTO",
+    "KIND_SESSION",
+    "KIND_STACK",
+    "LOG_KINDS",
+    "LOG_SOURCE_CAPTURE",
+    "LOG_SOURCE_EXECUTOR",
+    "LOG_SOURCES",
+    "SESSION_LOG_FILE",
+    "LogEvent",
+    "LogListener",
+    "SessionCapture",
+    "SessionLog",
+    "classify_executor_event",
+    "session_log_path",
     # observe controller (lazy, imports link + store + ui controllers):
     "DEFAULT_PREVIEW_MAX_FPS",
+    "CaptureFactory",
     "ExecutorFactory",
     "InvokeOnMain",
     "OBSERVE_SOURCE",
@@ -176,6 +225,7 @@ __all__ = [
     "ObserveViewState",
     "PreviewFrameListener",
     "PreviewStreamFactory",
+    "default_capture_factory",
     "default_executor_factory",
     "default_preview_stream_factory",
     "format_elapsed",
@@ -183,4 +233,5 @@ __all__ = [
     # widget layer (lazy, imports gi):
     "ObserveView",
     "QueueEditor",
+    "SessionLogDialog",
 ]

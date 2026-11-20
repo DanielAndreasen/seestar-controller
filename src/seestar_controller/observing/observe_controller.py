@@ -60,7 +60,12 @@ What it does:
   frame, flags) emitted to the view listeners on any change — executor
   transition, preview frame available, queue change;
 - executor DONE / ABORTED → the preview stream is stopped (and a notification
-  pushed: info on DONE, error on ABORTED).
+  pushed: info on DONE, error on ABORTED);
+- session capture (ticket 04) — :meth:`start_night` also starts a
+  :class:`~.capture.SessionCapture` for the opened session (sub-frames /
+  Stacks downloaded into the session as they arrive + the per-session event
+  log, exposed via :attr:`capture`); DONE/ABORTED stops it. A capture
+  failure pushes a warning notification but never kills the night.
 
 All callbacks (executor snapshots, preview frames, queue events) are
 marshalled through ``invoke_on_main``, so with ``GLib.idle_add`` nothing
@@ -92,6 +97,7 @@ from seestar_controller.ui.notifications import (
     NotificationSeverity,
 )
 
+from .capture import SessionCapture
 from .executor import ExecutorSnapshot, ExecutorState, NightExecutor
 from .queue import QueueEntry, QueueEvent
 from .queue_controller import PlanQueueController
@@ -190,6 +196,20 @@ ExecutorFactory = Callable[..., NightExecutor]
 #: scope host.
 PreviewStreamFactory = Callable[[Any, str], Any]
 
+#: A session-capture factory: ``factory(device, project, session_id, executor,
+#: **kwargs) -> SessionCapture`` (ticket 04 — frames + session log). The
+#: default builds the real :class:`~.capture.SessionCapture`.
+CaptureFactory = Callable[..., SessionCapture]
+
+
+def default_capture_factory(
+    device: Any, project: Any, session_id: str, executor: NightExecutor, **kwargs: Any
+) -> SessionCapture:
+    """The default capture factory: a plain :class:`~.capture.SessionCapture`
+    bound to the night's executor (its log is mirrored into the session
+    log)."""
+    return SessionCapture(device, project, session_id, executor=executor, **kwargs)
+
 
 def default_executor_factory(device: Any, queue: Any, project: Any, **kwargs: Any) -> NightExecutor:
     """The default executor factory: a plain :class:`~.executor.NightExecutor`."""
@@ -256,6 +276,9 @@ class ObserveController:
       are pushed to it when given);
     - ``executor_factory`` / ``preview_stream_factory`` — injectable
       factories (see :data:`ExecutorFactory` / :data:`PreviewStreamFactory`);
+    - ``capture_factory`` — injectable session-capture factory (ticket 04,
+      see :data:`CaptureFactory`); the default builds a
+      :class:`~.capture.SessionCapture` for the night's session;
     - ``invoke_on_main`` — the marshalling callable (default: direct call);
     - ``preview_max_fps`` — the preview display throttle (None disables).
     """
@@ -268,6 +291,7 @@ class ObserveController:
         *,
         executor_factory: ExecutorFactory | None = None,
         preview_stream_factory: PreviewStreamFactory | None = None,
+        capture_factory: CaptureFactory | None = None,
         invoke_on_main: InvokeOnMain | None = None,
         preview_max_fps: float | None = DEFAULT_PREVIEW_MAX_FPS,
     ) -> None:
@@ -287,10 +311,12 @@ class ObserveController:
         self._preview_stream_factory: PreviewStreamFactory = (
             preview_stream_factory or default_preview_stream_factory
         )
+        self._capture_factory: CaptureFactory = capture_factory or default_capture_factory
         self._invoke_on_main: InvokeOnMain = invoke_on_main or _direct_invoke
         self._throttle = FrameThrottle(preview_max_fps)
         self._lock = threading.Lock()
         self._executor: NightExecutor | None = None
+        self._capture: SessionCapture | None = None
         self._stream: Any | None = None
         self._latest_frame: Any | None = None
         self._project: Any | None = None
@@ -320,6 +346,14 @@ class ObserveController:
         """The running/last night executor (None before :meth:`start_night`)."""
         with self._lock:
             return self._executor
+
+    @property
+    def capture(self) -> SessionCapture | None:
+        """The session capture of the current/last night (None before
+        :meth:`start_night` opened a session) — the "Session log" dialog
+        reads it."""
+        with self._lock:
+            return self._capture
 
     @property
     def stream(self) -> Any | None:
@@ -509,8 +543,65 @@ class ObserveController:
             f"{len(self._queue_controller)} target(s) queued, session opening",
         )
         executor.start()  # may raise ExecutorStateError (propagated) or return None (ABORTED)
+        session_id = executor.session
+        if session_id is not None:
+            self._start_capture(device, project, session_id, executor)
         self._emit()
         return executor
+
+    def _start_capture(
+        self, device: Any, project: Any, session_id: str, executor: NightExecutor
+    ) -> None:
+        """Start the session capture for the new night (ticket 04). Best-effort:
+        a capture failure pushes a warning notification but never kills the
+        night."""
+        with self._lock:
+            old = self._capture
+        if old is not None and old.running:
+            try:
+                old.stop()
+            except Exception:
+                logger.exception("stopping the previous session capture failed")
+        try:
+            capture = self._capture_factory(
+                device,
+                project,
+                session_id,
+                executor,
+                invoke_on_main=self._invoke_on_main,
+                bus=self._bus,
+            )
+        except Exception as exc:  # noqa: BLE001 - warn, never kill the night
+            message = f"{type(exc).__name__}: {exc}"
+            logger.warning("session capture unavailable: %s", message)
+            self._notify(
+                NotificationSeverity.WARNING,
+                "Session capture unavailable",
+                f"frames will not be downloaded into the session: {message}",
+            )
+            return
+        with self._lock:
+            self._capture = capture
+        try:
+            capture.start()
+        except Exception as exc:  # noqa: BLE001 - warn, never kill the night
+            message = f"{type(exc).__name__}: {exc}"
+            logger.warning("session capture could not start: %s", message)
+            self._notify(
+                NotificationSeverity.WARNING,
+                "Session capture unavailable",
+                f"frames will not be downloaded into the session: {message}",
+            )
+
+    def _stop_capture(self) -> None:
+        """Stop the session capture (idempotent; never raises)."""
+        with self._lock:
+            capture = self._capture
+        if capture is not None and capture.running:
+            try:
+                capture.stop()
+            except Exception:
+                logger.exception("stopping the session capture failed")
 
     def _start_preview(self, device: Any) -> None:
         """Start the preview stream best-effort (tele socket); a failure is a
@@ -627,6 +718,7 @@ class ObserveController:
                     "Night aborted",
                     snapshot.error or "unknown error",
                 )
+            self._stop_capture()  # ticket 04: DONE/ABORTED stops the frame capture
         self._emit()
 
     def _on_stream_frame(self, frame: Any) -> None:
