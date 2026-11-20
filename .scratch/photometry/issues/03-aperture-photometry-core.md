@@ -4,7 +4,7 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** implemented in 7ca0be2
+**Status:** implemented in d672ec0
 
 - [x] Circular aperture + sky annulus photometry per picked star
 - [x] Comp ensemble = mean comp mag per frame; differential mag = target − ensemble
