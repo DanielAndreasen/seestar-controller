@@ -806,7 +806,11 @@ class SeestarApplication(Adw.Application):
 def run(argv: list[str] | None = None) -> int:
     """Run the GTK application; returns the exit status."""
     app = SeestarApplication()
-    return app.run(sys.argv if argv is None else list(argv))
+    # GApplication.run treats extra positional arguments as files to open
+    # ("This application can not open files" + exit 1), and the GUI takes
+    # none — forward only the program name.
+    args = sys.argv if argv is None else list(argv)
+    return app.run(args[:1])
 
 
 def main(argv: list[str] | None = None) -> int:
