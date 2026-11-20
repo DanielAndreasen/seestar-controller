@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02, seestar-link 03 (device facade)
 
-**Status:** implemented in a1226d2
+**Status:** implemented in 1a91ed4
 
 - [x] Connect button uses the scope IP from settings
 - [x] Status reflects disconnected/connecting/connected/error
