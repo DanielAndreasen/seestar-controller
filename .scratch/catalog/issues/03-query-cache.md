@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** implemented in 54114a7
+**Status:** implemented in c232b92
 
 - [x] All catalog queries go through the cache wrapper
 - [x] Cache files are JSON under the config dir, keyed by query
