@@ -13,7 +13,13 @@ capture/restore round-trips through the pure settings layer, and the
 settings dialog (ticket 02) live-validates and persists through the pure
 ``SettingsController``, and the header-bar connection panel (ticket 03)
 reflects the pure ``ConnectionController`` states (connect/disconnect button
-+ status label, error styling) and shares the app's controller.
++ status label, error styling) and shares the app's controller, and the
+notification shell (ticket 04) is wired: the window content sits in an
+``Adw.ToastOverlay`` fed by the shared pure ``NotificationBus`` through a
+``NotificationToasts`` presenter (non-modal toasts, severity-based timeouts,
+main-thread marshalling), the header bar has a notifications button opening
+the user-invoked ``NotificationLogDialog`` (bus log, newest first, Clear),
+and the app owns the shared bus + ``NotificationController``.
 """
 
 import importlib.util
@@ -341,3 +347,151 @@ def test_window_header_has_connection_panel_and_shared_controller(app, gtk):
     assert window.connection_panel.controller is app.connection_controller
     # the panel is packed into the header bar (left side)
     assert isinstance(window.connection_panel.get_parent(), Adw.HeaderBar)
+
+
+# --- notifications + error surfacing (ticket 04) ---------------------------------------
+
+
+class _FakeToastOverlay:
+    """Duck-typed stand-in for ``Adw.ToastOverlay`` — records add_toast."""
+
+    def __init__(self):
+        self.toasts = []
+
+    def add_toast(self, toast):
+        self.toasts.append(toast)
+
+
+def _notification(severity, title, message="boom", source="connection"):
+    from seestar_controller.ui.notifications import Notification
+
+    return Notification(severity, title, message, source)
+
+
+def test_window_wraps_content_in_toast_overlay_and_shares_the_bus(app, gtk):
+    from seestar_controller.ui.app import SeestarWindow
+    from seestar_controller.ui.toast import NotificationToasts
+
+    window = SeestarWindow(app, app.state)
+    # the whole content sits inside an Adw.ToastOverlay (non-modal toasts)
+    assert isinstance(window.toast_overlay, Adw.ToastOverlay)
+    assert window.get_content() is window.toast_overlay
+    assert isinstance(window.toast_overlay.get_child(), Adw.ToolbarView)
+    # one shared bus + controller between app and window
+    assert window.notification_bus is app.notification_bus
+    assert window.notification_controller is app.notification_controller
+    assert window.notification_controller.bus is window.notification_bus
+    # the presenter listens on that bus and targets the overlay
+    assert isinstance(window.toast_presenter, NotificationToasts)
+    assert window.toast_presenter.bus is window.notification_bus
+    assert window.toast_presenter.overlay is window.toast_overlay
+    # header-bar notifications button + win.notifications action
+    assert window.lookup_action("notifications") is not None
+    assert isinstance(window.notifications_button.get_parent(), Adw.HeaderBar)
+
+
+def test_toast_presenter_adds_non_modal_toast_per_bus_push(gtk):
+    from seestar_controller.ui.notifications import NotificationBus, NotificationSeverity
+    from seestar_controller.ui.toast import TOAST_TIMEOUTS, NotificationToasts
+
+    bus = NotificationBus()
+    overlay = _FakeToastOverlay()
+    opened = []
+    presenter = NotificationToasts(
+        bus, overlay, on_open_log=lambda: opened.append(True)
+    )
+
+    bus.push(_notification(NotificationSeverity.ERROR, "Connection error", "boom"))
+    bus.push(_notification(NotificationSeverity.INFO, "Reconnected", "link is back"))
+    assert len(overlay.toasts) == 2
+    assert len(presenter.toasts) == 2  # test hook mirrors the overlay
+
+    error_toast, info_toast = overlay.toasts
+    assert error_toast.get_title() == "Connection error: boom"
+    assert error_toast.get_timeout() == TOAST_TIMEOUTS[NotificationSeverity.ERROR] == 10
+    assert info_toast.get_timeout() == TOAST_TIMEOUTS[NotificationSeverity.INFO] == 5
+    assert TOAST_TIMEOUTS[NotificationSeverity.WARNING] == 7  # errors stay longest
+    # the "View" button opens the log (user-invoked, never automatic)
+    assert error_toast.get_button_label() == "View"
+    error_toast.emit("button-clicked")
+    assert opened == [True]
+
+    # detach stops the presenter
+    presenter.detach()
+    bus.push(_notification(NotificationSeverity.WARNING, "Link lost", "reconnecting"))
+    assert len(overlay.toasts) == 2
+
+
+def test_toast_presenter_marshals_worker_thread_callbacks_via_invoke_on_main(gtk):
+    from seestar_controller.ui.notifications import NotificationBus, NotificationSeverity
+    from seestar_controller.ui.toast import NotificationToasts
+
+    bus = NotificationBus()
+    overlay = _FakeToastOverlay()
+    queue = []
+    presenter = NotificationToasts(bus, overlay, invoke_on_main=queue.append)
+
+    # bus callbacks may come from worker threads: nothing is shown until the
+    # main loop drains the queued callback
+    bus.push(_notification(NotificationSeverity.WARNING, "Link lost", "reconnecting"))
+    assert overlay.toasts == []
+    assert len(queue) == 1
+    while queue:
+        queue.pop(0)()
+    assert len(overlay.toasts) == 1
+    assert overlay.toasts[0].get_title() == "Link lost: reconnecting"
+
+
+def test_notification_log_dialog_lists_bus_log_newest_first_with_clear(gtk):
+    from seestar_controller.ui.notification_log import NotificationLogDialog
+    from seestar_controller.ui.notifications import NotificationBus, NotificationSeverity
+
+    bus = NotificationBus()
+    bus.push(_notification(NotificationSeverity.INFO, "Reconnected", "link is back"))
+    bus.push(_notification(NotificationSeverity.ERROR, "Connection error", "boom"))
+    dialog = NotificationLogDialog(bus)
+    assert dialog.bus is bus
+
+    # newest first, one row per entry, row carries the notification (hook)
+    assert dialog.row_count() == 2
+    rows = dialog.rows()
+    assert rows[0].notification.title == "Connection error"
+    assert rows[1].notification.title == "Reconnected"
+    assert rows[0].notification.severity == NotificationSeverity.ERROR
+
+    # Clear empties the bus log and refreshes the rows
+    dialog.clear_button.emit("clicked")
+    assert len(bus) == 0
+    assert dialog.row_count() == 0
+
+    # new entries appear on refresh
+    bus.push(_notification(NotificationSeverity.WARNING, "Link lost", "reconnecting"))
+    dialog.refresh()
+    assert dialog.row_count() == 1
+    assert dialog.rows()[0].notification.title == "Link lost"
+
+
+def test_window_notifications_action_presents_log_dialog_on_shared_bus(app, gtk):
+    from seestar_controller.ui.app import SeestarWindow
+    from seestar_controller.ui.notification_log import NotificationLogDialog
+    from seestar_controller.ui.notifications import NotificationSeverity
+
+    window = SeestarWindow(app, app.state)
+    app.notification_bus.push(
+        _notification(NotificationSeverity.ERROR, "Connection error", "boom")
+    )
+    window._on_notifications_action()  # presents the dialog without raising
+    dialog = window._notification_log_dialog
+    assert isinstance(dialog, NotificationLogDialog)
+    assert dialog.bus is app.notification_bus
+    assert dialog.row_count() == 1  # the pushed error is listed
+
+
+def test_notification_widgets_are_reachable_lazily_from_the_package(gtk):
+    import seestar_controller.ui as ui
+
+    assert ui.NotificationToasts is not None
+    assert ui.NotificationLogDialog is not None
+    # the pure names stay eagerly importable (no gi needed for them)
+    assert ui.NotificationBus is not None
+    assert ui.NotificationController is not None

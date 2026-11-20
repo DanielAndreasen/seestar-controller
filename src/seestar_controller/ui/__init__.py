@@ -9,15 +9,20 @@ docs/wiki/assumptions.md):
   app config dir), :mod:`.settings`: the settings-dialog controller
   (:class:`~.settings.SettingsController`, :func:`~.settings.validate_settings`
   / :func:`~.settings.flag_settings`, :class:`~.settings.SettingsFieldError`),
-  and :mod:`.connection`: the connection state machine
+  :mod:`.connection`: the connection state machine
   (:class:`~.connection.ConnectionController`, :class:`~.connection.ConnectionStatus`,
   :class:`~.connection.ConnectionSnapshot`, :class:`~.connection.ConnectionStateError`,
-  :func:`~.connection.describe_scope_state`). All import **nothing** from
-  ``gi`` — stdlib only, fully unit-testable headless; a subprocess test
-  enforces the boundary.
+  :func:`~.connection.describe_scope_state`), and :mod:`.notifications`:
+  the notification bus + controller (:class:`~.notifications.NotificationBus`,
+  :class:`~.notifications.Notification`, :class:`~.notifications.NotificationSeverity`,
+  :class:`~.notifications.NotificationController`, ticket 04). All import
+  **nothing** from ``gi`` — stdlib only, fully unit-testable headless; a
+  subprocess test enforces the boundary.
 - **Widget layer** — :mod:`.views` (the five placeholder view widgets),
   :mod:`.settings_dialog` (the settings dialog), :mod:`.connection_panel`
-  (the header-bar connection panel, ticket 03) and :mod:`.app`
+  (the header-bar connection panel, ticket 03), :mod:`.toast` +
+  :mod:`.notification_log` (the toast presenter + notification log dialog,
+  ticket 04) and :mod:`.app`
   (:class:`~.app.SeestarApplication` / :class:`~.app.SeestarWindow`,
   header bar + sidebar navigation, dark theme, geometry save/restore).
   These import ``gi`` at module top and are re-exported here **lazily** (PEP
@@ -44,6 +49,21 @@ from .connection import (
     InvokeOnMain,
     default_device_factory,
     describe_scope_state,
+)
+from .notifications import (
+    CONNECTION_SOURCE,
+    DEFAULT_LOG_CAPACITY,
+    DEVICE_EVENTS,
+    SCOPE_ERROR_EVENT,
+    STACK_EVENT,
+    STACK_FINISHED_EVENT,
+    EventSubscribe,
+    Notification,
+    NotificationBus,
+    NotificationController,
+    NotificationListener,
+    NotificationSeverity,
+    default_event_subscribe,
 )
 from .settings import (
     SettingsController,
@@ -82,8 +102,9 @@ from .state import (
 )
 
 #: Widget-layer names re-exported lazily from :mod:`.app` / :mod:`.views` /
-#: :mod:`.settings_dialog` / :mod:`.connection_panel` (importing them pulls
-#: in ``gi`` — only the ``gui`` entry point does).
+#: :mod:`.settings_dialog` / :mod:`.connection_panel` / :mod:`.toast` /
+#: :mod:`.notification_log` (importing them pulls in ``gi`` — only the
+#: ``gui`` entry point does).
 _WIDGET_EXPORTS = {
     "SeestarApplication": "app",
     "SeestarWindow": "app",
@@ -92,6 +113,8 @@ _WIDGET_EXPORTS = {
     "main": "app",
     "SettingsDialog": "settings_dialog",
     "ConnectionPanel": "connection_panel",
+    "NotificationToasts": "toast",
+    "NotificationLogDialog": "notification_log",
     "ObserveView": "views",
     "EnhanceView": "views",
     "PhotometryView": "views",
@@ -156,6 +179,19 @@ __all__ = [
     "RECONNECTING_EVENT",
     "RECONNECTED_EVENT",
     "LIFECYCLE_EVENTS",
+    "NotificationSeverity",
+    "Notification",
+    "NotificationBus",
+    "NotificationController",
+    "NotificationListener",
+    "EventSubscribe",
+    "default_event_subscribe",
+    "DEFAULT_LOG_CAPACITY",
+    "CONNECTION_SOURCE",
+    "SCOPE_ERROR_EVENT",
+    "STACK_EVENT",
+    "STACK_FINISHED_EVENT",
+    "DEVICE_EVENTS",
     # widget layer (lazy, imports gi):
     "SeestarApplication",
     "SeestarWindow",
@@ -164,6 +200,8 @@ __all__ = [
     "main",
     "SettingsDialog",
     "ConnectionPanel",
+    "NotificationToasts",
+    "NotificationLogDialog",
     "ObserveView",
     "EnhanceView",
     "PhotometryView",

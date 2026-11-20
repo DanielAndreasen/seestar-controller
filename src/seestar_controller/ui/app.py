@@ -54,6 +54,21 @@ lifecycle events are applied on the GLib main loop. The header bar carries a
 (``pack_start``) — a Connect/Disconnect button + status label showing
 disconnected/connecting/connected/reconnecting/error, and the Scope's
 current state (mode, target) once connected.
+
+Notifications (ticket 04): the application owns a shared
+:class:`~seestar_controller.ui.notifications.NotificationBus` plus a
+:class:`~seestar_controller.ui.notifications.NotificationController`
+subscribed to the connection controller (and, once connected, to the
+device's pushed events), so connection loss, scope errors, and stack events
+surface as notifications. The window wraps its whole content in an
+:class:`Adw.ToastOverlay`; a
+:class:`~seestar_controller.ui.toast.NotificationToasts` presenter turns bus
+notifications into non-modal :class:`Adw.Toast`\\ s (marshalled onto the
+main loop via the same ``invoke_on_main``). The header bar carries a
+notifications button (``win.notifications`` action) that opens the
+user-invoked :class:`~seestar_controller.ui.notification_log.NotificationLogDialog`
+listing the bus log with a Clear button — background events never open
+modal dialogs.
 """
 
 from __future__ import annotations
@@ -69,6 +84,8 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from .connection import ConnectionController  # noqa: E402
 from .connection_panel import ConnectionPanel  # noqa: E402
+from .notification_log import NotificationLogDialog  # noqa: E402
+from .notifications import NotificationBus, NotificationController  # noqa: E402
 from .settings import SettingsController  # noqa: E402
 from .settings_dialog import SettingsDialog  # noqa: E402
 from .state import (  # noqa: E402
@@ -76,6 +93,7 @@ from .state import (  # noqa: E402
     SettingsValidationError,
     load_state,
 )
+from .toast import NotificationToasts  # noqa: E402
 from .views import build_view  # noqa: E402
 
 #: GApplication id.
@@ -138,8 +156,9 @@ def _restore_geometry(window: Gtk.Window, geometry: dict) -> None:
 
 
 class SeestarWindow(Adw.ApplicationWindow):
-    """The main window: header bar (connection panel + settings menu) +
-    sidebar (ListBox) + view stack.
+    """The main window: header bar (connection panel + notifications log
+    button + settings menu) + sidebar (ListBox) + view stack, all wrapped in
+    an :class:`Adw.ToastOverlay` (ticket 04 — non-modal notification toasts).
 
     The pure-layer :class:`~seestar_controller.ui.state.AppState` is the
     single source of truth: the window renders it (initial view, geometry,
@@ -152,6 +171,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         state: AppState,
         settings_controller: SettingsController | None = None,
         connection_controller: ConnectionController | None = None,
+        notification_bus: NotificationBus | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -172,6 +192,23 @@ class SeestarWindow(Adw.ApplicationWindow):
             else getattr(app, "connection_controller", None)
             or ConnectionController(self._settings_controller, invoke_on_main=_invoke_on_main)
         )
+        # Ticket 04: one shared notification bus; the notification controller
+        # translates connection snapshots + device events into bus
+        # notifications (the toasts + log read from this bus).
+        self._notification_bus = (
+            notification_bus
+            if notification_bus is not None
+            else getattr(app, "notification_bus", None)
+            or NotificationBus()
+        )
+        self._notification_controller = (
+            getattr(app, "notification_controller", None)
+            or NotificationController(
+                self._notification_bus,
+                self._connection_controller,
+                invoke_on_main=_invoke_on_main,
+            )
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -179,6 +216,20 @@ class SeestarWindow(Adw.ApplicationWindow):
         # Connection panel (ticket 03): connect button + status, left side.
         self._connection_panel = ConnectionPanel(self._connection_controller)
         header.pack_start(self._connection_panel)
+        # Notifications log button (ticket 04): opens the log dialog via the
+        # win.notifications action (packed before Settings, which stays
+        # rightmost).
+        notifications_action = Gio.SimpleAction.new("notifications", None)
+        notifications_action.connect("activate", self._on_notifications_action)
+        self.add_action(notifications_action)
+        self._notifications_button = Gtk.Button(
+            icon_name="view-list-symbolic",
+            tooltip_text="Notifications",
+        )
+        self._notifications_button.connect(
+            "clicked", lambda *_args: self.activate_action("win.notifications", None)
+        )
+        header.pack_end(self._notifications_button)
         # Settings menu button (ticket 02): one item activating win.settings.
         settings_action = Gio.SimpleAction.new("settings", None)
         settings_action.connect("activate", self._on_settings_action)
@@ -220,7 +271,19 @@ class SeestarWindow(Adw.ApplicationWindow):
         split.set_sidebar(scrolled)
         split.set_content(self._stack)
         toolbar_view.set_content(split)
-        self.set_content(toolbar_view)
+        # Ticket 04: the whole content sits inside an Adw.ToastOverlay, so
+        # bus notifications surface as non-modal toasts over the current view.
+        self._toast_overlay = Adw.ToastOverlay()
+        self._toast_overlay.set_child(toolbar_view)
+        self.set_content(self._toast_overlay)
+        # Ticket 04: the bus -> toast presenter (bus callbacks may come from
+        # worker threads, so they are marshalled via GLib.idle_add here).
+        self._toast_presenter = NotificationToasts(
+            self._notification_bus,
+            self._toast_overlay,
+            invoke_on_main=_invoke_on_main,
+            on_open_log=self._on_notifications_action,
+        )
 
         # Render the persisted state: geometry, theme, initial view.
         _restore_geometry(self, state.window_geometry())
@@ -256,6 +319,32 @@ class SeestarWindow(Adw.ApplicationWindow):
         return self._connection_panel
 
     @property
+    def notification_bus(self) -> NotificationBus:
+        """The shared notification bus (ticket 04 — toasts + log read it)."""
+        return self._notification_bus
+
+    @property
+    def notification_controller(self) -> NotificationController:
+        """The shared notification controller (subscribed to the connection
+        controller; pushes to the bus)."""
+        return self._notification_controller
+
+    @property
+    def toast_overlay(self) -> Adw.ToastOverlay:
+        """The toast overlay wrapping the window content (ticket 04)."""
+        return self._toast_overlay
+
+    @property
+    def toast_presenter(self) -> NotificationToasts:
+        """The bus -> toast presenter (ticket 04)."""
+        return self._toast_presenter
+
+    @property
+    def notifications_button(self) -> Gtk.Button:
+        """The header-bar notifications (log) button (ticket 04)."""
+        return self._notifications_button
+
+    @property
     def view_stack(self) -> Adw.ViewStack:
         """The view stack holding the five view pages."""
         return self._stack
@@ -283,6 +372,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         """Open the settings dialog (the ``win.settings`` action handler)."""
         self._settings_dialog = SettingsDialog(self._settings_controller)
         self._settings_dialog.present(self)
+
+    def _on_notifications_action(self, *_args) -> None:
+        """Open the notification log dialog (the ``win.notifications`` action
+        handler — user-invoked only; background events never open it)."""
+        self._notification_log_dialog = NotificationLogDialog(self._notification_bus)
+        self._notification_log_dialog.present(self)
 
     def _on_settings_changed(self, values: dict[str, str]) -> None:
         """Observer: settings changed -> reflect the scope IP in the header."""
@@ -323,6 +418,15 @@ class SeestarApplication(Adw.Application):
         # worker-thread results are marshalled onto the GLib main loop.
         self.connection_controller = ConnectionController(
             self.settings_controller, invoke_on_main=_invoke_on_main
+        )
+        # Ticket 04: the shared notification bus + the controller translating
+        # connection snapshots and device events into notifications (the
+        # window's toast overlay + log dialog read from this bus).
+        self.notification_bus = NotificationBus()
+        self.notification_controller = NotificationController(
+            self.notification_bus,
+            self.connection_controller,
+            invoke_on_main=_invoke_on_main,
         )
 
     @property
