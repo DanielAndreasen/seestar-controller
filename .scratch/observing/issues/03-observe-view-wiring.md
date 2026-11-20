@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02, seestar-link 05
 
-**Status:** implemented in 4d02048
+**Status:** implemented in 315f9d1
 
 - [x] Live preview frames render in the Observe view
 - [x] Progress shows current target, stack count, elapsed
