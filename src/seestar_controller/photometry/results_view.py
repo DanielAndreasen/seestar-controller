@@ -170,7 +170,7 @@ class ResultsPanel(Gtk.Box):
         self._list_box.connect("row-activated", self._on_row_activated)
         scrolled = Gtk.ScrolledWindow(
             child=self._list_box,
-            min_content_width=300,
+            min_content_width=260,
             min_content_height=120,
             max_content_height=220,
             hscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
@@ -193,8 +193,10 @@ class ResultsPanel(Gtk.Box):
         self._plot = Gtk.DrawingArea()
         self._plot.set_hexpand(True)
         self._plot.set_vexpand(True)
-        self._plot.set_content_width(320)
-        self._plot.set_content_height(200)
+        # content size = the plot's minimum size; kept small so the panel
+        # (and the window) keeps a small minimum width on laptop screens
+        self._plot.set_content_width(260)
+        self._plot.set_content_height(160)
         self._plot.set_draw_func(self._draw_plot)
         frame = Gtk.Frame(child=self._plot)
         frame.set_vexpand(True)

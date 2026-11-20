@@ -30,7 +30,10 @@ window passes both down via
   **Save picks** button (persists the picks into the project via the
   controller's ``save()``), and the **catalog comps** panel
   (:class:`~.suggestions_panel.SuggestionsPanel`, ticket 02: list the standard
-  stars near the target and add one as a comp pick);
+  stars near the target and add one as a comp pick) — the whole left pane is
+  wrapped in a vertical :class:`Gtk.ScrolledWindow` so it scrolls instead of
+  forcing the window's minimum height up (see
+  :data:`LEFT_PANE_MIN_CONTENT_HEIGHT`);
 - **right pane** — the current stack's tone-mapped preview in a
   :class:`Gtk.Picture` (``CONTAIN`` fit, PIL -> PNG -> :class:`Gdk.Texture`,
   the same pattern as :class:`~seestar_controller.enhance.viewer.ImageViewer`)
@@ -76,6 +79,10 @@ from .suggestions_panel import SuggestionsPanel  # noqa: E402
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
 LEFT_PANE_POSITION = 320
+
+#: Minimum content height (pixels) of the left pane's scrolled window — the
+#: left pane scrolls instead of forcing the page/window minimum height up.
+LEFT_PANE_MIN_CONTENT_HEIGHT = 200
 
 #: Role selector entries: display label -> store role.
 ROLE_CHOICES: tuple[tuple[str, str], ...] = (("Target", ROLE_TARGET), ("Comp", ROLE_COMP))
@@ -247,7 +254,19 @@ class StarPickerView(Gtk.Box):
 
         self._status_label = Gtk.Label(label="", wrap=True, halign=Gtk.Align.CENTER)
         left.append(self._status_label)
-        return left
+        # The left pane scrolls vertically instead of demanding its full
+        # natural height (~1100 px with all groups expanded): the scrolled
+        # window's minimum is small, so the Photometry page — and therefore
+        # the window — keeps a small minimum size and the WM can maximize it
+        # on laptop screens; every control stays reachable via the scrollbar.
+        scrolled = Gtk.ScrolledWindow(
+            child=left,
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            min_content_height=LEFT_PANE_MIN_CONTENT_HEIGHT,
+            vexpand=True,
+        )
+        return scrolled
 
     def _make_spin(self, range_: tuple[float, float, float, int], tooltip: str) -> Gtk.SpinButton:
         lower, upper, step, digits = range_
