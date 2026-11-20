@@ -74,6 +74,10 @@ OBSERVING_PACKAGE_DIR = Path(observing.__file__).resolve().parent
 #: The pure observing modules — no ``gi`` import allowed (subprocess-enforced).
 PURE_OBSERVING_MODULES = ("__init__", "queue", "queue_controller")
 
+#: The executor-layer observing modules — no ``gi`` allowed, but they DO import
+#: the link + store (that is the point of the executor); exported lazily.
+EXECUTOR_OBSERVING_MODULES = ("executor",)
+
 #: The widget observing modules — ``gi`` at module top, lazy-exported via PEP 562.
 WIDGET_OBSERVING_MODULES = ("queue_editor",)
 
@@ -690,15 +694,22 @@ def test_pure_observing_modules_import_no_gi_no_link_and_widget_stays_lazy():
     assert "clean" in result.stdout
 
 
-def test_every_observing_module_is_pure_or_widget_and_widgets_are_lazy_exported():
+def test_every_observing_module_is_pure_or_executor_or_widget_and_lazy_exported():
     modules = {path.stem for path in OBSERVING_PACKAGE_DIR.glob("*.py")}
-    assert modules == set(PURE_OBSERVING_MODULES) | set(WIDGET_OBSERVING_MODULES)
+    assert modules == (
+        set(PURE_OBSERVING_MODULES) | set(EXECUTOR_OBSERVING_MODULES) | set(WIDGET_OBSERVING_MODULES)
+    )
     for name in PURE_OBSERVING_MODULES:
         source = (OBSERVING_PACKAGE_DIR / f"{name}.py").read_text(encoding="utf-8")
         assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE), (
             f"pure module {name} imports gi"
         )
         assert "seestar_controller.link" not in source, f"pure module {name} references link"
+    for name in EXECUTOR_OBSERVING_MODULES:
+        source = (OBSERVING_PACKAGE_DIR / f"{name}.py").read_text(encoding="utf-8")
+        assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE), (
+            f"executor module {name} imports gi"
+        )
     for name in WIDGET_OBSERVING_MODULES:
         lines = (OBSERVING_PACKAGE_DIR / f"{name}.py").read_text(encoding="utf-8").splitlines()
         gi_lines = [i for i, line in enumerate(lines) if line.strip() == "import gi"]
@@ -710,6 +721,7 @@ def test_every_observing_module_is_pure_or_widget_and_widgets_are_lazy_exported(
             f"widget module {name}: 'import gi' must come before 'from gi.repository'"
         )
     assert set(observing._WIDGET_EXPORTS.values()) == set(WIDGET_OBSERVING_MODULES)
+    assert set(observing._EXECUTOR_EXPORTS.values()) == set(EXECUTOR_OBSERVING_MODULES)
 
 
 def test_public_api_is_exported_from_package():

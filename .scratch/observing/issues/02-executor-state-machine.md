@@ -4,10 +4,23 @@
 
 **Blocked by:** seestar-link 04, project-store 02
 
-**Status:** ready-for-agent
+**Status:** implemented in 064d122
 
-- [ ] Executor walks the queue via the facade: goto → start stack → done → next
-- [ ] State transitions are explicit and observable (for the UI to render)
-- [ ] Session opened at start, closed at end in project-store
-- [ ] Scope error mid-queue → defined policy (skip vs abort), documented
-- [ ] Tests: full queue run against mock link; error path; pause/skip/stop
+- [x] Executor walks the queue via the facade: goto → start stack → done → next
+- [x] State transitions are explicit and observable (for the UI to render)
+- [x] Session opened at start, closed at end in project-store
+- [x] Scope error mid-queue → defined policy (skip vs abort), documented
+- [x] Tests: full queue run against mock link; error path; pause/skip/stop
+
+## Comments
+
+New pure module `src/seestar_controller/observing/executor.py` (stdlib + link + store + `observing.queue`, **no gi** — subprocess + source-scan enforced; re-exported lazily from `observing/__init__.py` via PEP 562 `_EXECUTOR_EXPORTS` so `import seestar_controller.observing` stays link-free):
+
+- `ExecutorState` (str Enum: IDLE/RESOLVING/SLEWING/STACKING/PAUSED/DONE/ABORTED), frozen `ExecutorSnapshot(state, queue_index, entry, frames_stacked, elapsed_s, error, session)` handed to listeners on every transition **and** every stacking progress tick, frozen `ExecutorEvent(ts, state, detail)` for the in-memory event log, `ExecutorStateError`, `ERROR_POLICY_SKIP`/`ERROR_POLICY_ABORT`.
+- `NightExecutor(device, queue, project, *, resolver=None, frames_per_target=None, duration_per_target_s=None, error_policy="skip", invoke_on_main=None, park_at_end=True, poll_interval_s=0.05)` — `device` is the injectable link Device facade shape. `start()` opens the session and spawns a daemon worker thread (like `ConnectionController`); `run(timeout)` = start + join + close session, returns the final snapshot; `wait(timeout)` joins and closes. `pause()/resume()/skip()/stop()` are thread-safe commands on a `queue.Queue`. Loop per entry: RESOLVING (only unresolved name entries; injected resolver, entry replaced in the `PlanQueue` in place with a `resolved` event) → SLEWING (`device.goto(ra_hours, dec_deg)`) → STACKING (`device.start_stack(...)`; frames counted from `add_stacking_progress_handler` Stack events; ends on `frames_per_target` OR `duration_per_target_s` wall-clock, whichever first — with neither, stacks until skip/stop/pause — or a `stack_finished` event; then `stop_stack()`) → next entry; queue exhausted or `stop()` → DONE (+ `device.park()` when `park_at_end`, default True — spec user story 11; never parked on ABORTED).
+- **Error policy (documented choice):** a Scope error mid-queue — an exception from a facade call (`RpcError`, `GotoTimeoutError`, `ConnectionLostError`, …) or a pushed `scope_error`/`connection_lost` event — is handled per `error_policy`: `"skip"` (default) records the error in the log + a snapshot (`error` set), stops the current Stack best-effort and **advances to the next entry** (a flaky target never kills the night); `"abort"` stops best-effort, closes the session and ends ABORTED with the error (a dead link ends the night). Policy documented in the module docstring.
+- **Session:** `start_session(project)` in `start()`, `close_session` in `run()`/`wait()` — both on the **calling thread** (sqlite connections are thread-affine, verified: cross-thread use raises `ProgrammingError`), so the worker never touches the store; `run(timeout)` with a live worker returns early without closing. Session-open failure → ABORTED with the error, no worker, the pre-existing open session untouched. The store has no session-log API yet (ticket 04 persists it), so the executor keeps its own in-memory `log` (tuple of frozen `ExecutorEvent`) covering transitions, per-entry start/finish, errors, session open/close, park.
+- Observability: `add_listener`/`remove_listener` (idempotent), every notification marshalled through `invoke_on_main` (default direct call; the widget layer binds `GLib.idle_add`).
+- Tests: `tests/test_observing_executor.py` (29 headless): full 2-target run against the **real Device + MockScope** on 127.0.0.1 with a tmp project (both targets visited via `ScopeGoto` complete events, DONE, parked, exactly one closed session in `list_sessions`, log contents), listener snapshot sequence, injected-resolver RESOLVING + in-place queue replacement, resolution failure skip, `mock_fail` mid-stack → skip advances / abort → ABORTED (not parked, session closed), `drop_connections` mid-stack → ABORTED, `connection_lost` event path, duration budget, plus FakeDevice tests for pause/resume (stop+restart stack), skip, stop→DONE+park, `park_at_end=False`, frames budget via progress, `stack_finished`, per-entry call order, goto/stack errors under both policies, start-twice `ExecutorStateError`, run/wait timeout semantics, empty queue, session-open failure, `invoke_on_main` marshalling, listener idempotency, log shape, constructor validation, package exports, subprocess no-gi/link-free boundary. `tests/test_observing_queue.py` module classification extended with the executor layer. Full suite: **1046 passed + 2 skipped** (gi widget tests skip in the sandbox).
+
+Assumptions: stack end = `frames_per_target` sub-frames (from Stack progress events) OR `duration_per_target_s` wall-clock on the entry, whichever first (neither → until skip/stop/pause); goto RA passed in hours; `stop()` is graceful (DONE + park), ABORTED is reserved for errors; park at end defaults True (user story 11 lives in the executor, not a separate ticket); session log kept in memory for ticket 04 to persist; all link interaction mock-only (user AFK, no real scope).
