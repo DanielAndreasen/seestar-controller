@@ -4,7 +4,7 @@
 
 **Blocked by:** project-store 03/05 (done), photometry 03 (done)
 
-**Status:** ready-for-agent
+**Status:** implemented in 82ee1a9 (merged)
 
 - [ ] Pure `frame_quality/` package (no gi): `score_frame(fits_path or array) -> FrameMetrics(fwhm, bg_median, bg_std, star_count)`; star detection via photutils DAOStarFinder (or documented fallback), background via sigma-clipped stats
 - [ ] `score_session(project, session_id)` scores all subs of a session; `flag_outliers(metrics, mad_threshold=3.0)` robust z-score per metric per session -> flagged set
