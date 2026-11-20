@@ -11,8 +11,10 @@ Pure Python, no GTK, no link (module boundary per
   :class:`~.errors.SessionAlreadyClosedError`, plus
   :class:`~.errors.FrameStoreError`
 - :mod:`.schema` — the ``db.sqlite`` schema (sessions, frames, stars,
-  measurements) and :data:`~.schema.SCHEMA_VERSION`, initialized in one
-  transaction with WAL journal mode
+  measurements), :data:`~.schema.SCHEMA_VERSION`, :func:`~.schema.initialize_db`
+  (WAL mode, one transaction per migration), and the migration runner
+  :func:`~.schema.migrate_db` with :data:`~.schema.MIGRATIONS` (from-version ->
+  SQL steps; ``open_project`` migrates older dbs and rejects newer ones)
 - :mod:`.project` — create/open/list: :func:`~.project.create_project`,
   :func:`~.project.open_project`, :func:`~.project.list_projects`,
   :func:`~.project.slugify`, the :class:`~.project.Project` handle (``.path``,
@@ -108,7 +110,7 @@ from .project import (
     slugify,
     utc_now_iso,
 )
-from .schema import SCHEMA_TABLES, SCHEMA_VERSION, initialize_db
+from .schema import MIGRATIONS, SCHEMA_TABLES, SCHEMA_VERSION, initialize_db, migrate_db
 from .sessions import (
     Session,
     close_session,
@@ -137,6 +139,7 @@ __all__ = [
     "KIND_SUB",
     "KINDS",
     "MAX_SLUG_LENGTH",
+    "MIGRATIONS",
     "PROJECT_FILE",
     "PROJECT_ROOT_ENV_VAR",
     "PROJECT_SUBDIRS",
@@ -178,6 +181,7 @@ __all__ = [
     "list_sessions",
     "load_star_picks",
     "measurements_for_frame",
+    "migrate_db",
     "normalize_kind",
     "normalize_role",
     "open_project",

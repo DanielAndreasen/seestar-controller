@@ -88,7 +88,7 @@ def test_create_returns_open_project(root):
 
 def test_project_json_contents_and_schema_version(project):
     config = json.loads(project.config_path.read_text(encoding="utf-8"))
-    assert config["schema_version"] == SCHEMA_VERSION == 1
+    assert config["schema_version"] == SCHEMA_VERSION == 2
     assert config["name"] == "M 42"
     assert config["slug"] == "m-42"
     # placeholders per spec: target / star picks / period
@@ -282,7 +282,7 @@ def test_db_wal_mode_persists_across_reopen(root):
     create_project("M 42", root=root).close()
     with open_project(root / "m-42") as p:
         assert p.db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert p.db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_db_check_constraints_enforced(project):
@@ -421,7 +421,7 @@ def test_open_missing_required_key_raises_invalid(root):
         open_project(project_dir)
 
 
-@pytest.mark.parametrize("version", [0, 2, 999, "1", 1.5, None, True])
+@pytest.mark.parametrize("version", [0, 3, 999, "1", 1.5, None, True])
 def test_open_unsupported_schema_version_raises_invalid(root, version):
     project_dir = root / "m-42"
     project_dir.mkdir(parents=True)
@@ -617,4 +617,4 @@ def test_public_api_is_exported_from_package():
     assert callable(store.slugify)
     assert isinstance(store.Project, type)
     assert isinstance(store.ProjectSummary, type)
-    assert store.SCHEMA_VERSION == 1
+    assert store.SCHEMA_VERSION == 2

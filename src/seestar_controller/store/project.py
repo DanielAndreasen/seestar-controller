@@ -20,7 +20,7 @@ ticket; this module creates only the top-level layout.
 ``project.json`` at creation time::
 
     {
-      "schema_version": 1,          # SCHEMA_VERSION, mirrored by db user_version
+      "schema_version": 2,          # SCHEMA_VERSION, mirrored by db user_version
       "name": "M 42",               # the display name as given
       "slug": "m-42",               # the directory name (see slugify)
       "created_at": "2026-11-20T01:23:45.678+00:00",   # UTC ISO-8601
@@ -39,10 +39,17 @@ rather than silently suffixing — two names that slugify alike (``"M 42"`` and
 by an invisible suffix, so the caller is told to pick a different name.
 
 Writes are crash-safe: the db runs in WAL mode with transactions (see
-:mod:`.schema`), and ``project.json`` is written atomically (temp file in the
-same dir + fsync + :func:`os.replace`, the same pattern as
-``catalog/cache.py`` and ``link/frames.py`` — re-declared here because this
-package must not import them).
+:mod:`.schema`), schema upgrades run through the migration runner
+(:func:`.schema.migrate_db` — one explicit transaction per migration, so a
+crash mid-migration rolls back and the next open re-runs it), and
+``project.json`` is written atomically (temp file in the same dir + fsync +
+:func:`os.replace`, the same pattern as ``catalog/cache.py`` and
+``link/frames.py`` — re-declared here because this package must not import
+them); frame and CSV files are likewise temp+rename (see :mod:`.frames` /
+:mod:`.csv_export`). A crash mid-write therefore never leaves a partial file
+at a final name; a stray ``*.tmp`` left behind by a killed process is ignored
+on open and never surfaces through the API (the store has no locking — spec
+out of scope — so temp files are never deleted, only never read).
 """
 
 from __future__ import annotations
@@ -302,6 +309,14 @@ def create_project(name: str, root: str | Path | None = None) -> Project:
     return open_project(project_dir)
 
 
+def _missing_tables(db: sqlite3.Connection) -> list[str]:
+    """The :data:`schema.SCHEMA_TABLES` missing from ``db``, sorted."""
+    tables = {
+        row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    return sorted(set(schema.SCHEMA_TABLES) - tables)
+
+
 def open_project(path: str | Path) -> Project:
     """Open and validate the project at ``path`` (its directory).
 
@@ -309,8 +324,15 @@ def open_project(path: str | Path) -> Project:
     ``project.json`` with the required keys (``name``, ``slug``,
     ``created_at``, ``schema_version``) and a supported ``schema_version``
     (``1..SCHEMA_VERSION``), plus a ``db.sqlite`` that is a valid SQLite
-    database containing all :data:`schema.SCHEMA_TABLES` whose ``user_version``
-    matches the config's ``schema_version``.
+    database containing all :data:`schema.SCHEMA_TABLES`.
+
+    The db's ``user_version`` is authoritative for the schema: when it is
+    older than :data:`schema.SCHEMA_VERSION`, :func:`schema.migrate_db`
+    migrates it (each migration in one transaction) and the new version is
+    mirrored into ``project.json`` (atomic write) — both copies of the
+    version are bumped together. A db with ``user_version`` newer than
+    :data:`schema.SCHEMA_VERSION` is rejected. The opened db runs in WAL mode
+    (crash safety, also for migrated dbs) with foreign keys ON.
 
     Raises :class:`ProjectNotFoundError` when ``path`` is not a directory and
     :class:`InvalidProjectError` for anything invalid/corrupt/unsupported.
@@ -346,24 +368,34 @@ def open_project(path: str | Path) -> Project:
     db: sqlite3.Connection | None = None
     try:
         db = sqlite3.connect(db_path)
+        db.execute("PRAGMA journal_mode=WAL")  # crash safety, also for migrated dbs
         db.execute("PRAGMA foreign_keys=ON")
-        tables = {
-            row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
         user_version = db.execute("PRAGMA user_version").fetchone()[0]
+        if user_version >= 1:
+            # a db at version >= 1 must already have all tables; a v0 db is
+            # empty and gets them from the 0 -> 1 migration below
+            missing = _missing_tables(db)
+            if missing:
+                raise InvalidProjectError(f"{db_path} is missing tables {missing}")
+        schema.migrate_db(db)  # older db -> SCHEMA_VERSION; newer db -> error
+        missing = _missing_tables(db)
+        if missing:
+            raise InvalidProjectError(f"{db_path} is missing tables {missing}")
     except sqlite3.DatabaseError as exc:
         if db is not None:
             db.close()
         raise InvalidProjectError(f"{db_path} is not a valid SQLite database: {exc}") from exc
-    missing = sorted(set(schema.SCHEMA_TABLES) - tables)
-    if missing:
-        raise InvalidProjectError(f"{db_path} is missing tables {missing}")
-    if user_version != version:
-        raise InvalidProjectError(
-            f"db user_version {user_version} does not match schema_version {version} "
-            f"in {config_path} — the project is inconsistent"
-        )
-    return Project(path=path, config=config, db=db)
+    except InvalidProjectError:
+        if db is not None:
+            db.close()
+        raise
+    project = Project(path=path, config=config, db=db)
+    if config["schema_version"] != schema.SCHEMA_VERSION:
+        # the db was migrated (or a previous open crashed between the db
+        # migration and this mirror write): bump the project.json copy too
+        config["schema_version"] = schema.SCHEMA_VERSION
+        project.save_config()
+    return project
 
 
 def list_projects(root: str | Path | None = None) -> list[ProjectSummary]:
