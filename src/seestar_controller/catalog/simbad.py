@@ -28,6 +28,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from .coords import J2000Coord
+
 #: SIMBAD's public TAP synchronous endpoint (POST form: REQUEST/LANG/QUERY/...).
 SIMBAD_TAP_SYNC_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync"
 
@@ -82,12 +84,17 @@ class CatalogCandidate:
     @property
     def ra_hours(self) -> float:
         """Right ascension in hours, [0, 24) — the unit ``link.Device.goto`` takes."""
-        return self.ra_deg / 15.0
+        return self.coord.ra_hours
+
+    @property
+    def coord(self) -> J2000Coord:
+        """The J2000 position as the shared :class:`~.coords.J2000Coord` type."""
+        return J2000Coord(ra_deg=self.ra_deg, dec_deg=self.dec_deg)
 
     @property
     def coords_j2000(self) -> tuple[float, float]:
         """``(ra_deg, dec_deg)`` — J2000 coordinates in degrees."""
-        return self.ra_deg, self.dec_deg
+        return self.coord.as_degrees()
 
 
 def fetch_tap_json(
@@ -216,10 +223,13 @@ def _row_to_candidate(row: Any, columns: Mapping[str, int]) -> CatalogCandidate:
     dec = _optional_float(cell("dec"), field="dec")
     if ra is None or dec is None:
         raise SimbadResponseError(f"SIMBAD row has no coordinates: {row!r}")
+    # Wire data must already be in range (no wrapping of catalog values); the
+    # shared J2000Coord is the single place raw values become a normalized coord.
     if not 0.0 <= ra < 360.0:
         raise SimbadResponseError(f"SIMBAD row has ra outside [0, 360) deg: {ra}")
     if not -90.0 <= dec <= 90.0:
         raise SimbadResponseError(f"SIMBAD row has dec outside [-90, 90] deg: {dec}")
+    coord = J2000Coord.from_degrees(ra, dec)
     name = cell("main_id") or cell("id")
     if not isinstance(name, str) or not name:
         raise SimbadResponseError(f"SIMBAD row has no main_id: {row!r}")
@@ -227,8 +237,8 @@ def _row_to_candidate(row: Any, columns: Mapping[str, int]) -> CatalogCandidate:
     matched = cell("id")
     return CatalogCandidate(
         name=name,
-        ra_deg=ra,
-        dec_deg=dec,
+        ra_deg=coord.ra_deg,
+        dec_deg=coord.dec_deg,
         magnitude=_optional_float(cell("flux"), field="flux (magnitude)"),
         otype=otype if isinstance(otype, str) and otype else None,
         matched_id=matched if isinstance(matched, str) and matched else None,

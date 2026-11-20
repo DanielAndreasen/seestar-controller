@@ -4,9 +4,9 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** ready-for-agent
+**Status:** implemented in 8f30b22
 
-- [ ] RA/Dec parsing accepts sexagesimal and decimal forms, rejects invalid input
-- [ ] All coordinates normalized to J2000 in one place
-- [ ] Angular distance helper correct on sphere (incl. wraparound at RA 0)
-- [ ] Unit tests with known coordinate pairs
+- [x] RA/Dec parsing accepts sexagesimal and decimal forms, rejects invalid input
+- [x] All coordinates normalized to J2000 in one place
+- [x] Angular distance helper correct on sphere (incl. wraparound at RA 0)
+- [x] Unit tests with known coordinate pairs
