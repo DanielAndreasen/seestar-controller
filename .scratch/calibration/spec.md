@@ -4,42 +4,40 @@ Status: needs-info
 
 ## Problem Statement
 
-Raw Seestar frames carry fixed-pattern noise (hot pixels, vignetting, dust motes) and a per-frame bias/dark signal. Without calibration frames, photometry on stacked frames is systematically biased and image enhancement amplifies the artifacts. The user wants to run calibration (bias/dark/flat) before an observing night and have the app apply it consistently to science frames.
+Before observing, the SeeStar app performs an instrument calibration: leveling the scope (so the alt-az mount knows its horizontal plane) and a star alignment (plate-solve based position calibration, so goto accuracy is good). Without this, gotos land off-target and tracking drifts. The user wants the same flow available from this app before starting a night.
 
 ## Solution
 
-A calibration module + GUI flow: capture or load calibration frames (bias, dark at relevant exposure/gain, flat), build master calibration frames per (exposure, gain, filter) configuration, store them in the project, and apply them to incoming subs/stacks — both in the live preview/enhance pipeline and when measuring photometry. Calibration state is shown in the Observe view so the user knows whether the current night is calibrated.
+A calibration flow in the app that mirrors the official Seestar app: (1) level the scope — drive the mount to level using the built-in routine and show live tilt readout until within tolerance; (2) star alignment — slew to one or more bright stars, capture a frame, plate-solve it locally to get the actual pointing, and feed the offset back so subsequent gotos are accurate. Calibration state (level OK, alignment stars done) is stored per session/project and shown in the Observe view, gating "Start night".
 
 ## User Stories
 
-1. As a user, I want to capture a set of bias frames (shortest exposure, lens covered / shutter closed) from the GUI, so that the sensor's readout offset is characterized.
-2. As a user, I want to capture dark frames at the exposure/gain I plan to use, so that thermal/hot-pixel signal can be subtracted.
-3. As a user, I want to capture flat frames (e.g. against a uniformly lit surface or dawn sky), so that vignetting and dust motes can be divided out.
-4. As a user, I want the app to build master bias/dark/flat per (exposure, gain) configuration (median combine, outlier rejection), stored in the project, so that calibration is reusable across nights.
-5. As a user, I want to apply the matching master frames to each science sub automatically (dark/bias subtract, flat divide), so that photometry and enhancement work on calibrated data.
-6. As a user, I want to see in the Observe view whether the current configuration has valid calibration, and a warning if it does not, so that I don't waste a night on uncalibrated data.
-7. As a user, I want to re-run calibration when the sensor temperature or configuration changes, so that stale masters are not applied.
-8. As a user, I want calibrated stacks saved alongside raw stacks in the project, so that raw data is never destroyed.
+1. As a user, I want to level the scope from the app, with a live tilt/level indicator, so that the mount's horizontal reference is set before observing.
+2. As a user, I want to run a star alignment: the app slews to a suggested bright star, captures and plate-solves a frame, computes the pointing offset, and repeats for N stars, so that goto accuracy improves.
+3. As a user, I want to see alignment quality (RMS error, per-star residuals) after the procedure, so that I know whether to redo it.
+4. As a user, I want the calibration state (level + alignment) shown in the Observe view and recorded in the session log, so that I know the night started from a calibrated mount.
+5. As a user, I want "Start night" to warn (not hard-block) if level/alignment was not done this session, so that I can proceed deliberately.
+6. As a user, I want the alignment to be repeatable mid-night (re-align on a star) if gotos start missing.
 
 ## Implementation Decisions
 
-- Pure `calibration/` package (no gi): frame capture orchestration via the link Device (reuse stacking/frame-download machinery), master-frame building (median combine with sigma clipping, numpy), matching logic (nearest exposure/gain within tolerance), and application (subtract masters, divide flat, clip) on FITS data (astropy, lazy import as in link/frames.py).
-- Storage: masters under `<project>/calibration/<kind>/<exposure>_<gain>.fits` + metadata in the project DB (schema bump, migration per project-store 07 pattern); calibrated outputs under the existing `enhanced/` or a new `calibrated/` kind dir — decide during implementation, keep raw untouched.
-- Link: calibration capture reuses `start_stack`/`stop_stack` + frame download; no new wire methods assumed — verify against fw 9.75 compat shim (link/compat.py) and mock scope; live verification read-only/bad-param only.
-- GUI: calibration section in the Observe view (or its own view if it grows): buttons Capture bias/dark/flat, progress, master list per config, "calibrated: yes/no" indicator feeding the Start-night enablement.
-- Photometry: measurement pipeline applies calibration to subs before aperture photometry when a matching master exists; otherwise falls back to raw with a flag recorded in the measurement row.
+- Pure `calibration/` package (no gi): level-state parsing from device state (fw 9.75 `iscope_get_app_state` tree via link/compat.py — check what level/tilt fields exist; probe live read-only), alignment math (plate-solve result -> RA/Dec offset -> RMS), star suggestion (bright catalog stars near current pointing via catalog module), session recording via store/sessions.
+- Plate solving: local solver (e.g. astrometry.net solve-field if available, or a lightweight WCS fit) — decide during implementation; must work offline. Fallback: use the scope's own reported position if the firmware exposes solved coordinates.
+- Link: reuse Device facade (state/goto/start_stack/stop_stack/download_frames) through the fw-9.75 compat shim; any new wire methods (e.g. a dedicated level command) must be probed live read-only/bad-param only and added to link/compat.py with legacy fallback + mock support. Never send mutating commands with valid params to the real scope during development.
+- GUI: calibration section in the Observe view (Level button + live indicator, Align button + star list + RMS readout, per-session status), wired into the night-start warning.
+- Storage: calibration record per session in the project DB (schema bump + migration per project-store 07 pattern).
 
 ## Testing Decisions
 
-- Pure tests with synthetic FITS arrays (numpy): master combine correctness, outlier rejection, apply math (bias/dark subtract, flat divide, clipping), matching tolerance, missing-master fallback.
-- Mock-scope tests for the capture flow (mock serves frames; firmware knob from link compat).
-- No network, no gi in pure modules; widget tests via ui harness; full suite stays green.
+- Pure tests: offset/RMS math, star suggestion filtering, level-state parsing from sample app-state trees, session recording — no gi, no network.
+- Mock-scope tests for the full flow (mock serves frames + state; firmware knob "9.75"/"legacy"/"both" from link compat).
+- Widget tests via ui harness; full suite stays green.
 
 ## Out of Scope
 
-- Dark optimization / dark scaling across temperatures beyond nearest-exposure matching; BPM (bad pixel map) as a separate product (can be derived from master dark later); spectroscopic calibration (wavelength solution) — the S50 is an OSC imager.
+- Polar alignment for equatorial mode (S50 is alt-az; wedge use is out of scope for now); photometric/bias-dark-flat calibration (separate concern, see earlier draft superseded); permanent mount modeling.
 
 ## Further Notes
 
-- Depends on: project-store (storage), seestar-link (capture/download), observing (night flow), photometry (apply before measuring).
-- Open question for the user: flat-field source preference (dedicated flat panel / dawn sky / white T-shirt over the aperture)?
+- Depends on: seestar-link (state/goto/frames + compat shim), catalog (bright-star suggestions), project-store (session records), observing (night flow + gating).
+- Open questions for the user: how many alignment stars does the official app use (1 vs 3)? Should leveling be automatic (motors) or manual (user adjusts tripod) with live readout?
