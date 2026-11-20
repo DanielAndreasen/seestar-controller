@@ -1,6 +1,6 @@
 # Spec: frame-quality
 
-Status: needs-info
+Status: ready-for-agent (3 issues)
 
 ## Problem Statement
 
