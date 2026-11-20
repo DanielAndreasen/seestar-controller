@@ -9,7 +9,7 @@ Guards, in order: ``pytest.importorskip("gi")`` (no PyGObject at all),
 ``Gtk.init_check()`` fixture (no display -> skip) — the same pattern as
 tests/test_observing_widgets.py.
 
-What is asserted when they run (image-enhance ticket 01): the
+What is asserted when they run (image-enhance tickets 01 + 03): the
 :class:`~seestar_controller.enhance.viewer.ImageViewer` renders one row per
 project stack (``row_count`` / ``row_label`` matching
 :meth:`~seestar_controller.enhance.fits_io.StackInfo.label`), selecting a row
@@ -17,13 +17,23 @@ opens that stack through the pure
 :class:`~seestar_controller.enhance.viewer_controller.ViewerController` (the
 Gtk.Picture gets a paintable texture, the placeholder hides, the info label
 shows the target), with no project the view shows the "no project"
-placeholder, and the wiring: ``build_view("enhance", viewer_controller=...)``
-hands the shared controller to the Enhance view, the app owns one shared
-:class:`~seestar_controller.enhance.ViewerController`, and the window passes
-it down to the Enhance page.
+placeholder; and the ticket-03
+:class:`~seestar_controller.enhance.enhance_view.EnhanceEditor` builds one
+slider per numeric op param + a dropdown per choice param of the default
+pipeline, moving a slider calls
+:meth:`~seestar_controller.enhance.editor_controller.EditorController.set_param`
+(the pipeline changes, undo becomes available), the Before/After toggle
+switches the preview stack, and the Undo/Redo/Reset buttons drive the
+editor controller (sliders re-sync, sensitivity follows can_undo/can_redo).
+The wiring: ``build_view("enhance", viewer_controller=..., editor_controller=...)``
+hands the shared controllers to the Enhance view, the app owns one shared
+:class:`~seestar_controller.enhance.ViewerController` and one shared
+:class:`~seestar_controller.enhance.EditorController`, and the window passes
+them down to the Enhance page.
 """
 
 import io
+import time
 from datetime import datetime, timezone
 
 import numpy as np
@@ -38,9 +48,14 @@ try:
 except ValueError as exc:  # typelibs missing
     pytest.skip(f"GTK 4.0 / libadwaita typelibs missing: {exc}", allow_module_level=True)
 
-from gi.repository import Gtk  # noqa: E402
+from gi.repository import GLib, Gtk  # noqa: E402
 
-from seestar_controller.enhance import ViewerController  # noqa: E402
+from seestar_controller.enhance import (  # noqa: E402
+    STRETCH_KINDS,
+    EditorController,
+    ViewerController,
+    default_pipeline,
+)
 from seestar_controller.store import KIND_STACK, create_project, start_session, store_frame  # noqa: E402
 
 T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
@@ -125,17 +140,24 @@ def viewer(gtk, viewer_controller):
     return ImageViewer(viewer_controller)
 
 
-def test_build_view_enhance_wires_controller(gtk):
+def test_build_view_enhance_wires_controllers(gtk):
     from seestar_controller.ui.views import EnhanceView, build_view
 
     vc = ViewerController()
-    view = build_view("enhance", viewer_controller=vc)
+    ec = EditorController(vc)
+    view = build_view("enhance", viewer_controller=vc, editor_controller=ec)
     assert isinstance(view, EnhanceView)
     assert view.viewer_controller is vc
-    assert view.viewer_widget.controller is vc
-    # standalone: no controller passed -> the view creates its own
+    assert view.editor_controller is ec
+    assert view.editor_widget.controller is ec
+    assert view.editor_widget.viewer_controller is vc
+    # standalone: no controllers passed -> the view creates its own
     standalone = build_view("enhance")
     assert standalone.viewer_controller is not vc
+    assert standalone.editor_controller is not ec
+    assert (
+        standalone.editor_controller.viewer_controller is standalone.viewer_controller
+    )
 
 
 def test_viewer_lists_stacks(viewer, viewer_controller):
@@ -195,12 +217,160 @@ def test_viewer_no_project_placeholder(gtk):
     assert "no project" in viewer.placeholder.get_label()
 
 
-def test_app_owns_shared_viewer_controller_and_window_passes_it_down(gtk, app):
+def test_app_owns_shared_controllers_and_window_passes_them_down(gtk, app):
     from seestar_controller.ui.app import SeestarWindow
 
     assert isinstance(app.viewer_controller, ViewerController)
+    assert isinstance(app.editor_controller, EditorController)
+    assert app.editor_controller.viewer_controller is app.viewer_controller
     window = SeestarWindow(app, app.state)
     assert window.viewer_controller is app.viewer_controller
+    assert window.editor_controller is app.editor_controller
     enhance_page = window.view_stack.get_child_by_name("enhance")
     assert enhance_page.viewer_controller is app.viewer_controller
-    assert enhance_page.viewer_widget.controller is app.viewer_controller
+    assert enhance_page.editor_controller is app.editor_controller
+    assert enhance_page.editor_widget.controller is app.editor_controller
+    assert enhance_page.editor_widget.viewer_controller is app.viewer_controller
+
+
+# --- ticket 03: the EnhanceEditor widget (sliders, before/after, undo/redo/reset) -------------------
+
+
+def pump_main(timeout: float = 5.0) -> None:
+    """Drain the default GLib main context (runs the queued ``idle_add``
+    callbacks — the editor controller's ``invoke_on_main`` in these tests)."""
+    context = GLib.MainContext.default()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if context.pending():
+            context.iteration(False)
+        else:
+            return
+
+
+@pytest.fixture()
+def editor(gtk, viewer_controller):
+    """An EnhanceEditor over the shared viewer controller, with the editor
+    controller marshalling render results via GLib.idle_add (like the app)."""
+    from seestar_controller.enhance.enhance_view import EnhanceEditor
+
+    ec = EditorController(
+        viewer_controller,
+        invoke_on_main=GLib.idle_add,
+        render_max_size=32,
+        debounce_s=0.0,
+    )
+    return EnhanceEditor(viewer_controller, ec)
+
+
+def _open_first_stack(editor, viewer_controller) -> None:
+    viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
+    assert editor.controller.wait(5.0)
+    pump_main()
+
+
+def test_editor_no_project_placeholder(gtk):
+    from seestar_controller.enhance.enhance_view import EnhanceEditor
+
+    widget = EnhanceEditor(ViewerController())
+    assert widget.row_count() == 0
+    assert widget.slider_count() == 0
+    assert widget.placeholder.get_visible()
+    assert "no project" in widget.placeholder.get_label()
+
+
+def test_editor_builds_sliders_per_op_param(editor, viewer_controller):
+    _open_first_stack(editor, viewer_controller)
+    assert editor.row_count() == 2
+    assert editor.op_group_titles() == ["stretch", "denoise", "sharpen"]
+    # 6 numeric sliders + 1 dropdown for the default pipeline
+    assert editor.slider_count() == 6
+    for key in (
+        ("stretch", "sigma"),
+        ("stretch", "bins"),
+        ("denoise", "strength"),
+        ("denoise", "radius"),
+        ("sharpen", "amount"),
+        ("sharpen", "radius"),
+    ):
+        assert editor.slider(*key) is not None, key
+    assert editor.dropdown("stretch", "kind") is not None
+    # the slider values match the default pipeline params
+    assert editor.slider("denoise", "strength").get_value() == pytest.approx(0.25)
+    assert editor.slider("sharpen", "amount").get_value() == pytest.approx(0.5)
+    assert editor.slider("stretch", "sigma").get_value() == pytest.approx(10.0)
+    # both before/after previews rendered, placeholder hidden, spinner off
+    assert editor.before_picture.get_paintable() is not None
+    assert editor.after_picture.get_paintable() is not None
+    assert not editor.placeholder.get_visible()
+    assert not editor.spinner.get_visible()
+    assert "M 42" in editor.info_label.get_label()
+
+
+def test_editor_slider_move_calls_set_param(editor, viewer_controller):
+    _open_first_stack(editor, viewer_controller)
+    ec = editor.controller
+    assert not ec.can_undo
+    assert not editor.undo_button.get_sensitive()
+    editor.slider("denoise", "strength").set_value(0.8)
+    assert ec.pipeline.ops[1].params.strength == pytest.approx(0.8)
+    assert ec.can_undo
+    assert editor.undo_button.get_sensitive()
+    assert editor.controller.wait(5.0)
+    pump_main()
+    assert editor.after_picture.get_paintable() is not None
+    assert not editor.spinner.get_visible()
+
+
+def test_editor_dropdown_calls_set_param(editor, viewer_controller):
+    _open_first_stack(editor, viewer_controller)
+    dropdown = editor.dropdown("stretch", "kind")
+    dropdown.set_selected(STRETCH_KINDS.index("linear"))
+    assert editor.controller.pipeline.ops[0].params.kind == "linear"
+    assert editor.controller.can_undo
+
+
+def test_editor_before_after_toggle_switches_preview(editor, viewer_controller):
+    _open_first_stack(editor, viewer_controller)
+    assert editor.view_stack.get_visible_child_name() == "after"
+    editor.before_after_toggle.set_active(True)
+    assert editor.view_stack.get_visible_child_name() == "before"
+    editor.before_after_toggle.set_active(False)
+    assert editor.view_stack.get_visible_child_name() == "after"
+    # the two pictures carry different paintables (before != after)
+    assert editor.before_picture.get_paintable() is not None
+    assert editor.after_picture.get_paintable() is not None
+
+
+def test_editor_undo_redo_reset_buttons(editor, viewer_controller):
+    _open_first_stack(editor, viewer_controller)
+    ec = editor.controller
+    assert not editor.undo_button.get_sensitive()
+    assert not editor.redo_button.get_sensitive()
+    editor.slider("sharpen", "amount").set_value(2.0)
+    assert editor.undo_button.get_sensitive()
+    assert not editor.redo_button.get_sensitive()
+    editor.undo_button.clicked()
+    assert ec.pipeline.ops[2].params.amount == pytest.approx(0.5)
+    assert editor.redo_button.get_sensitive()
+    # the slider re-synced to the undone value
+    assert editor.slider("sharpen", "amount").get_value() == pytest.approx(0.5)
+    editor.redo_button.clicked()
+    assert ec.pipeline.ops[2].params.amount == pytest.approx(2.0)
+    assert editor.slider("sharpen", "amount").get_value() == pytest.approx(2.0)
+    editor.reset_button.clicked()
+    assert ec.pipeline == default_pipeline()
+    assert editor.slider("sharpen", "amount").get_value() == pytest.approx(0.5)
+    assert ec.controller.wait(5.0)
+    pump_main()
+
+
+def test_editor_row_selection_opens_stack(editor, viewer_controller):
+    row = editor.list_box.get_row_at_index(1)
+    editor.list_box.select_row(row)
+    assert viewer_controller.current_stack is not None
+    assert viewer_controller.current_stack.frame_id == viewer_controller.stacks[1].frame_id
+    assert editor.controller.wait(5.0)
+    pump_main()
+    assert editor.after_picture.get_paintable() is not None
+    assert "M 31" in editor.info_label.get_label()

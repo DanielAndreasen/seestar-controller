@@ -15,7 +15,13 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   (:class:`~.viewer_controller.ViewerController` — the app-level shared
   controller: current project, stack list, open_stack with a path+mtime FITS
   cache, frozen :class:`~.viewer_controller.ViewerSnapshot` listener
-  notifications), and — ticket 02 — :mod:`.ops` + :mod:`.pipeline` (the
+  notifications), :mod:`.editor_controller` (ticket 03 —
+  :class:`~.editor_controller.EditorController`: the editing state of the
+  open stack — the current :class:`~.pipeline.Pipeline`, bounded undo/redo
+  of parameter changes, debounced worker-thread re-renders marshalled via
+  ``invoke_on_main``, frozen :class:`~.editor_controller.EditorSnapshot`
+  with the before/after previews), and — ticket 02 — :mod:`.ops` +
+  :mod:`.pipeline` (the
   composable pure enhancement ops: :func:`~.ops.apply_stretch`,
   :func:`~.ops.apply_denoise`, :func:`~.ops.apply_sharpen`,
   :func:`~.ops.apply_white_balance`, :func:`~.ops.apply_background`, each with
@@ -26,18 +32,32 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   stdlib + numpy/PIL + store only — fully unit-testable headless; a
   subprocess test enforces the boundary.
 - **Widget layer** — :mod:`.viewer` (:class:`~.viewer.ImageViewer`, the
-  stack list + tone-mapped Gtk.Picture). It imports ``gi`` at module top and
-  is re-exported here **lazily** (PEP 562 ``__getattr__``), so
+  stack list + tone-mapped Gtk.Picture) and :mod:`.enhance_view` (ticket 03 —
+  :class:`~.enhance_view.EnhanceEditor`, the full Enhance view: stack list +
+  per-op parameter sliders on the left, before/after preview + undo/redo/reset
+  on the right). Both import ``gi`` at module top and are re-exported here
+  **lazily** (PEP 562 ``__getattr__``), so
   ``import seestar_controller.enhance`` never imports ``gi``.
 
 On the desktop, PyGObject is not a pip dependency — install the system
 packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` (see the README).
 
 Ticket 01 covers loading + viewing; ticket 02 adds the pure enhancement
-pipeline (:mod:`.ops` + :mod:`.pipeline`), which will hang off
-:class:`~.viewer_controller.ViewerController` in the later view tickets.
+pipeline (:mod:`.ops` + :mod:`.pipeline`); ticket 03 adds the editor
+controller (:mod:`.editor_controller`) + the Enhance view widget
+(:mod:`.enhance_view`).
 """
 
+from .editor_controller import (
+    DEFAULT_DEBOUNCE_S,
+    MAX_UNDO_ENTRIES,
+    EditorController,
+    EditorListener,
+    EditorSnapshot,
+    InvokeOnMain,
+    RenderFn,
+    default_render_fn,
+)
 from .fits_io import (
     EnhanceError,
     FitsImage,
@@ -90,9 +110,10 @@ from .viewer_controller import (
     ViewerSnapshot,
 )
 
-#: Widget-layer names re-exported lazily (importing the module pulls in
+#: Widget-layer names re-exported lazily (importing the modules pulls in
 #: ``gi`` — only the GUI path does).
 _WIDGET_EXPORTS = {
+    "EnhanceEditor": "enhance_view",
     "ImageViewer": "viewer",
 }
 
@@ -109,6 +130,7 @@ def __getattr__(name: str):
 __all__ = [
     "ASINH_SOFTNESS",
     "BACKGROUND_METHODS",
+    "DEFAULT_DEBOUNCE_S",
     "DEFAULT_HISTOGRAM_BINS",
     "DEFAULT_HI_PERCENTILE",
     "DEFAULT_LO_PERCENTILE",
@@ -116,6 +138,7 @@ __all__ = [
     "DEFAULT_STRETCH",
     "LOG_BASE",
     "MAX_CACHE_ENTRIES",
+    "MAX_UNDO_ENTRIES",
     "OP_NAMES",
     "OPS",
     "STRETCH_KINDS",
@@ -123,11 +146,16 @@ __all__ = [
     "WB_MODES",
     "BackgroundParams",
     "DenoiseParams",
+    "EditorController",
+    "EditorListener",
+    "EditorSnapshot",
     "EnhanceError",
     "FitsImage",
+    "InvokeOnMain",
     "Op",
     "OpSpec",
     "Pipeline",
+    "RenderFn",
     "SharpenParams",
     "StackInfo",
     "StretchParams",
@@ -141,6 +169,7 @@ __all__ = [
     "apply_stretch",
     "apply_white_balance",
     "default_pipeline",
+    "default_render_fn",
     "downscale",
     "list_project_stacks",
     "load_fits",
@@ -149,5 +178,6 @@ __all__ = [
     "to_pil_image",
     "tonemap",
     # widget layer (lazy, imports gi):
+    "EnhanceEditor",
     "ImageViewer",
 ]

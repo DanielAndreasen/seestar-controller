@@ -1,0 +1,662 @@
+"""The Enhance-editor widget — the WIDGET layer of
+:mod:`seestar_controller.enhance` (image-enhance ticket 03).
+
+This module imports ``gi`` at module top (it is a widget module, the only
+place allowed to): it is never imported by the pure layer
+(:mod:`seestar_controller.enhance.editor_controller` /
+:mod:`.viewer_controller` / :mod:`.pipeline` / ...) or eagerly by the package
+``__init__`` — the pure layer stays gi-free and headless-testable (see
+docs/wiki/assumptions.md: the sandbox has no GTK).
+
+On the desktop the system packages are required (PyGObject is NOT a pip
+dependency — it needs the system GTK headers to build)::
+
+    sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+
+:class:`EnhanceEditor` is a thin observer over the two pure controllers (the
+app owns one shared
+:class:`~seestar_controller.enhance.viewer_controller.ViewerController` and
+one shared
+:class:`~seestar_controller.enhance.editor_controller.EditorController`; the
+window passes them down via
+:func:`seestar_controller.ui.views.build_view`):
+
+- **left pane** — the project's **stacks** as a :class:`Gtk.ListBox` (one row
+  per :class:`~seestar_controller.enhance.fits_io.StackInfo`, selecting a row
+  opens the stack via the viewer controller) with a **Refresh** button, and
+  below it the **per-op parameter sliders**: one
+  :class:`Adw.PreferencesGroup` per pipeline op (from the
+  :data:`~seestar_controller.enhance.ops.OPS` registry + the params dataclass
+  fields), a :class:`Gtk.Scale` per numeric param (ranges from
+  :data:`PARAM_RANGES`), a :class:`Gtk.DropDown` per kind/mode/method param
+  (:data:`PARAM_CHOICES`), and three scales for the ``gains`` tuple. Every
+  control calls :meth:`~seestar_controller.enhance.editor_controller.EditorController.set_param`
+  on change (the controller debounces the re-render);
+- **right pane** — the **before/after preview**: a :class:`Gtk.Stack` with the
+  original ("before") and enhanced ("after") :class:`Gtk.Picture`\\ s fed from
+  the editor snapshot's ``original_preview`` / ``enhanced_preview`` (PIL ->
+  PNG -> :class:`Gdk.Texture`, the same pattern as
+  :class:`~seestar_controller.enhance.viewer.ImageViewer`), switched by a
+  **Before/After** toggle button, over a placeholder overlay; plus the
+  **Undo** / **Redo** / **Reset** buttons (sensitivity from
+  ``can_undo`` / ``can_redo``) and a :class:`Gtk.Spinner` shown while
+  ``rendering``;
+- the two panes sit in a :class:`Gtk.Paned` (same documented choice as the
+  Observe view / ImageViewer).
+
+The widget re-renders on every frozen
+:class:`~seestar_controller.enhance.editor_controller.EditorSnapshot` and
+:class:`~seestar_controller.enhance.viewer_controller.ViewerSnapshot`; it
+never blocks the main loop — the renders run on the editor controller's
+worker thread and land via its ``invoke_on_main`` (``GLib.idle_add`` in the
+app).
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from typing import Any
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+
+from gi.repository import Adw, Gtk  # noqa: E402
+
+from .editor_controller import EditorController, EditorSnapshot  # noqa: E402
+from .fits_io import EnhanceError, StackInfo  # noqa: E402
+from .ops import BACKGROUND_METHODS, STRETCH_KINDS, WB_MODES  # noqa: E402
+from .pipeline import Pipeline  # noqa: E402
+from .viewer import texture_from_pil  # noqa: E402
+from .viewer_controller import ViewerController, ViewerSnapshot  # noqa: E402
+
+#: Left-pane width at construction (pixels; the user can drag the paned handle).
+LEFT_PANE_POSITION = 380
+
+#: Slider width request (pixels).
+SLIDER_WIDTH = 180
+
+#: Choice-valued params (field name -> the allowed values) rendered as a
+#: :class:`Gtk.DropDown` instead of a slider.
+PARAM_CHOICES: dict[str, tuple[str, ...]] = {
+    "kind": STRETCH_KINDS,
+    "mode": WB_MODES,
+    "method": BACKGROUND_METHODS,
+}
+
+#: Numeric param slider ranges: ``(op_name, field_name) -> (lower, upper,
+#: step, digits)``. The ``gains`` entry is the PER-CHANNEL range (the tuple
+#: field gets one slider per channel).
+PARAM_RANGES: dict[tuple[str, str], tuple[float, float, float, int]] = {
+    ("stretch", "sigma"): (0.1, 100.0, 0.1, 2),
+    ("stretch", "bins"): (2, 65536, 1, 0),
+    ("denoise", "strength"): (0.0, 1.0, 0.01, 2),
+    ("denoise", "radius"): (1, 64, 1, 0),
+    ("sharpen", "amount"): (0.0, 3.0, 0.01, 2),
+    ("sharpen", "radius"): (1, 64, 1, 0),
+    ("white_balance", "gains"): (0.1, 5.0, 0.05, 2),
+    ("background", "degree"): (0, 10, 1, 0),
+}
+
+#: Channel labels for tuple-valued params (``gains``).
+GAINS_CHANNELS = ("r", "g", "b")
+
+
+class EnhanceEditor(Gtk.Box):
+    """The Enhance-view editor: stack list + per-op sliders on the left,
+    before/after preview + undo/redo/reset on the right.
+
+    Constructed with the two controllers (the app passes its shared
+    instances; fresh ones are created when omitted, so the widget also works
+    standalone).
+    """
+
+    def __init__(
+        self,
+        viewer_controller: ViewerController | None = None,
+        editor_controller: EditorController | None = None,
+        **kwargs,
+    ) -> None:
+        kwargs.setdefault("orientation", Gtk.Orientation.VERTICAL)
+        kwargs.setdefault("spacing", 0)
+        super().__init__(**kwargs)
+        self._viewer_controller = (
+            viewer_controller if viewer_controller is not None else ViewerController()
+        )
+        self._editor_controller = (
+            editor_controller
+            if editor_controller is not None
+            else EditorController(self._viewer_controller)
+        )
+        self._stack_ids: tuple[int, ...] = ()
+        self._rows: dict[int, Gtk.ListBoxRow] = {}
+        self._updating = False  # guard against programmatic signal loops
+        self._rendered_pipeline: Pipeline | None = None
+        self._sliders: dict[tuple[str, str], Gtk.Scale] = {}
+        self._dropdowns: dict[tuple[str, str], Gtk.DropDown] = {}
+        self._shown_original: Any = None
+        self._shown_enhanced: Any = None
+        self._viewer_snapshot: ViewerSnapshot | None = None
+
+        paned = Gtk.Paned(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            start_child=self._build_left_pane(),
+            end_child=self._build_right_pane(),
+            position=LEFT_PANE_POSITION,
+            shrink_start_child=False,
+            shrink_end_child=False,
+            wide_handle=True,
+        )
+        self._paned = paned
+        self.append(paned)
+
+        self._viewer_controller.add_listener(self._on_viewer_snapshot)
+        self._editor_controller.add_listener(self._on_editor_snapshot)
+        self._on_viewer_snapshot(self._viewer_controller.snapshot)
+        self._on_editor_snapshot(self._editor_controller.snapshot)
+
+    # -- construction ------------------------------------------------------------
+
+    def _build_left_pane(self) -> Gtk.Widget:
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        left.set_margin_top(12)
+        left.set_margin_bottom(12)
+        left.set_margin_start(12)
+        left.set_margin_end(12)
+        left.set_hexpand(False)
+        left.set_vexpand(True)
+
+        heading = Gtk.Label(label="Stacks", xalign=0.0, css_classes=["heading"])
+        left.append(heading)
+
+        self._list_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        self._list_box.add_css_class("boxed-list")
+        self._list_box.connect("row-selected", self._on_row_selected)
+        scrolled = Gtk.ScrolledWindow(
+            child=self._list_box,
+            min_content_width=280,
+            min_content_height=140,
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+        )
+        left.append(scrolled)
+
+        self._refresh_button = Gtk.Button(
+            label="Refresh",
+            tooltip_text="Re-list the stacks of the current project",
+        )
+        self._refresh_button.connect("clicked", self._on_refresh_clicked)
+        left.append(self._refresh_button)
+
+        self._status_label = Gtk.Label(label="", wrap=True, halign=Gtk.Align.CENTER)
+        left.append(self._status_label)
+
+        enhance_heading = Gtk.Label(label="Enhance", xalign=0.0, css_classes=["heading"])
+        left.append(enhance_heading)
+
+        self._sliders_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        sliders_scrolled = Gtk.ScrolledWindow(
+            child=self._sliders_box,
+            min_content_width=280,
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            vexpand=True,
+        )
+        left.append(sliders_scrolled)
+        return left
+
+    def _build_right_pane(self) -> Gtk.Widget:
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        right.set_margin_top(12)
+        right.set_margin_bottom(12)
+        right.set_margin_start(12)
+        right.set_margin_end(12)
+        right.set_hexpand(True)
+        right.set_vexpand(True)
+
+        # toolbar: before/after toggle + undo/redo/reset + spinner
+        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._before_after_toggle = Gtk.ToggleButton(
+            label="Before",
+            tooltip_text="Show the original (before) instead of the enhanced (after) image",
+        )
+        self._before_after_toggle.connect("toggled", self._on_before_after_toggled)
+        toolbar.append(self._before_after_toggle)
+        self._undo_button = Gtk.Button(label="Undo", tooltip_text="Undo the last parameter change")
+        self._undo_button.connect("clicked", lambda *_a: self._editor_controller.undo())
+        toolbar.append(self._undo_button)
+        self._redo_button = Gtk.Button(label="Redo", tooltip_text="Redo the last undone change")
+        self._redo_button.connect("clicked", lambda *_a: self._editor_controller.redo())
+        toolbar.append(self._redo_button)
+        self._reset_button = Gtk.Button(
+            label="Reset", tooltip_text="Reset all parameters to the defaults"
+        )
+        self._reset_button.connect("clicked", lambda *_a: self._editor_controller.reset())
+        toolbar.append(self._reset_button)
+        self._spinner = Gtk.Spinner(halign=Gtk.Align.END, hexpand=True, visible=False)
+        toolbar.append(self._spinner)
+        right.append(toolbar)
+
+        # before/after preview stack
+        self._before_picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True)
+        self._after_picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True)
+        for picture in (self._before_picture, self._after_picture):
+            picture.set_hexpand(True)
+            picture.set_vexpand(True)
+        self._view_stack = Gtk.Stack()
+        self._view_stack.add_named(self._before_picture, "before")
+        self._view_stack.add_named(self._after_picture, "after")
+        self._view_stack.set_visible_child_name("after")
+        self._placeholder = Gtk.Label(
+            label="no stack open",
+            halign=Gtk.Align.CENTER,
+            valign=Gtk.Align.CENTER,
+            css_classes=["dim-label", "heading"],
+        )
+        overlay = Gtk.Overlay(child=self._view_stack)
+        overlay.add_overlay(self._placeholder)
+        frame = Gtk.Frame(child=overlay)
+        frame.set_vexpand(True)
+        right.append(frame)
+
+        self._info_label = Gtk.Label(
+            label="", halign=Gtk.Align.CENTER, css_classes=["dim-label", "caption"]
+        )
+        right.append(self._info_label)
+        return right
+
+    # -- public helpers (also used by the widget tests) ------------------------------
+
+    @property
+    def controller(self) -> EditorController:
+        """The pure-layer editor controller backing this widget."""
+        return self._editor_controller
+
+    @property
+    def editor_controller(self) -> EditorController:
+        """Alias of :attr:`controller`."""
+        return self._editor_controller
+
+    @property
+    def viewer_controller(self) -> ViewerController:
+        """The pure-layer viewer controller (stack list) backing this widget."""
+        return self._viewer_controller
+
+    @property
+    def paned(self) -> Gtk.Paned:
+        return self._paned
+
+    @property
+    def list_box(self) -> Gtk.ListBox:
+        return self._list_box
+
+    @property
+    def refresh_button(self) -> Gtk.Button:
+        return self._refresh_button
+
+    @property
+    def status_label(self) -> Gtk.Label:
+        return self._status_label
+
+    @property
+    def sliders_box(self) -> Gtk.Box:
+        return self._sliders_box
+
+    @property
+    def view_stack(self) -> Gtk.Stack:
+        return self._view_stack
+
+    @property
+    def before_picture(self) -> Gtk.Picture:
+        return self._before_picture
+
+    @property
+    def after_picture(self) -> Gtk.Picture:
+        return self._after_picture
+
+    @property
+    def before_after_toggle(self) -> Gtk.ToggleButton:
+        return self._before_after_toggle
+
+    @property
+    def undo_button(self) -> Gtk.Button:
+        return self._undo_button
+
+    @property
+    def redo_button(self) -> Gtk.Button:
+        return self._redo_button
+
+    @property
+    def reset_button(self) -> Gtk.Button:
+        return self._reset_button
+
+    @property
+    def spinner(self) -> Gtk.Spinner:
+        return self._spinner
+
+    @property
+    def placeholder(self) -> Gtk.Label:
+        return self._placeholder
+
+    @property
+    def info_label(self) -> Gtk.Label:
+        return self._info_label
+
+    def slider_count(self) -> int:
+        """The number of parameter sliders currently built (test helper)."""
+        return len(self._sliders)
+
+    def slider(self, op_name: str, field: str) -> Gtk.Scale:
+        """The slider for ``(op_name, field)`` (``gains.r``/``.g``/``.b`` for
+        the tuple field) — test helper."""
+        return self._sliders[(op_name, field)]
+
+    def dropdown(self, op_name: str, field: str) -> Gtk.DropDown:
+        """The dropdown for a choice param — test helper."""
+        return self._dropdowns[(op_name, field)]
+
+    def op_group_titles(self) -> list[str]:
+        """The titles of the per-op slider groups, in order (test helper)."""
+        titles = []
+        child = self._sliders_box.get_first_child()
+        while child is not None:
+            titles.append(child.get_title())
+            child = child.get_next_sibling()
+        return titles
+
+    def row_count(self) -> int:
+        """The number of stack rows currently shown (test helper)."""
+        return len(self._rows)
+
+    def row_label(self, index: int) -> str:
+        """The label of the stack row at ``index`` (test helper)."""
+        row = self._list_box.get_row_at_index(index)
+        if row is None:
+            return ""
+        child = row.get_child()
+        label = child.get_first_child() if child is not None else None
+        return label.get_label() if label is not None else ""
+
+    # -- slider construction ---------------------------------------------------------
+
+    def _rebuild_sliders(self, pipeline: Pipeline | None) -> None:
+        """Rebuild the per-op slider groups from ``pipeline`` (None clears)."""
+        self._sliders = {}
+        self._dropdowns = {}
+        while (child := self._sliders_box.get_first_child()) is not None:
+            self._sliders_box.remove(child)
+        if pipeline is None:
+            return
+        for op in pipeline.ops:
+            group = Adw.PreferencesGroup(title=op.name)
+            for field in dataclasses.fields(op.params):
+                self._add_param_control(group, op.name, field.name, getattr(op.params, field.name))
+            self._sliders_box.append(group)
+
+    def _add_param_control(self, group: Adw.PreferencesGroup, op_name: str, field_name: str, value: Any) -> None:
+        """Add one control for the param ``(op_name, field_name)`` with current
+        ``value`` to ``group``: a DropDown for choice params, one Scale per
+        channel for tuple params, a Scale for numeric params."""
+        if field_name in PARAM_CHOICES:
+            choices = PARAM_CHOICES[field_name]
+            model = Gtk.StringList.new(list(choices))
+            selected = choices.index(value) if value in choices else 0
+            dropdown = Gtk.DropDown(model=model, selected=selected)
+            dropdown.connect(
+                "notify::selected",
+                lambda dd, _pspec, op=op_name, field=field_name: self._on_dropdown_selected(
+                    op, field, dd
+                ),
+            )
+            self._dropdowns[(op_name, field_name)] = dropdown
+            row = Adw.ActionRow(title=field_name)
+            row.add_suffix(dropdown)
+            group.add(row)
+            return
+        if isinstance(value, tuple):  # e.g. gains=(r, g, b): one slider per channel
+            lower, upper, step, digits = PARAM_RANGES[(op_name, field_name)]
+            for channel, channel_value in zip(GAINS_CHANNELS, value):
+                scale = self._make_scale(lower, upper, step, digits, float(channel_value))
+                key = (op_name, f"{field_name}.{channel}")
+                self._sliders[key] = scale
+                scale.connect(
+                    "value-changed",
+                    lambda s, op=op_name, field=field_name: self._on_gains_changed(op, field),
+                )
+                row = Adw.ActionRow(title=f"{field_name} {channel}")
+                row.add_suffix(scale)
+                group.add(row)
+            return
+        if isinstance(value, bool):
+            return  # no bool params today — skipped defensively
+        if isinstance(value, (int, float)):
+            lower, upper, step, digits = PARAM_RANGES[(op_name, field_name)]
+            is_int = isinstance(value, int)
+            scale = self._make_scale(lower, upper, step, digits, float(value))
+            self._sliders[(op_name, field_name)] = scale
+            scale.connect(
+                "value-changed",
+                lambda s, op=op_name, field=field_name, integer=is_int: self._on_scale_changed(
+                    op, field, s, integer
+                ),
+            )
+            row = Adw.ActionRow(title=field_name)
+            row.add_suffix(scale)
+            group.add(row)
+            return
+        # unknown param type: skipped defensively
+
+    @staticmethod
+    def _make_scale(
+        lower: float, upper: float, step: float, digits: int, value: float
+    ) -> Gtk.Scale:
+        adjustment = Gtk.Adjustment(
+            value=value,
+            lower=lower,
+            upper=upper,
+            step_increment=step,
+            page_increment=step * 10,
+        )
+        scale = Gtk.Scale(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            adjustment=adjustment,
+            draw_value=True,
+            digits=digits,
+        )
+        scale.set_size_request(SLIDER_WIDTH, -1)
+        scale.set_hexpand(True)
+        return scale
+
+    def _sync_slider_values(self, pipeline: Pipeline) -> None:
+        """Move the sliders/dropdowns to ``pipeline``'s param values (guarded
+        against signal loops) — used on undo/redo/reset/stack change."""
+        self._updating = True
+        try:
+            for op in pipeline.ops:
+                for field in dataclasses.fields(op.params):
+                    value = getattr(op.params, field.name)
+                    if field.name in PARAM_CHOICES:
+                        dropdown = self._dropdowns.get((op.name, field.name))
+                        choices = PARAM_CHOICES[field.name]
+                        if dropdown is not None and value in choices:
+                            dropdown.set_selected(choices.index(value))
+                    elif isinstance(value, tuple):
+                        for channel, channel_value in zip(GAINS_CHANNELS, value):
+                            scale = self._sliders.get((op.name, f"{field.name}.{channel}"))
+                            if scale is not None and abs(scale.get_value() - float(channel_value)) > 1e-9:
+                                scale.set_value(float(channel_value))
+                    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                        scale = self._sliders.get((op.name, field.name))
+                        if scale is not None and abs(scale.get_value() - float(value)) > 1e-9:
+                            scale.set_value(float(value))
+        finally:
+            self._updating = False
+
+    # -- signal handlers ---------------------------------------------------------------
+
+    def _on_scale_changed(self, op_name: str, field: str, scale: Gtk.Scale, is_int: bool) -> None:
+        if self._updating:
+            return
+        value: Any = scale.get_value()
+        if is_int:
+            value = int(round(value))
+        try:
+            self._editor_controller.set_param(op_name, **{field: value})
+        except EnhanceError as exc:
+            self._set_status(str(exc), error=True)
+
+    def _on_gains_changed(self, op_name: str, field: str) -> None:
+        if self._updating:
+            return
+        gains = tuple(
+            self._sliders[(op_name, f"{field}.{channel}")].get_value()
+            for channel in GAINS_CHANNELS
+        )
+        try:
+            self._editor_controller.set_param(op_name, **{field: gains})
+        except EnhanceError as exc:
+            self._set_status(str(exc), error=True)
+
+    def _on_dropdown_selected(self, op_name: str, field: str, dropdown: Gtk.DropDown) -> None:
+        if self._updating:
+            return
+        choices = PARAM_CHOICES[field]
+        index = dropdown.get_selected()
+        if index >= len(choices):
+            return
+        try:
+            self._editor_controller.set_param(op_name, **{field: choices[index]})
+        except EnhanceError as exc:
+            self._set_status(str(exc), error=True)
+
+    def _on_before_after_toggled(self, toggle: Gtk.ToggleButton) -> None:
+        self._view_stack.set_visible_child_name("before" if toggle.get_active() else "after")
+
+    def _on_row_selected(self, _list_box: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
+        if row is None or self._updating:
+            return
+        frame_id = getattr(row, "frame_id", None)
+        if frame_id is None:
+            return
+        try:
+            self._viewer_controller.open_stack(frame_id)
+        except EnhanceError as exc:
+            self._set_status(str(exc), error=True)
+
+    def _on_refresh_clicked(self, *_args) -> None:
+        try:
+            self._viewer_controller.refresh_stacks()
+        except EnhanceError as exc:
+            self._set_status(str(exc), error=True)
+
+    # -- rendering ---------------------------------------------------------------------
+
+    def _on_viewer_snapshot(self, snapshot: ViewerSnapshot) -> None:
+        """Viewer listener: re-render the stack list + selection + status."""
+        self._viewer_snapshot = snapshot
+        ids = tuple(s.frame_id for s in snapshot.stacks)
+        if ids != self._stack_ids:
+            self._stack_ids = ids
+            self._rebuild_rows(snapshot.stacks)
+        if snapshot.current is not None and snapshot.current.frame_id in self._rows:
+            self._updating = True
+            try:
+                self._list_box.select_row(self._rows[snapshot.current.frame_id])
+            finally:
+                self._updating = False
+        if snapshot.error:
+            self._set_status(snapshot.error, error=True)
+        elif not self._editor_controller.snapshot.error:
+            self._set_status("", error=False)
+
+    def _on_editor_snapshot(self, snapshot: EditorSnapshot) -> None:
+        """Editor listener: sliders, before/after previews, spinner, buttons,
+        placeholder, info label, error."""
+        pipeline = snapshot.pipeline
+        if pipeline is None:
+            if self._rendered_pipeline is not None:
+                self._rendered_pipeline = None
+                self._rebuild_sliders(None)
+        elif self._rendered_pipeline is None or pipeline.names != self._rendered_pipeline.names:
+            self._rendered_pipeline = pipeline
+            self._rebuild_sliders(pipeline)
+        else:
+            self._rendered_pipeline = pipeline
+            self._sync_slider_values(pipeline)
+
+        # before/after previews
+        if snapshot.original_preview is not None and snapshot.original_preview is not self._shown_original:
+            self._shown_original = snapshot.original_preview
+            self._before_picture.set_paintable(texture_from_pil(snapshot.original_preview))
+        if snapshot.enhanced_preview is not None and snapshot.enhanced_preview is not self._shown_enhanced:
+            self._shown_enhanced = snapshot.enhanced_preview
+            self._after_picture.set_paintable(texture_from_pil(snapshot.enhanced_preview))
+
+        # placeholder: no project / no stack / nothing rendered yet
+        viewer = self._viewer_snapshot
+        if viewer is not None and viewer.project_name is None:
+            self._placeholder.set_label("no project — open one in the Projects view")
+            self._placeholder.set_visible(True)
+        elif snapshot.stack is None:
+            self._placeholder.set_label("no stack open — select one on the left")
+            self._placeholder.set_visible(True)
+        elif snapshot.original_preview is None and snapshot.enhanced_preview is None:
+            self._placeholder.set_label("rendering…")
+            self._placeholder.set_visible(True)
+        else:
+            self._placeholder.set_visible(False)
+
+        # spinner + buttons
+        self._spinner.set_visible(snapshot.rendering)
+        if snapshot.rendering:
+            self._spinner.start()
+        else:
+            self._spinner.stop()
+        self._undo_button.set_sensitive(snapshot.can_undo)
+        self._redo_button.set_sensitive(snapshot.can_redo)
+        self._reset_button.set_sensitive(snapshot.pipeline is not None)
+
+        # info label
+        if snapshot.stack is not None:
+            ops = ", ".join(snapshot.pipeline.names) if snapshot.pipeline else ""
+            self._info_label.set_label(f"{snapshot.stack.label()} · {ops}")
+        else:
+            self._info_label.set_label("")
+
+        # inline error
+        if snapshot.error:
+            self._set_status(snapshot.error, error=True)
+        elif self._viewer_snapshot is None or not self._viewer_snapshot.error:
+            self._set_status("", error=False)
+
+    def _rebuild_rows(self, stacks: tuple[StackInfo, ...]) -> None:
+        """Rebuild the stack list rows from ``stacks``."""
+        self._rows = {}
+        while (row := self._list_box.get_row_at_index(0)) is not None:
+            self._list_box.remove(row)
+        for stack in stacks:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            box.set_margin_top(6)
+            box.set_margin_bottom(6)
+            box.set_margin_start(8)
+            box.set_margin_end(8)
+            box.append(Gtk.Label(label=stack.label(), xalign=0.0))
+            box.append(
+                Gtk.Label(
+                    label=stack.subtitle(), xalign=0.0, css_classes=["dim-label", "caption"]
+                )
+            )
+            row = Gtk.ListBoxRow(child=box)
+            row.frame_id = stack.frame_id  # type: ignore[attr-defined]
+            self._rows[stack.frame_id] = row
+            self._list_box.append(row)
+
+    def _set_status(self, text: str, *, error: bool) -> None:
+        self._status_label.set_label(text)
+        for css_class in ("error", "dim-label"):
+            self._status_label.remove_css_class(css_class)
+        if error:
+            self._status_label.add_css_class("error")
+        else:
+            self._status_label.add_css_class("dim-label")

@@ -23,12 +23,14 @@ and
 :class:`~seestar_controller.observing.queue_controller.PlanQueueController`
 (both passed in by the app window via :func:`build_view`; fresh controllers
 are created when omitted, so the view also constructs standalone). The
-**Enhance** view (image-enhance ticket 01) carries the
-:class:`~seestar_controller.enhance.viewer.ImageViewer` widget — the
-project's stack list on the left, the tone-mapped preview on the right —
-driven by the app's shared
-:class:`~seestar_controller.enhance.viewer_controller.ViewerController`
-(also passed in via :func:`build_view`; with no project set yet the view
+**Enhance** view (image-enhance tickets 01 + 03) carries the
+:class:`~seestar_controller.enhance.enhance_view.EnhanceEditor` widget — the
+project's stack list + per-op parameter sliders on the left, the live
+before/after preview with undo/redo/reset on the right — driven by the app's
+shared
+:class:`~seestar_controller.enhance.viewer_controller.ViewerController` and
+:class:`~seestar_controller.enhance.editor_controller.EditorController`
+(both passed in via :func:`build_view`; with no project set yet the view
 shows a "no project" placeholder — the Projects view is a later ticket).
 :data:`VIEW_CLASSES` maps the pure-layer view ids
 (:mod:`seestar_controller.ui.state`) to the widget classes, and
@@ -46,9 +48,9 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Gtk  # noqa: E402
 
-from seestar_controller.enhance import ViewerController  # noqa: E402
-from seestar_controller.enhance.viewer import (  # noqa: E402
-    ImageViewer as ImageViewerWidget,
+from seestar_controller.enhance import EditorController, ViewerController  # noqa: E402
+from seestar_controller.enhance.enhance_view import (  # noqa: E402
+    EnhanceEditor as EnhanceEditorWidget,
 )
 from seestar_controller.observing import (  # noqa: E402
     ObserveController,
@@ -172,17 +174,19 @@ class ObserveView(_PlaceholderView):
 
 
 class EnhanceView(_PlaceholderView):
-    """Enhance view (image-enhance ticket 01): wraps the
-    :class:`~seestar_controller.enhance.viewer.ImageViewer` widget — the
-    project's stack list on the left, the tone-mapped stack preview on the
-    right.
+    """Enhance view (image-enhance tickets 01 + 03): wraps the
+    :class:`~seestar_controller.enhance.enhance_view.EnhanceEditor` widget —
+    the project's stack list + per-op parameter sliders on the left, the
+    live before/after preview with undo/redo/reset on the right.
 
     ``viewer_controller`` is the app's shared
     :class:`~seestar_controller.enhance.viewer_controller.ViewerController`
-    (the app window passes it via :func:`build_view`); when omitted, the view
-    creates its own, so it also constructs standalone. With no project set on
-    the controller the view shows a "no project" placeholder (the Projects
-    view is a later ticket; the project can be set later via
+    and ``editor_controller`` the shared
+    :class:`~seestar_controller.enhance.editor_controller.EditorController`
+    (the app window passes both via :func:`build_view`); when omitted, the
+    view creates its own, so it also constructs standalone. With no project
+    set on the viewer controller the view shows a "no project" placeholder
+    (the Projects view is a later ticket; the project can be set later via
     :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.set_project`).
     """
 
@@ -192,11 +196,17 @@ class EnhanceView(_PlaceholderView):
     def __init__(
         self,
         viewer_controller: ViewerController | None = None,
+        editor_controller: EditorController | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
         self._viewer_controller = (
             viewer_controller if viewer_controller is not None else ViewerController()
+        )
+        self._editor_controller = (
+            editor_controller
+            if editor_controller is not None
+            else EditorController(self._viewer_controller)
         )
         # the inner widget handles its own padding
         kwargs.setdefault("margin_top", 0)
@@ -207,8 +217,10 @@ class EnhanceView(_PlaceholderView):
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
-        self._viewer = ImageViewerWidget(self._viewer_controller)
-        self.append(self._viewer)
+        self._editor = EnhanceEditorWidget(
+            self._viewer_controller, self._editor_controller
+        )
+        self.append(self._editor)
 
     @property
     def viewer_controller(self) -> ViewerController:
@@ -216,9 +228,14 @@ class EnhanceView(_PlaceholderView):
         return self._viewer_controller
 
     @property
-    def viewer_widget(self) -> ImageViewerWidget:
-        """The image viewer widget (stack list | preview)."""
-        return self._viewer
+    def editor_controller(self) -> EditorController:
+        """The shared pure-layer editor controller driving this view."""
+        return self._editor_controller
+
+    @property
+    def editor_widget(self) -> EnhanceEditorWidget:
+        """The enhance editor widget (stack list + sliders | before/after preview)."""
+        return self._editor
 
 
 class PhotometryView(_PlaceholderView):
@@ -261,6 +278,7 @@ def build_view(
     queue_controller: PlanQueueController | None = None,
     observe_controller: ObserveController | None = None,
     viewer_controller: ViewerController | None = None,
+    editor_controller: EditorController | None = None,
     project: Any = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
@@ -268,9 +286,10 @@ def build_view(
     Raises :class:`~seestar_controller.ui.state.UnknownViewError` for an id
     not in the pure-layer view list. ``queue_controller`` /
     ``observe_controller`` / ``project`` are forwarded to the Observe view
-    (observing tickets 01 + 03) and ``viewer_controller`` to the Enhance view
-    (image-enhance ticket 01) — the app window passes its shared controllers;
-    the other views ignore them.
+    (observing tickets 01 + 03) and ``viewer_controller`` /
+    ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03)
+    — the app window passes its shared controllers; the other views ignore
+    them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
@@ -280,5 +299,8 @@ def build_view(
             project=project,
         )
     if view_id == EnhanceView.view_id:
-        return EnhanceView(viewer_controller=viewer_controller)
+        return EnhanceView(
+            viewer_controller=viewer_controller,
+            editor_controller=editor_controller,
+        )
     return VIEW_CLASSES[view_id]()

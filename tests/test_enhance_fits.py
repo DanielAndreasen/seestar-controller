@@ -79,10 +79,18 @@ from seestar_controller.store import (
 ENHANCE_PACKAGE_DIR = Path(enhance.__file__).resolve().parent
 
 #: The pure enhance modules — no ``gi`` import allowed (subprocess-enforced).
-PURE_ENHANCE_MODULES = ("__init__", "fits_io", "render", "viewer_controller", "ops", "pipeline")
+PURE_ENHANCE_MODULES = (
+    "__init__",
+    "fits_io",
+    "render",
+    "viewer_controller",
+    "ops",
+    "pipeline",
+    "editor_controller",
+)
 
 #: The widget enhance modules — ``gi`` at module top, lazy-exported via PEP 562.
-WIDGET_ENHANCE_MODULES = ("viewer",)
+WIDGET_ENHANCE_MODULES = ("viewer", "enhance_view")
 
 
 T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
@@ -714,6 +722,8 @@ def test_pure_enhance_modules_import_no_gi_no_link_no_ui_and_widget_stays_lazy()
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
         "assert 'seestar_controller.enhance.viewer' not in sys.modules, "
         "'viewer imported eagerly';"
+        "assert 'seestar_controller.enhance.enhance_view' not in sys.modules, "
+        "'enhance_view imported eagerly';"
         "print('clean')"
     )
     result = subprocess.run(
@@ -764,10 +774,15 @@ def test_public_api_is_exported_from_package():
         "DEFAULT_HI_PERCENTILE",
         "DEFAULT_MAX_PREVIEW_SIZE",
         "MAX_CACHE_ENTRIES",
+        "EditorController",
+        "EditorSnapshot",
+        "MAX_UNDO_ENTRIES",
+        "DEFAULT_DEBOUNCE_S",
     ):
         assert name in enhance.__all__, name
         assert hasattr(enhance, name), name
     assert "ImageViewer" in enhance.__all__ and "ImageViewer" in enhance._WIDGET_EXPORTS
+    assert "EnhanceEditor" in enhance.__all__ and "EnhanceEditor" in enhance._WIDGET_EXPORTS
     assert enhance.load_fits is fits_io.load_fits
     assert enhance.tonemap is render.tonemap
     assert enhance.ViewerController is viewer_controller.ViewerController
