@@ -9,19 +9,23 @@ operations in GLOSSARY vocabulary:
   handshake, firmware >= 7.18 incl. 9.75), reads the Scope's live state,
   and returns the facade;
 - :meth:`Device.state` — the Scope's current **mode**, current **target**
-  (ra, dec) and **stacking** progress, via the ``get_scope_state`` RPC;
-- :meth:`Device.goto` — slew to a target's RA/Dec (``scope_goto_target``);
-  arrival is reported by the pushed ``ScopeGoto`` "complete" event, with a
-  state-polling fallback if the event is missed;
+  (ra, dec) and **stacking** progress, via the ``get_scope_state`` RPC
+  (fw 9.75: ``iscope_get_app_state`` — see :mod:`.compat`);
+- :meth:`Device.goto` — slew to a target's RA/Dec (``scope_goto_target``,
+  fw 9.75: ``scope_goto``); arrival is reported by the pushed ``ScopeGoto``
+  "complete" event, with a state-polling fallback if the event is missed;
 - :meth:`Device.start_stack` / :meth:`Device.stop_stack` — stack sub-frames
   into a Stack on the current target (``iscope_start_stacking`` /
-  ``iscope_stop_stacking``) with per-target exposure / gain / mosaic
+  ``iscope_stop_stacking``, fw 9.75: ``iscope_start_stack`` /
+  ``iscope_stop_view``) with per-target exposure / gain / mosaic
   framing; progress arrives as pushed ``Stack`` events;
-- :meth:`Device.park` — park the Scope (``scope_park``, mode -> parked);
+- :meth:`Device.park` — park the Scope (``scope_park``, unchanged on
+  fw 9.75, mode -> parked);
 - :meth:`Device.download_frames` — download **sub-frames** or **Stacks**
   (GLOSSARY) into a caller-given directory as ``.fits`` + ``.json`` metadata
-  sidecar, written atomically (``list_frames`` / ``get_frame`` RPCs, see
-  :mod:`seestar_controller.link.frames`).
+  sidecar, written atomically (``list_frames`` / ``get_frame`` RPCs on
+  fw < 9.75, ``get_albums`` + paged listing + HTTP GET on fw 9.75, see
+  :mod:`seestar_controller.link.frames` and :mod:`.compat`).
 
 Pushed events from the Scope are surfaced through registered callbacks
 (:meth:`Device.add_event_handler` / :meth:`Device.on_event`), reusing the
@@ -51,9 +55,12 @@ dir (toggleable via ``protocol_log=`` / ``protocol_log_path=`` or the
 ``SEESTAR_PROTOCOL_LOG`` env var; signatures/PEM are redacted — see
 :mod:`seestar_controller.link.protocol_log`).
 
-NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
-the facade is exercised against the mock Scope
-(:mod:`seestar_controller.link.mock_scope`) only.
+NOTE: the wire contract was live-verified against a real Seestar S50
+(station mode, firmware 9.75, 2026-11-20); fw 9.75 renamed several RPC
+methods, and :mod:`seestar_controller.link.compat` shims the differences
+(103 fallback, per-transport cached). The facade is additionally exercised
+against the mock Scope (:mod:`seestar_controller.link.mock_scope`), which
+can emulate either firmware family via its ``firmware=`` knob.
 
 Demo against a local mock Scope: ``uv run python -m seestar_controller.link.device``
 """
@@ -70,24 +77,34 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from . import frames, stacking
+from . import compat, frames, stacking
 from .protocol import Event
 from .resilience import (
     STACK_FINISHED_EVENT,
     ConnectionState,
     ReconnectPolicy,
 )
-from .stacking import START_STACK_METHOD, STACK_EVENT, STACK_STATE_IDLE, STOP_STACK_METHOD
+from .stacking import (
+    START_STACK_METHOD,
+    STACK_EVENT,
+    STACK_STATE_IDLE,
+    STOP_STACK_METHOD,
+)
 from .transport import COMMAND_PORT, EventHandler, LinkTransport
 
 logger = logging.getLogger(__name__)
 
 # -- wire names ---------------------------------------------------------------
 
-#: RPC the facade uses to read the Scope's device state.
+#: RPC the facade uses to read the Scope's device state on fw < 9.75
+#: (fw 9.75 answers code 103 to this name — see :mod:`.compat`).
 GET_SCOPE_STATE_METHOD = "get_scope_state"
-#: RPC the facade uses to slew to a target.
+#: fw 9.75 state RPC — full app function tree (``View``/``Stack``/``AutoGoto``).
+GET_APP_STATE_METHOD = compat.GET_APP_STATE_METHOD
+#: RPC the facade uses to slew to a target on fw < 9.75.
 GOTO_METHOD = "scope_goto_target"
+#: fw 9.75 goto RPC — params ``{"ra": hours, "dec": deg}``.
+GOTO_METHOD_975 = compat.GOTO_METHOD_975
 #: RPC the facade uses to park the Scope.
 PARK_METHOD = "scope_park"
 
@@ -174,6 +191,52 @@ def _parse_state(result: Mapping[str, Any]) -> DeviceState:
     if target_raw:
         target = (float(target_raw["ra"]), float(target_raw["dec"]))
     stacking = _stacking_progress_from(result.get("stacking") or {})
+    return DeviceState(mode=mode, target=target, stacking=stacking)
+
+
+def _parse_app_state(result: Mapping[str, Any]) -> DeviceState:
+    """Parse a fw 9.75 ``iscope_get_app_state`` function tree into a
+    :class:`DeviceState`.
+
+    Live-probed shape (fw 9.75): the ``View`` node (absent when idle)
+    carries ``state`` ("idle"/"working"/"complete"/"fail"/"cancel"),
+    ``mode``, ``target_name`` and ``target_ra_dec: [ra_hours, dec_deg]``,
+    with child nodes ``Stack`` (``state``, ``lapse_ms``, ``stacked_frame``,
+    ``dropped_frame``) and ``AutoGoto`` (the slew). Mapping to the facade
+    vocabulary: ``Stack`` working -> mode "stacking", ``AutoGoto`` working
+    -> "slewing", ``View.stage == "Park"`` -> "parked", else "idle".
+    """
+    view = result.get("View") if isinstance(result, Mapping) else None
+    view = view if isinstance(view, Mapping) else {}
+    stack_node = view.get("Stack")
+    if not isinstance(stack_node, Mapping):
+        stack_node = result.get("Stack") if isinstance(result.get("Stack"), Mapping) else {}
+    goto_node = view.get("AutoGoto")
+    if not isinstance(goto_node, Mapping):
+        goto_node = {}
+
+    target: tuple[float, float] | None = None
+    ra_dec = view.get("target_ra_dec")
+    if isinstance(ra_dec, (list, tuple)) and len(ra_dec) == 2:
+        try:
+            target = (float(ra_dec[0]), float(ra_dec[1]))
+        except (TypeError, ValueError):
+            target = None
+
+    stacking = StackingProgress(
+        state=str(stack_node.get("state", "idle")),
+        lapse_ms=int(stack_node.get("lapse_ms", 0) or 0),
+        frames=int(stack_node.get("stacked_frame", 0) or 0),
+    )
+
+    if str(stack_node.get("state", "")) == "working":
+        mode = MODE_STACKING
+    elif str(goto_node.get("state", "")) == "working":
+        mode = MODE_SLEWING
+    elif str(view.get("stage", "")) == "Park":
+        mode = MODE_PARKED
+    else:
+        mode = MODE_IDLE
     return DeviceState(mode=mode, target=target, stacking=stacking)
 
 
@@ -286,9 +349,17 @@ class Device:
     # -- state -----------------------------------------------------------------
 
     def state(self) -> DeviceState:
-        """Read the Scope's live state: mode, current target, stacking progress."""
-        result = self._transport.request(GET_SCOPE_STATE_METHOD)
-        parsed = _parse_state(result)
+        """Read the Scope's live state: mode, current target, stacking progress.
+
+        Uses ``iscope_get_app_state`` on fw 9.75 and falls back to
+        ``get_scope_state`` on older firmware (:mod:`.compat` shim, the
+        working method is cached per transport).
+        """
+        method, result = compat.call(self._transport, compat.STATE_METHODS)
+        if method == GET_APP_STATE_METHOD:
+            parsed = _parse_app_state(result)
+        else:
+            parsed = _parse_state(result)
         with self._state_lock:
             self._last_state = parsed
         return parsed
@@ -300,12 +371,14 @@ class Device:
     ) -> DeviceState:
         """Slew the Scope to the target at ``ra`` (hours) / ``dec`` (degrees).
 
-        Sends ``scope_goto_target`` and waits for the pushed ``ScopeGoto``
-        "complete" event (arrival). If the event does not arrive within
-        ``timeout`` (default :attr:`goto_timeout`), the state is polled once
-        as a fallback; if the Scope is no longer slewing the slew is treated
-        as arrived, otherwise :class:`GotoTimeoutError` is raised. Returns
-        the state after arrival.
+        Sends ``scope_goto`` (fw 9.75) or ``scope_goto_target`` (older
+        firmware — :mod:`.compat` picks the one the Scope implements) and
+        waits for the pushed ``ScopeGoto`` "complete" event (arrival). If
+        the event does not arrive within ``timeout`` (default
+        :attr:`goto_timeout`), the state is polled once as a fallback; if
+        the Scope is no longer slewing the slew is treated as arrived,
+        otherwise :class:`GotoTimeoutError` is raised. Returns the state
+        after arrival.
         """
         ra = float(ra)
         dec = float(dec)
@@ -323,7 +396,12 @@ class Device:
         # Register before sending the request so a fast slew cannot be missed.
         self._transport.add_event_handler(GOTO_EVENT, on_goto_event)
         try:
-            self._transport.request(GOTO_METHOD, {"ra": ra, "dec": dec}, timeout=timeout)
+            compat.call(
+                self._transport,
+                compat.GOTO_METHODS,
+                lambda _method: {"ra": ra, "dec": dec},
+                timeout=timeout,
+            )
             wait = timeout if timeout is not None else self.goto_timeout
             if not arrived.wait(wait):
                 # Fallback: state polling in case the arrival event was missed.
@@ -365,9 +443,20 @@ class Device:
         delivered as pushed ``Stack`` events (see
         :meth:`add_stacking_progress_handler`) and reflected in
         :meth:`state` (``state().stacking``).
+
+        Sends ``iscope_start_stack`` with ``{"restart": true, ...}`` on
+        fw 9.75, ``iscope_start_stacking`` on older firmware.
         """
         params = stacking.stack_request_params(exposure, gain, mosaic)
-        self._transport.request(START_STACK_METHOD, params, timeout=timeout)
+
+        def params_for(method: str) -> Mapping[str, Any]:
+            if method == compat.START_STACK_METHOD_975:
+                return {"restart": True, **params}
+            return params
+
+        compat.call(
+            self._transport, compat.START_STACK_METHODS, params_for, timeout=timeout
+        )
         return self.state()
 
     def stop_stack(self, *, timeout: float | None = None) -> DeviceState:
@@ -375,8 +464,19 @@ class Device:
 
         The Scope pushes a final ``Stack`` progress event with the final
         frame count and elapsed time. Returns the state after stopping.
+
+        Sends ``iscope_stop_view`` with ``{"stage": "Stack"}`` on fw 9.75
+        (stops just the stack), ``iscope_stop_stacking`` on older firmware.
         """
-        self._transport.request(STOP_STACK_METHOD, timeout=timeout)
+
+        def params_for(method: str) -> Mapping[str, Any] | None:
+            if method == compat.STOP_STACK_METHOD_975:
+                return {"stage": compat.STOP_STACK_STAGE}
+            return None
+
+        compat.call(
+            self._transport, compat.STOP_STACK_METHODS, params_for, timeout=timeout
+        )
         return self.state()
 
     # -- frame downloads -----------------------------------------------------
@@ -388,6 +488,7 @@ class Device:
         *,
         since: datetime | str | float | None = None,
         timeout: float | None = None,
+        fetch: Callable[[str], bytes] | None = None,
     ) -> list[frames.DownloadedFrame]:
         """Download sub-frames or Stacks from the Scope into ``dest_dir``.
 
@@ -399,9 +500,18 @@ class Device:
         atomically (temp file + rename), so an interrupted download never
         leaves a partial file. Returns the downloaded frames (path, sidecar,
         metadata) in time order. See :mod:`seestar_controller.link.frames`.
+
+        On fw 9.75 frames are fetched over plain HTTP GET; ``fetch`` allows
+        injecting that HTTP GET (``fetch(url) -> bytes``), defaulting to
+        :func:`urllib.request.urlopen`.
         """
         return frames.download_frames(
-            self._transport, dest_dir, kind=kind, since=since, timeout=timeout
+            self._transport,
+            dest_dir,
+            kind=kind,
+            since=since,
+            timeout=timeout,
+            fetch=fetch,
         )
 
     def add_stacking_progress_handler(

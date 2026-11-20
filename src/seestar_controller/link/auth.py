@@ -20,9 +20,10 @@ Android app (seestarpy's ``extract_pem``) and stored at
 Loading, saving (0600), and extraction live in
 :mod:`seestar_controller.link.keys`; this module only signs/verifies.
 
-NOTE (user AFK, no PEM key available — see docs/wiki/assumptions.md): the
-sign/verify round-trip is implemented and tested with generated *test*
-keys against the mock Scope only; it is unverified against real hardware.
+NOTE: the sign/verify handshake was live-verified against a real Seestar
+S50 (station mode, firmware 9.75, 2026-11-20) with the extracted PEM key;
+the round-trip is additionally tested with generated *test* keys against
+the mock Scope.
 """
 
 from __future__ import annotations

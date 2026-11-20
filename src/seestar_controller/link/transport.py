@@ -35,9 +35,11 @@ raises :class:`~seestar_controller.link.keys.MissingKeyError` /
 :class:`~seestar_controller.link.keys.InvalidKeyError` before any socket is
 opened.
 
-NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
-this transport is exercised against the mock Scope
-(:mod:`seestar_controller.link.mock_scope`) only.
+NOTE: the signed handshake (``get_verify_str`` -> ``verify_client`` with the
+``key_envelope`` result, ``pi_is_verified``, ``test_connection``) was
+live-verified against a real Seestar S50 in station mode, firmware 9.75
+(2026-11-20); beyond the handshake the transport is exercised against the
+mock Scope (:mod:`seestar_controller.link.mock_scope`).
 """
 
 from __future__ import annotations
@@ -145,6 +147,10 @@ class LinkTransport:
         self._send_lock = threading.RLock()
         self._state_lock = threading.Lock()
         self._pending: dict[int, Future[Reply]] = {}
+        #: ids of in-flight requests whose 103 (method not found) reply must
+        #: not raise a scope_error event — used by the fw-version probes in
+        #: :mod:`.compat`, where a 103 is an expected dialect answer.
+        self._suppress_103_ids: set[int] = set()
         self._ids = itertools.count(1)
         self._event_handlers: dict[str, list[EventHandler]] = {}
         self._lost_handlers: list[ConnectionLostHandler] = []
@@ -302,9 +308,19 @@ class LinkTransport:
         return reply.result
 
     def request_raw(
-        self, method: str, params: Mapping[str, Any] | None = None, *, timeout: float | None = None
+        self,
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+        suppress_scope_error: bool = False,
     ) -> Reply:
-        """Send one request and return the correlated :class:`Reply`."""
+        """Send one request and return the correlated :class:`Reply`.
+
+        With ``suppress_scope_error=True`` a 103 (method not found) reply is
+        still returned (and still resolves the future) but does not dispatch
+        a ``scope_error`` lifecycle event — other error codes always do.
+        """
         with self._state_lock:
             if not self._link_up:
                 raise ConnectionLostError("not connected")
@@ -315,10 +331,13 @@ class LinkTransport:
         send_failed = False
         with self._send_lock:
             self._pending[msg["id"]] = future
+            if suppress_scope_error:
+                self._suppress_103_ids.add(msg["id"])
             try:
                 self._send(msg)
             except (OSError, ConnectionLostError):
                 self._pending.pop(msg["id"], None)
+                self._suppress_103_ids.discard(msg["id"])
                 send_failed = True
         if send_failed:
             # Connection-lost handling (incl. user handlers) must run outside
@@ -328,7 +347,9 @@ class LinkTransport:
         try:
             return future.result(timeout=timeout or self.request_timeout)
         except TimeoutError:
-            self._pending.pop(msg["id"], None)
+            with self._send_lock:
+                self._pending.pop(msg["id"], None)
+                self._suppress_103_ids.discard(msg["id"])
             raise RequestTimeoutError(
                 f"no reply to {method!r} (id={msg['id']}) within "
                 f"{timeout or self.request_timeout}s"
@@ -434,15 +455,24 @@ class LinkTransport:
                 future.set_result(decoded)
             if not decoded.ok:
                 # The Scope reported an error: dispatch it once per error reply.
-                self.dispatch_lifecycle(
-                    SCOPE_ERROR_EVENT,
-                    {
-                        "id": decoded.id,
-                        "method": decoded.method,
-                        "code": decoded.code,
-                        "result": decoded.result,
-                    },
-                )
+                # Exception: a 103 on a request flagged suppress_scope_error
+                # (fw-dialect probe in .compat) is an expected answer, not an
+                # error worth surfacing to lifecycle listeners.
+                with self._send_lock:
+                    suppress = (
+                        decoded.code == 103 and decoded.id in self._suppress_103_ids
+                    )
+                    self._suppress_103_ids.discard(decoded.id)
+                if not suppress:
+                    self.dispatch_lifecycle(
+                        SCOPE_ERROR_EVENT,
+                        {
+                            "id": decoded.id,
+                            "method": decoded.method,
+                            "code": decoded.code,
+                            "result": decoded.result,
+                        },
+                    )
         elif isinstance(decoded, Event):
             self._log_traffic("rx", "event", message)
             self._dispatch_event(decoded)

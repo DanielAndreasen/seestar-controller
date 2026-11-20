@@ -6,8 +6,11 @@
 - :mod:`.transport` — client transport (connect, RPC correlation, events, heartbeat, reconnect)
 - :mod:`.resilience` — connection states, reconnect policy, lifecycle event names
 - :mod:`.protocol_log` — rotating on-disk log of all JSON-RPC traffic (key material redacted)
+- :mod:`.compat` — firmware-compat shim: fw 9.75 renamed several RPC methods
+  (103 fallback to the legacy names, cached per transport)
 - :mod:`.stacking` — stacking wire contract (methods, Stack event, param ranges)
-- :mod:`.frames` — frame-download wire contract (list_frames/get_frame), atomic
+- :mod:`.frames` — frame-download wire contract (legacy list_frames/get_frame;
+  fw 9.75 get_albums + paged listing + HTTP GET), atomic
   .fits + .json sidecar writes, :func:`~.frames.download_frames`
 - :mod:`.device` — device facade (connect, state, goto, stack, park, downloads, events)
 - :mod:`.image` — binary image frames on :4800 (tele) / :4804 (wide)
@@ -19,7 +22,7 @@
 ``python -m seestar_controller.link.device`` / ``...preview``.
 """
 
-from . import auth, frames, image, keys, protocol, protocol_log, resilience, stacking
+from . import auth, compat, frames, image, keys, protocol, protocol_log, resilience, stacking
 from .keys import (
     InvalidKeyError,
     KeyExtractionError,
@@ -64,6 +67,7 @@ def __getattr__(name: str):
 
 __all__ = [
     "auth",
+    "compat",
     "device",
     "frames",
     "image",

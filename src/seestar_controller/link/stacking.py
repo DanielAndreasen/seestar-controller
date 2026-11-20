@@ -11,14 +11,21 @@ The Scope stacks **sub-frames** (individual exposures, GLOSSARY.md) into a
   stacking, "idle" once stopped), ``lapse_ms`` (elapsed) and ``frames``
   (sub-frames stacked so far).
 
+On **fw 9.75** (live-probed against the Seestar S50, station mode,
+2026-11-20 — see :mod:`.compat`) both RPCs answer code 103; the replacements
+are ``iscope_start_stack`` with ``{"restart": bool, ...same params}`` (code
+259 when already running and ``restart`` is true) and ``iscope_stop_view``
+with ``{"stage": "Stack"}`` (stops just the stack; no params = full stop).
+
 Both the facade (:mod:`seestar_controller.link.device`) and the mock Scope
 (:mod:`seestar_controller.link.mock_scope`) validate against the ranges
 defined here, so invalid parameters are rejected client-side with a
 ``ValueError`` *and* on the wire with a non-zero reply code.
 
-NOTE (user AFK, no real scope — docs/wiki/assumptions.md): the ranges below
-are the mock's contract, chosen to match the S50's app-level limits; they
-are unverified against real hardware.
+NOTE: the fw 9.75 method names and error codes were live-verified against a
+real Seestar S50 (fw 9.75); the param ranges below are the mock's contract,
+chosen to match the S50's app-level limits, and remain unverified against
+real hardware.
 """
 
 from __future__ import annotations

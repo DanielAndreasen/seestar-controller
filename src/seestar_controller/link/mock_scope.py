@@ -23,10 +23,17 @@ until stopped) and ``iscope_stop_stacking`` (mode -> idle, final ``Stack``
 event). Invalid stacking params are rejected with a non-zero reply code.
 Every stacked sub-frame and the final Stack are recorded in a frame store
 (:meth:`MockScope.add_frame`, FITS bytes generated with astropy.io.fits and
-a ``DATE-OBS`` header) and served over the wire as ``list_frames`` /
-``get_frame`` (FITS bytes base64-encoded) — the frame-download RPCs the
-facade's :meth:`~seestar_controller.link.device.Device.download_frames`
-uses.
+a ``DATE-OBS`` header) and served over the wire — as ``list_frames`` /
+``get_frame`` (FITS bytes base64-encoded) on the legacy dialect, or as
+``get_albums`` + ``get_img_file_page_number`` / ``get_img_file_page_name``
+with an emulated HTTP fetch (:meth:`MockScope.fetch_http`) on the fw 9.75
+dialect — the frame-download RPCs the facade's
+:meth:`~seestar_controller.link.device.Device.download_frames` uses.
+
+Two firmware dialects are emulated (live-probed against the Seestar S50,
+station mode, fw 9.75, 2026-11-20 — see :mod:`.compat`); the ``firmware=``
+knob selects one: ``"legacy"`` (default; the fw 9.75 names answer code
+103), ``"9.75"`` (the legacy names answer 103), or ``"both"`` (all served).
 
 The image sockets stream the **Preview** (GLOSSARY): each accepted
 connection gets a loop pushing synthetic frames at :attr:`frame_interval`
@@ -43,10 +50,11 @@ closes every command-channel socket without heartbeat (link loss via socket
 EOF) — the client must detect the loss, reconnect with backoff, and re-run
 the signed handshake.
 
-NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
-this mock is the only counterpart the client is tested against. Only the
-20-byte frame framing and the synthetic payloads are exercised; real JPEGs
-from hardware are unverified.
+NOTE: the wire contract was live-verified against a real Seestar S50
+(station mode, firmware 9.75, 2026-11-20); this mock emulates both the
+legacy and the fw 9.75 dialects of the probed contract. Only the 20-byte
+frame framing and the synthetic payloads are exercised; real JPEGs from
+hardware are unverified.
 
 Run standalone: ``uv run python -m seestar_controller.link.mock_scope``
 """
@@ -59,12 +67,14 @@ import copy
 import io
 import json
 import logging
+import math
 import secrets
 import select
 import socket
 import struct
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -72,7 +82,7 @@ from typing import Any, Mapping
 import numpy as np
 from PIL import Image
 
-from . import auth, frames, image, protocol, stacking
+from . import auth, compat, frames, image, protocol, stacking
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +91,32 @@ FRAME_MAGIC = b"MOCKFRAME"
 
 #: Reply code used when a command arrives before the signed handshake.
 NOT_VERIFIED_CODE = 401
+
+#: RPC method names of the legacy (fw < 9.75) dialect.
+LEGACY_METHODS = frozenset(
+    {
+        "get_scope_state",
+        "scope_goto_target",
+        "iscope_start_stacking",
+        "iscope_stop_stacking",
+        "list_frames",
+        "get_frame",
+    }
+)
+#: RPC method names of the fw 9.75 dialect.
+METHODS_975 = frozenset(
+    {
+        compat.GET_APP_STATE_METHOD,
+        compat.GOTO_METHOD_975,
+        compat.START_STACK_METHOD_975,
+        compat.STOP_STACK_METHOD_975,
+        compat.GET_ALBUMS_METHOD,
+        compat.PAGE_NUMBER_METHOD,
+        compat.PAGE_NAME_METHOD,
+    }
+)
+#: Valid values for the ``firmware=`` knob.
+FIRMWARES = ("legacy", "9.75", "both")
 
 
 def make_frame_payload(seq: int, size: int) -> bytes:
@@ -177,7 +213,13 @@ class _CommandConnection:
 
     def handle(self, request: protocol.Request) -> None:
         method = request.method
-        params = dict(request.params)
+        # Positional params (a JSON list, e.g. scope_goto [ra, dec]) are
+        # wrapped so the mapping-based handlers keep working.
+        raw_params = request.params
+        if isinstance(raw_params, Mapping):
+            params = dict(raw_params)
+        else:
+            params = {"args": list(raw_params) if raw_params else []}
 
         delay = self.scope.reply_delay.get(method)
         if delay:
@@ -266,8 +308,14 @@ class MockScope:
         tele_resolution: tuple[int, int] = (1920, 1080),
         wide_resolution: tuple[int, int] = (1280, 720),
         slew_duration: float = 0.5,
+        firmware: str = "legacy",
     ) -> None:
         self.host = host
+        if firmware not in FIRMWARES:
+            raise ValueError(f"firmware must be one of {FIRMWARES}, got {firmware!r}")
+        #: wire dialect served: "legacy" (fw < 9.75 names only), "9.75"
+        #: (fw 9.75 names only), or "both" (all names served)
+        self.firmware = firmware
         self._command_port = command_port
         self._tele_port = tele_port
         self._wide_port = wide_port
@@ -332,6 +380,12 @@ class MockScope:
         #: "fits" plus the public metadata fields (id/kind/time/epoch/...)
         self._frames: list[dict[str, Any]] = []
         self._frame_seq = 0
+        #: fw 9.75 page-listing cursor: folder set by get_img_file_page_number
+        self._page_dir: str | None = None
+        #: whether the page-listing cursor was ever set (distinguishes "no
+        #: cursor yet -> list the album root" from "cursor on an unknown
+        #: dir -> 0 pages -> 204")
+        self._page_cursor_set = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -665,8 +719,13 @@ class MockScope:
 
     @staticmethod
     def _public_frame_record(record: Mapping[str, Any]) -> dict[str, Any]:
-        """A frame record without the raw FITS bytes (for list_frames)."""
-        return {key: value for key, value in record.items() if key != "fits"}
+        """A frame record without the raw FITS bytes or the fw 9.75 album
+        placement fields (for list_frames / get_albums)."""
+        return {
+            key: value
+            for key, value in record.items()
+            if key not in ("fits", "folder", "filename", "remote_path")
+        }
 
     def add_frame(
         self,
@@ -686,6 +745,11 @@ class MockScope:
         bytes are generated with astropy (:func:`make_fits_bytes`) with a
         ``DATE-OBS`` header. Test knob — also called automatically for every
         stacked sub-frame and for the final Stack when stacking stops.
+
+        The record also carries the fw 9.75 album placement: ``folder``
+        (``<target>_sub`` for sub-frames, the plain target name for stacks),
+        ``filename`` (``Light_<target>_<exp>s_<yyyymmdd>-<hhmmss>.fit`` /
+        ``Stacked_<n>_...``) and ``remote_path`` (``MyWorks/<folder>/<file>``).
         """
         kind = frames.normalize_kind(kind)
         if when is None:
@@ -702,6 +766,13 @@ class MockScope:
             fits_bytes = make_fits_bytes(
                 when=when, exposure=exposure, gain=gain, target=target, seed=seq
             )
+            base = str(target.get("name")) if target and target.get("name") else "Unknown"
+            folder = base + frames.SUB_FOLDER_SUFFIX if kind == frames.KIND_SUB else base
+            stamp = when.strftime("%Y%m%d-%H%M%S")
+            if kind == frames.KIND_SUB:
+                filename = f"Light_{base}_{exposure:g}s_{stamp}.fit"
+            else:
+                filename = f"Stacked_{seq}_{base}_{exposure:g}s_{stamp}.fit"
             record = {
                 "id": frame_id,
                 "kind": kind,
@@ -712,6 +783,9 @@ class MockScope:
                 "target": copy.deepcopy(target) if target is not None else None,
                 "size": len(fits_bytes),
                 "fits": fits_bytes,
+                "folder": folder,
+                "filename": filename,
+                "remote_path": f"{frames.ROOT_DIR}/{folder}/{filename}",
             }
             self._frames.append(record)
             return self._public_frame_record(record)
@@ -752,6 +826,223 @@ class MockScope:
                     return dict(record)
         raise KeyError(f"unknown frame id {frame_id!r}")
 
+    def fetch_http(self, url: str) -> bytes:
+        """Emulated fw 9.75 HTTP frame download: ``GET http://<host>/<path>``.
+
+        ``url`` is the URL :func:`seestar_controller.link.frames.http_frame_url`
+        built; the path after the host must be a stored frame's
+        ``remote_path`` (``MyWorks/<folder>/<filename>``). Returns the FITS
+        bytes; raises ``FileNotFoundError`` for anything else (the real scope
+        answers 404).
+        """
+        path = urllib.parse.urlsplit(url).path.lstrip("/")
+        path = urllib.parse.unquote(path)
+        with self._frames_lock:
+            for record in self._frames:
+                if record.get("remote_path") == path:
+                    return record["fits"]
+        raise FileNotFoundError(f"no such remote file: {path!r}")
+
+    # -- fw 9.75 dialect: app state / goto / stack / albums -------------------
+
+    def app_state_tree(self) -> dict[str, Any]:
+        """The fw 9.75 ``iscope_get_app_state`` function tree, derived from
+        the mock's device state (live-probed shape: ``View`` with ``state``,
+        ``target_ra_dec`` and child ``Stack`` / ``AutoGoto`` nodes)."""
+        state = self.scope_state()
+        tree: dict[str, Any] = {
+            "FocuserMove": {"state": "complete", "lapse_ms": 0, "position": 1571},
+            "ViewPlan": {
+                "Event": "ViewPlan",
+                "state": "cancel",
+                "lapse_ms": 0,
+                "plan": {"plan_name": "", "list": []},
+            },
+        }
+        mode = state["mode"]
+        target = state["target"]
+        if mode in ("slewing", "stacking", "parked") or target:
+            view: dict[str, Any] = {
+                "state": "working" if mode in ("slewing", "stacking") else "idle",
+                "mode": "star",
+                "cam_id": 0,
+                "lp_filter": False,
+                "gain": 0,
+                "route": [],
+            }
+            if mode == "parked":
+                view["stage"] = "Park"
+            if target:
+                view["target_ra_dec"] = [float(target["ra"]), float(target["dec"])]
+                if target.get("name"):
+                    view["target_name"] = str(target["name"])
+            if mode == "slewing":
+                view["AutoGoto"] = {"state": "working", "lapse_ms": 0, "route": []}
+            stacking = state["stacking"]
+            view["Stack"] = {
+                "state": stacking["state"] if mode == "stacking" else "idle",
+                "lapse_ms": stacking["lapse_ms"],
+                "stacked_frame": stacking["frames"],
+                "dropped_frame": 0,
+            }
+            tree["View"] = view
+        return tree
+
+    def _handle_scope_goto_975(
+        self, params: Mapping[str, Any]
+    ) -> tuple[bool, Any, int]:
+        """fw 9.75 ``scope_goto``: dict ``{"ra", "dec"}`` or positional
+        ``[ra, dec]``; wrong types -> 108, out of range -> 207 (no motion)."""
+        if "args" in params and isinstance(params["args"], (list, tuple)):
+            args = list(params["args"])
+            ra_raw, dec_raw = (args + [None, None])[:2]
+        else:
+            ra_raw, dec_raw = params.get("ra"), params.get("dec")
+        try:
+            ra, dec = float(ra_raw), float(dec_raw)
+        except (TypeError, ValueError):
+            return True, {"error": "expected float param"}, 108
+        if not (0.0 <= ra < 24.0 and -90.0 <= dec <= 90.0):
+            return True, {"error": "fail to operate"}, 207
+        self.begin_goto(ra, dec)
+        return True, 0, 0
+
+    def _handle_start_stack_975(
+        self, params: Mapping[str, Any]
+    ) -> tuple[bool, Any, int]:
+        """fw 9.75 ``iscope_start_stack``: ``{"restart": bool, ...legacy
+        params}``; 259 when already running and restart is true."""
+        restart = bool(params.get("restart", False))
+        with self._scope_state_lock:
+            already = self._scope_state["mode"] == "stacking"
+        if already and restart:
+            return True, {"error": "already running"}, compat.ALREADY_RUNNING_CODE
+        if not already:
+            try:
+                exposure, gain, mosaic = stacking.wire_params_to_stack_args(params)
+                result = self.start_stacking(exposure, gain, mosaic)
+            except (TypeError, ValueError) as exc:
+                return True, {"error": f"invalid stacking params: {exc}"}, 207
+            return True, result, 0
+        return True, 0, 0
+
+    def _handle_stop_view_975(
+        self, params: Mapping[str, Any]
+    ) -> tuple[bool, Any, int]:
+        """fw 9.75 ``iscope_stop_view``: ``{"stage": "Stack"}`` stops just
+        the stack; no params = full stop. Stopping while idle is a no-op."""
+        stage = params.get("stage")
+        if stage not in (None, compat.STOP_STACK_STAGE):
+            return True, {"error": f"unknown stage {stage!r}"}, 102
+        try:
+            result = self.stop_stacking()
+        except ValueError:
+            return True, 0, 0  # not stacking: no-op on fw 9.75
+        return True, result, 0
+
+    def albums(self) -> dict[str, Any]:
+        """The fw 9.75 ``get_albums`` result: folders directly under
+        ``MyWorks`` (sub-frame folders end in ``_sub``)."""
+        with self._frames_lock:
+            folders: dict[str, list[dict[str, Any]]] = {}
+            for record in self._frames:
+                folders.setdefault(str(record["folder"]), []).append(record)
+        files = []
+        for folder, records in sorted(folders.items()):
+            first = records[0]
+            thn = str(first["filename"])
+            if thn.lower().endswith(frames.FITS_FILE_SUFFIXES):
+                thn = thn[: -len(frames.FITS_FILE_SUFFIXES[-1])] + "_thn.jpg"
+            files.append(
+                {
+                    "name": folder,
+                    "thn": f"{folder}/{thn}",
+                    "count": len(records),
+                    "type": 0,
+                }
+            )
+        return {
+            "path": frames.ROOT_DIR,
+            "list": [{"group_name": "DeepSky", "files": files}],
+        }
+
+    def _folder_records(self, folder: str) -> list[dict[str, Any]]:
+        with self._frames_lock:
+            return [r for r in self._frames if r.get("folder") == folder]
+
+    def _handle_page_number(
+        self, params: Mapping[str, Any]
+    ) -> tuple[bool, Any, int]:
+        """fw 9.75 ``get_img_file_page_number``: ``{"dir": "MyWorks/<folder>",
+        "skip_avi": bool}`` -> int page count (20/page; unknown dir -> 0).
+        Sets the stateful listing cursor used by ``get_img_file_page_name``."""
+        if "dir" in params and not isinstance(params["dir"], str):
+            return True, {"error": "expected string param"}, 102
+        dir_path = params.get("dir")
+        if not isinstance(dir_path, str):
+            # e.g. {"path": ...}: accepted but ignored (live-probed) -> 0 pages
+            with self._frames_lock:
+                self._page_dir = None
+                self._page_cursor_set = True
+            return True, 0, 0
+        folder = (
+            dir_path[len(frames.ROOT_DIR) + 1 :]
+            if dir_path.startswith(frames.ROOT_DIR + "/")
+            else dir_path
+        )
+        records = self._folder_records(folder)
+        with self._frames_lock:
+            self._page_dir = folder
+            self._page_cursor_set = True
+        pages = math.ceil(len(records) / frames.PAGE_SIZE) if records else 0
+        return True, pages, 0
+
+    def _handle_page_name(self, params: Mapping[str, Any]) -> tuple[bool, Any, int]:
+        """fw 9.75 ``get_img_file_page_name``: ``{"page": int}`` -> the page's
+        entries (stateful cursor from the page-number call); out of range ->
+        204. Without a cursor, lists the album root (one dir entry)."""
+        try:
+            page = int(params.get("page"))
+        except (TypeError, ValueError):
+            return True, {"error": "expected int param"}, 104
+        with self._frames_lock:
+            folder = self._page_dir
+            cursor_set = self._page_cursor_set
+        if not cursor_set:
+            with self._frames_lock:
+                total = len(self._frames)
+                size_k = sum(int(r["size"]) for r in self._frames) // 1024
+            return (
+                True,
+                [
+                    {
+                        "name": frames.ROOT_DIR,
+                        "is_dir": True,
+                        "date": "1970-01-01 00:00:00",
+                        "file_cnt": total,
+                        "size_k": size_k,
+                    }
+                ],
+                0,
+            )
+        records = self._folder_records(folder)
+        pages = math.ceil(len(records) / frames.PAGE_SIZE) if records else 0
+        if page < 0 or page >= max(pages, 1) or pages == 0:
+            return True, {"error": "out of limit"}, compat.OUT_OF_LIMIT_CODE
+        entries = []
+        for record in records[page * frames.PAGE_SIZE : (page + 1) * frames.PAGE_SIZE]:
+            entries.append(
+                {
+                    "name": record["filename"],
+                    "is_dir": False,
+                    "date": str(record["time"]).replace("T", " ").split(".")[0],
+                    "size_k": int(record["size"]) // 1024,
+                    "header_date": record["time"],
+                }
+            )
+        return True, entries, 0
+
+
     def _record_stacked_subframe(self) -> None:
         """Record one sub-frame per stacked sub-frame (stack loop hook)."""
         params = self.last_stack_params or {}
@@ -766,7 +1057,33 @@ class MockScope:
 
         Returns ``(handled, result, code)``; ``handled`` is False for methods
         this dispatcher does not know (fall through to canned results).
+
+        The ``firmware=`` knob gates the two dialects: on ``"9.75"`` the
+        legacy names answer code 103 (method not found), on ``"legacy"`` the
+        fw 9.75 names do; ``"both"`` serves every name.
         """
+        if self.firmware == "9.75" and method in LEGACY_METHODS:
+            return True, {"error": "method not found"}, compat.METHOD_NOT_FOUND_CODE
+        if self.firmware == "legacy" and method in METHODS_975:
+            return True, {"error": "method not found"}, compat.METHOD_NOT_FOUND_CODE
+
+        # -- fw 9.75 dialect --------------------------------------------------
+        if method == compat.GET_APP_STATE_METHOD:
+            return True, self.app_state_tree(), 0
+        if method == compat.GOTO_METHOD_975:
+            return self._handle_scope_goto_975(params)
+        if method == compat.START_STACK_METHOD_975:
+            return self._handle_start_stack_975(params)
+        if method == compat.STOP_STACK_METHOD_975:
+            return self._handle_stop_view_975(params)
+        if method == compat.GET_ALBUMS_METHOD:
+            return True, self.albums(), 0
+        if method == compat.PAGE_NUMBER_METHOD:
+            return self._handle_page_number(params)
+        if method == compat.PAGE_NAME_METHOD:
+            return self._handle_page_name(params)
+
+        # -- legacy dialect (fw < 9.75) ---------------------------------------
         if method == "get_scope_state":
             return True, self.scope_state(), 0
         if method == "scope_goto_target":
