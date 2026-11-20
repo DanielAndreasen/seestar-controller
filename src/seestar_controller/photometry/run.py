@@ -19,7 +19,10 @@ What lives here:
   ``frame_id``);
 - :class:`RunReport` — the frozen result of :meth:`RunController.run_session`:
   the stored :class:`~seestar_controller.store.measurements.Measurement`\\ s,
-  the :class:`~.measure.SkippedFrame`\\ s, and the ``session_id``;
+  the :class:`~.measure.SkippedFrame`\\ s, the ``session_id``, and the
+  per-frame :class:`~.measure.FrameMeasurement` results (``frame_results`` —
+  carrying the check star's differential mag + error and the
+  target-minus-check curve, check-star-plot ticket 01);
 - :class:`RunSnapshot` — the frozen controller snapshot handed to the
   listeners: ``running``, the last ``session_id`` / ``progress`` / ``report`` /
   ``error``, and the project's **lightcurve** points (the results accessor,
@@ -118,6 +121,7 @@ from seestar_controller.store.sessions import Session, list_sessions
 from seestar_controller.store.stars import load_star_picks
 
 from .measure import (
+    FrameMeasurement,
     MeasurementError,
     SkippedFrame,
     _normalize_picks,
@@ -164,17 +168,47 @@ class RunReport:
       :class:`~seestar_controller.store.measurements.Measurement`\\ s (one per
       successfully measured sub-frame, in frame order);
     - ``skipped`` — the :class:`~.measure.SkippedFrame`\\ s (in frame order);
-    - ``session_id`` — the session that was measured.
+    - ``session_id`` — the session that was measured;
+    - ``frame_results`` — the full per-frame
+      :class:`~.measure.FrameMeasurement`\\ s of the measured frames (in
+      frame order, aligned with ``measurements``) — they carry the check
+      star's differential mag + error (``check_mag`` / ``check_mag_err``) and
+      the target-minus-check curve (``target_minus_check`` /
+      ``target_minus_check_err``) when a check star was picked
+      (check-star-plot ticket 01).
     """
 
     measurements: tuple[Measurement, ...]
     skipped: tuple[SkippedFrame, ...]
     session_id: str
+    frame_results: tuple[FrameMeasurement, ...] = ()
 
     @property
     def frames(self) -> int:
         """The total number of sub-frames processed (measured + skipped)."""
         return len(self.measurements) + len(self.skipped)
+
+    @property
+    def check_points(self) -> tuple[tuple[float, float, float], ...]:
+        """The check-star curve of the run: ``(jd, check_mag, check_mag_err)``
+        per measured frame that has a check star (empty when no check star was
+        picked)."""
+        return tuple(
+            (fm.jd, fm.check_mag, fm.check_mag_err)
+            for fm in self.frame_results
+            if fm.check_mag is not None and fm.check_mag_err is not None
+        )
+
+    @property
+    def target_minus_check_points(self) -> tuple[tuple[float, float, float], ...]:
+        """The target-minus-check curve of the run: ``(jd, target_minus_check,
+        target_minus_check_err)`` per measured frame that has a check star
+        (empty when no check star was picked)."""
+        return tuple(
+            (fm.jd, fm.target_minus_check, fm.target_minus_check_err)
+            for fm in self.frame_results
+            if fm.target_minus_check is not None and fm.target_minus_check_err is not None
+        )
 
 
 #: The progress callback of :meth:`RunController.run_session`:
@@ -585,16 +619,18 @@ class RunController:
 
     def _measure_one(
         self, project: Any, frame: Frame, picks: list[Any], aperture: ApertureParams | None
-    ) -> Measurement:
+    ) -> tuple[Measurement, FrameMeasurement]:
         """Measure one stored frame (FITS read + photometry on the calling
-        thread; the store insert on the db-owning thread) and return the
-        stored :class:`Measurement`. Raises :class:`MeasurementError` (a
-        :class:`~.picking.PhotometryError`) on any per-frame failure — the
+        thread; the store insert on the db-owning thread) and return
+        ``(measurement, frame_measurement)`` — the stored
+        :class:`Measurement` and the full :class:`~.measure.FrameMeasurement`
+        (carrying the check-star curves). Raises :class:`MeasurementError`
+        (a :class:`~.picking.PhotometryError`) on any per-frame failure — the
         caller records it as skipped."""
         data, header = _read_frame_fits(project, frame)
         fm = measure_frame_data(data, header, picks, aperture=aperture, jd=frame.jd)
         try:
-            return self._call_store(
+            measurement = self._call_store(
                 lambda: add_measurement(project, frame.id, fm.mag, jd=fm.jd, mag_err=fm.mag_err)
             )
         except StoreMeasurementError as exc:
@@ -602,6 +638,7 @@ class RunController:
                 f"could not store the measurement for frame {frame.id} of "
                 f"project {project.slug!r}: {exc}"
             ) from exc
+        return measurement, fm
 
     def run_session(
         self,
@@ -662,10 +699,11 @@ class RunController:
             )
             total = len(frames)
             measurements: list[Measurement] = []
+            frame_results: list[FrameMeasurement] = []
             skipped: list[SkippedFrame] = []
             for index, frame in enumerate(frames):
                 try:
-                    measurement = self._measure_one(project, frame, picks, aperture)
+                    measurement, fm = self._measure_one(project, frame, picks, aperture)
                 except MeasurementError as exc:
                     logger.info(
                         "skipping sub-frame %s of session %s: %s", frame.id, session_id, exc
@@ -673,6 +711,7 @@ class RunController:
                     skipped.append(SkippedFrame(frame_id=frame.id, reason=str(exc)))
                 else:
                     measurements.append(measurement)
+                    frame_results.append(fm)
                 done = index + 1
                 progress = RunProgress(done=done, total=total, frame_id=frame.id)
                 with self._lock:
@@ -684,6 +723,7 @@ class RunController:
                 measurements=tuple(measurements),
                 skipped=tuple(skipped),
                 session_id=session_id,
+                frame_results=tuple(frame_results),
             )
             # refresh the snapshot's lightcurve (store call OUTSIDE the lock)
             lc = tuple(

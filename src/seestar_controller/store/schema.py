@@ -14,8 +14,10 @@ One project database holds the whole observing campaign (GLOSSARY.md):
   project-relative ``path``, the observation time as both ``jd`` (Julian Date
   — the photometry standard) and ``utc`` (ISO-8601), plus
   ``exposure``/``gain``/``target`` metadata;
-- ``stars`` — the saved star picks (see :mod:`.stars`): ``role`` is ``target``
-  or ``comp``, with the pixel position (``x``/``y``, required — image
+- ``stars`` — the saved star picks (see :mod:`.stars`): ``role`` is ``target``,
+  ``comp`` or ``check`` (the check star of check-star-plot ticket 01 — stored
+  in the SAME role column; the 4 -> 5 migration widens the role CHECK to allow
+  ``'check'``), with the pixel position (``x``/``y``, required — image
   coordinates) and the sky position (``ra_deg``/``dec_deg``, J2000 degrees,
   nullable — picks may be pixel-only), plus the per-pick aperture settings
   (``aperture_radius``, ``sky_annulus_inner``/``sky_annulus_outer``, all in
@@ -73,6 +75,14 @@ Migration history:
   outlier flag + reasons, scoring time). ``IF NOT EXISTS`` keeps the step
   idempotent (a re-run after a crash between the db bump and the
   project.json mirror write is a no-op).
+- **4 -> 5** — check-star-plot ticket 01: widen the ``stars.role`` CHECK to
+  also allow ``'check'`` (the check star is stored in the SAME role column).
+  SQLite cannot alter a CHECK in place, so the ``stars`` table is REBUILT
+  exactly like the ``frames`` table in 2 -> 3 (create ``stars__v5`` with the
+  widened CHECK, copy the rows, drop the old table, rename, recreate the
+  index, ``PRAGMA foreign_key_check`` proves nothing was lost). The rebuild
+  runs with foreign-key enforcement OFF (see :func:`migrate_db`) and is
+  skipped when the table already allows ``'check'`` (idempotence guard).
 
 :func:`initialize_db` creates the current schema by running the migrations
 on a fresh db (0 -> 1 -> ... -> :data:`SCHEMA_VERSION`).
@@ -86,7 +96,7 @@ from collections.abc import Callable
 from .errors import InvalidProjectError
 
 #: The schema version this build writes and supports.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 #: The tables every project database must have (checked on open).
 SCHEMA_TABLES = ("sessions", "frames", "stars", "measurements")
@@ -242,6 +252,26 @@ CREATE TABLE IF NOT EXISTS frame_quality (
 )
 """
 
+#: The ``stars`` table DDL at v5 — identical to the 0 -> 1 DDL except the
+#: ``role`` CHECK also allows ``'check'`` (check-star-plot ticket 01: the
+#: check star is stored in the SAME role column). Used by the 4 -> 5
+#: migration to rebuild the table (SQLite cannot alter a CHECK constraint in
+#: place).
+_STARS_V5_DDL = """
+CREATE TABLE stars__v5 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL CHECK (role IN ('target', 'comp', 'check')),
+    label TEXT,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    ra_deg REAL,
+    dec_deg REAL,
+    aperture_radius REAL NOT NULL,
+    sky_annulus_inner REAL NOT NULL,
+    sky_annulus_outer REAL NOT NULL
+)
+"""
+
 
 def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
     """Migration step 2 -> 3 (image-enhance ticket 04): create the
@@ -281,6 +311,44 @@ def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
+    """Migration step 4 -> 5 (check-star-plot ticket 01): widen the
+    ``stars.role`` CHECK to also allow ``'check'`` — the check star is stored
+    in the SAME role column, so pre-v5 project databases would reject a
+    check pick with ``CHECK constraint failed``.
+
+    The CHECK cannot be altered in place, so the ``stars`` table is rebuilt
+    exactly like the ``frames`` table in 2 -> 3: create ``stars__v5`` with the
+    widened CHECK, copy all rows, drop the old table, rename, and recreate the
+    index. This runs with foreign-key enforcement OFF (see
+    :func:`migrate_db`); a ``PRAGMA foreign_key_check`` afterwards proves the
+    rebuild lost nothing (a violation raises, rolling the migration back).
+
+    The rebuild is skipped when the ``stars`` table already allows
+    ``'check'`` (idempotence guard — e.g. a re-run after a crash between the
+    db bump and the project.json mirror write).
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='stars'"
+    ).fetchone()
+    if row is not None and "'check'" not in (row[0] or ""):
+        conn.execute(_STARS_V5_DDL)
+        conn.execute(
+            "INSERT INTO stars__v5 (id, role, label, x, y, ra_deg, dec_deg, "
+            "aperture_radius, sky_annulus_inner, sky_annulus_outer) "
+            "SELECT id, role, label, x, y, ra_deg, dec_deg, "
+            "aperture_radius, sky_annulus_inner, sky_annulus_outer FROM stars"
+        )
+        conn.execute("DROP TABLE stars")
+        conn.execute("ALTER TABLE stars__v5 RENAME TO stars")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_stars_role ON stars (role)")
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise InvalidProjectError(
+                f"4 -> 5 migration would break foreign keys: {violations!r}"
+            )
+
+
 #: The migrations, keyed by the version they migrate FROM: applying
 #: ``MIGRATIONS[v]`` to a db at ``user_version == v`` brings it to ``v + 1``.
 #: :func:`migrate_db` walks the keys in ascending order up to
@@ -290,6 +358,7 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
     1: (_add_stars_aperture_columns,),  # dev-build v1 -> v2: aperture columns
     2: (_migrate_2_to_3,),  # v2 -> v3: presets table + frames.kind 'enhanced'
     3: (_FRAME_QUALITY_DDL,),  # v3 -> v4: frame_quality table (ticket 01)
+    4: (_migrate_4_to_5,),  # v4 -> v5: stars.role CHECK allows 'check'
 }
 
 

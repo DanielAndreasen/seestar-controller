@@ -63,10 +63,12 @@ Conventions (documented choices):
   window has finite pixels and its peak exceeds the window median; otherwise
   (empty/flat window) the exact click pixel is used. ``snap=False`` disables
   snapping entirely.
-- **One target, replace semantics:** re-picking the target replaces the
-  existing target pick; comps accumulate (multiple allowed).
-  :meth:`PickController.set_role` to ``"target"`` replaces any other target
-  the same way.
+- **One target, one check, replace semantics:** re-picking the target
+  replaces the existing target pick; re-picking the check star (check-star
+  role, check-star-plot ticket 01) replaces the existing check pick; comps
+  accumulate (multiple allowed). :meth:`PickController.set_role` to
+  ``"target"`` or ``"check"`` replaces any other pick of that role the same
+  way.
 - **Aperture is session-level here, per-pick in the store.** The pick session
   carries ONE :class:`ApertureParams` (radius + sky annulus) alongside the
   picks; on :meth:`PickController.save` it is written into every
@@ -95,6 +97,7 @@ from seestar_controller.catalog.coords import J2000Coord
 from seestar_controller.store.errors import ProjectError, StarPickError
 from seestar_controller.store.frames import header_to_dict
 from seestar_controller.store.stars import (
+    ROLE_CHECK,
     ROLE_COMP,
     ROLE_TARGET,
     ROLES,
@@ -366,8 +369,10 @@ class ApertureParams:
 class StarPickSpec:
     """One picked star of the current pick session.
 
-    - ``role`` — ``"target"`` (the **target star**, GLOSSARY.md) or ``"comp"``
-      (a **comparison star**);
+    - ``role`` — ``"target"`` (the **target star**, GLOSSARY.md), ``"comp"``
+      (a **comparison star**) or ``"check"`` (the **check star** — measured
+      against the comp ensemble like the target but excluded from the
+      ensemble; check-star-plot ticket 01);
     - ``x`` / ``y`` — the 0-based pixel position in the current image
       (``x`` = column, ``y`` = row; after snapping, a float centroid);
     - ``coord`` — the J2000 sky position
@@ -420,7 +425,8 @@ class PickSession:
       :class:`~seestar_controller.enhance.fits_io.FitsImage`, duck-typed:
       ``.data`` / ``.header`` / ``.width`` / ``.height``), or None;
     - ``picks`` — the picks, in pick order (target first after a load — the
-      store loads target-first — then comps), as a tuple;
+      store loads target-first, then the check star, then comps), as a
+      tuple;
     - ``aperture`` — the session's :class:`ApertureParams`.
     """
 
@@ -541,6 +547,11 @@ class PickController:
         return tuple(p for p in self._picks if p.role == ROLE_COMP)
 
     @property
+    def check(self) -> StarPickSpec | None:
+        """The check-star pick (None when not picked yet)."""
+        return next((p for p in self._picks if p.role == ROLE_CHECK), None)
+
+    @property
     def aperture(self) -> ApertureParams:
         """The session's aperture settings."""
         return self._aperture
@@ -636,11 +647,11 @@ class PickController:
         return index
 
     def _add_spec(self, spec: StarPickSpec) -> StarPickSpec:
-        """Add ``spec`` with the ticket-01 role semantics: re-picking
-        ``"target"`` REPLACES the existing target pick, comps accumulate.
-        Notifies the listeners and returns the spec."""
-        if spec.role == ROLE_TARGET:
-            self._picks = [p for p in self._picks if p.role != ROLE_TARGET]
+        """Add ``spec`` with the role semantics: re-picking ``"target"`` or
+        ``"check"`` REPLACES the existing pick of that role, comps
+        accumulate. Notifies the listeners and returns the spec."""
+        if spec.role in (ROLE_TARGET, ROLE_CHECK):
+            self._picks = [p for p in self._picks if p.role != spec.role]
         self._picks.append(spec)
         self._notify()
         return spec
@@ -668,7 +679,8 @@ class PickController:
           Seestar sub) the pick is pixel-only (``coord=None``) — picking
           ALWAYS works in pixel space (ticket 05);
         - the pick is added: re-picking ``"target"`` REPLACES the existing
-          target pick, comps accumulate.
+          target pick, re-picking ``"check"`` replaces the existing check
+          pick, comps accumulate.
 
         Returns the new :class:`StarPickSpec` and notifies the listeners.
         """
@@ -719,9 +731,9 @@ class PickController:
           (default False: a catalog position is already precise, so the exact
           WCS pixel is used);
         - the pick keeps the GIVEN sky coord (not re-derived from the pixel);
-        - the pick is added with the usual role semantics: ``"target"``
-          replaces the existing target, comps accumulate (default role is
-          ``"comp"``).
+        - the pick is added with the usual role semantics: ``"target"`` or
+          ``"check"`` replaces the existing pick of that role, comps
+          accumulate (default role is ``"comp"``).
 
         Returns the new :class:`StarPickSpec` and notifies the listeners.
         """
@@ -758,8 +770,9 @@ class PickController:
     def set_role(self, index: int, role: str) -> StarPickSpec:
         """Change the role of the pick at ``index``; returns the updated pick.
 
-        Setting the role to ``"target"`` replaces any other target pick (the
-        one-target rule, same as :meth:`pick_at`). Notifies.
+        Setting the role to ``"target"`` or ``"check"`` replaces any other
+        pick of that role (the one-target / one-check rule, same as
+        :meth:`pick_at`). Notifies.
         """
         idx = self._normalize_index(index)
         if role not in ROLES:
@@ -769,8 +782,8 @@ class PickController:
         for i, pick in enumerate(self._picks):
             if i == idx:
                 picks.append(updated)
-            elif role == ROLE_TARGET and pick.role == ROLE_TARGET:
-                continue  # replaced by the new target
+            elif role in (ROLE_TARGET, ROLE_CHECK) and pick.role == role:
+                continue  # replaced by the new pick of that role
             else:
                 picks.append(pick)
         self._picks = picks

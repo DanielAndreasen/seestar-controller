@@ -32,19 +32,23 @@ What lives here:
   = annulus mean × aperture area subtracted, ``flux_err`` propagated from the
   photutils ``aperture_sum_err`` of both the aperture and the annulus;
 - :func:`measure_frame_data` — the pure core on a raw array + header: every
-  pick measured, the comp ensemble mean per frame, the differential mag and
-  its error, and the JD from the FITS ``DATE-OBS`` header (astropy
-  ``Time.jd``; an explicit ``jd`` argument is the fallback when the header
-  has no usable ``DATE-OBS``);
+  pick measured, the comp ensemble mean per frame (COMPS ONLY — a ``"check"``
+  pick is EXCLUDED from the ensemble, check-star-plot ticket 01), the
+  differential mag and its error, the check star's differential mag + error
+  against the same ensemble (same error propagation as the target) and the
+  target-minus-check curve, and the JD from the FITS ``DATE-OBS`` header
+  (astropy ``Time.jd``; an explicit ``jd`` argument is the fallback when the
+  header has no usable ``DATE-OBS``);
 - :func:`measure_frame` — one stored frame of a project →
   :class:`~seestar_controller.store.measurements.Measurement` via
   :func:`seestar_controller.store.measurements.add_measurement` (JD from the
   frame's ``DATE-OBS``, falling back to the frame's stored ``jd``);
 - :func:`measure_project` — run over ALL **sub-frames** of a project
   (``store.frames`` ``kind="sub"`` — NEVER stacks/enhanced) and return a
-  :class:`MeasureReport` (measurements + skipped frames; a frame whose
-  target/comp falls outside the image or whose flux is non-positive is
-  recorded as skipped, never a crash).
+  :class:`MeasureReport` (measurements + skipped frames + the per-frame
+  :class:`FrameMeasurement` results carrying the check-star curves; a frame
+  whose target/comp/check falls outside the image or whose flux is
+  non-positive is recorded as skipped, never a crash).
 
 Conventions (documented choices):
 
@@ -56,6 +60,9 @@ Conventions (documented choices):
   per-pick aperture, which then wins over the ``aperture`` argument). The
   ensemble must contain EXACTLY ONE ``"target"`` and at least one ``"comp"``
   — anything else raises :class:`MeasurementError` before any frame is read.
+  A ``"check"`` pick is OPTIONAL and at most one; it is measured like the
+  target but is NEVER part of the comp ensemble (the ensemble is the mean of
+  the comps only).
 - **Pixel convention: 0-based, ``x`` = column, ``y`` = row** (same as
   :mod:`.picking` and the numpy ``data[y, x]`` array). photutils apertures take
   0-based ``(x, y)`` positions directly.
@@ -102,7 +109,7 @@ from seestar_controller.store.frames import (
     read_frame_bytes,
 )
 from seestar_controller.store.measurements import Measurement, add_measurement
-from seestar_controller.store.stars import ROLE_COMP, ROLE_TARGET, StarPick
+from seestar_controller.store.stars import ROLE_CHECK, ROLE_COMP, ROLE_TARGET, StarPick
 
 from .picking import ApertureParams, PhotometryError, StarPickSpec
 
@@ -374,8 +381,10 @@ def _normalize_picks(
 ) -> tuple[_NormPick, ...]:
     """Normalize ``picks`` (StarPickSpec or store StarPick records) to
     :class:`_NormPick` tuples and validate the ensemble: EXACTLY ONE
-    ``"target"`` and at least one ``"comp"`` — else :class:`MeasurementError`
-    (before any frame is read)."""
+    ``"target"``, at least one ``"comp"`` and AT MOST ONE ``"check"`` — else
+    :class:`MeasurementError` (before any frame is read). The check star is
+    kept apart from the comps: the comp ensemble is built from the comps
+    only."""
     if aperture is not None and not isinstance(aperture, ApertureParams):
         raise MeasurementError(
             f"aperture must be an ApertureParams or None, got {aperture!r}"
@@ -392,8 +401,10 @@ def _normalize_picks(
             raise MeasurementError(
                 f"picks must contain only StarPickSpec or StarPick records, got {pick!r}"
             )
-        if role not in (ROLE_TARGET, ROLE_COMP):
-            raise MeasurementError(f"pick role must be 'target' or 'comp', got {role!r}")
+        if role not in (ROLE_TARGET, ROLE_COMP, ROLE_CHECK):
+            raise MeasurementError(
+                f"pick role must be 'target', 'comp' or 'check', got {role!r}"
+            )
         norm.append(
             _NormPick(
                 role=role,
@@ -405,14 +416,20 @@ def _normalize_picks(
         )
     targets = [p for p in norm if p.role == ROLE_TARGET]
     comps = [p for p in norm if p.role == ROLE_COMP]
+    checks = [p for p in norm if p.role == ROLE_CHECK]
     if len(targets) != 1:
         raise MeasurementError(
             f"the pick ensemble must contain exactly one 'target' pick, got "
-            f"{len(targets)} (comps: {len(comps)})"
+            f"{len(targets)} (comps: {len(comps)}, checks: {len(checks)})"
         )
     if not comps:
         raise MeasurementError(
             "the pick ensemble needs at least one 'comp' pick (the comp ensemble)"
+        )
+    if len(checks) > 1:
+        raise MeasurementError(
+            f"the pick ensemble may contain at most one 'check' pick, got "
+            f"{len(checks)}"
         )
     return tuple(norm)
 
@@ -428,10 +445,25 @@ class FrameMeasurement:
     - ``jd`` — the frame time as Julian Date (from the header ``DATE-OBS``,
       or the explicit fallback);
     - ``target`` — the target's :class:`StarMeasurement`;
-    - ``comps`` — the comps' :class:`StarMeasurement` records;
+    - ``comps`` — the comps' :class:`StarMeasurement` records (the check star
+      is NEVER among them — the ensemble is the mean of the comps only);
     - ``ensemble_mag`` — the comp-ensemble mean instrumental mag;
     - ``mag`` — the differential magnitude ``target.mag - ensemble_mag``;
-    - ``mag_err`` — ``sqrt(target.mag_err^2 + mean(comp.mag_err^2))``.
+    - ``mag_err`` — ``sqrt(target.mag_err^2 + mean(comp.mag_err^2))``;
+    - ``check`` — the check star's :class:`StarMeasurement`, or None when no
+      check star was picked;
+    - ``check_mag`` — the check star's differential magnitude
+      ``check.mag - ensemble_mag`` (None without a check star) — computed
+      EXACTLY like the target's (same ensemble, same error propagation);
+    - ``check_mag_err`` — ``sqrt(check.mag_err^2 + mean(comp.mag_err^2))``
+      (None without a check star);
+    - ``target_minus_check`` — ``target.mag - check.mag`` (the
+      target-minus-check curve; equals ``mag - check_mag`` because the
+      ensemble cancels), None without a check star;
+    - ``target_minus_check_err`` — ``sqrt(target.mag_err^2 +
+      check.mag_err^2)`` — the ensemble cancels in the difference, so the
+      error is the quadrature of the two star mag errors (None without a
+      check star).
     """
 
     jd: float
@@ -440,6 +472,11 @@ class FrameMeasurement:
     ensemble_mag: float
     mag: float
     mag_err: float
+    check: StarMeasurement | None = None
+    check_mag: float | None = None
+    check_mag_err: float | None = None
+    target_minus_check: float | None = None
+    target_minus_check_err: float | None = None
 
 
 def _header_jd(header: Mapping[str, Any] | None) -> float | None:
@@ -466,16 +503,20 @@ def measure_frame_data(
 
     - ``picks`` — :class:`~.picking.StarPickSpec` or store
       :class:`~seestar_controller.store.stars.StarPick` records; the ensemble
-      must contain exactly one target and at least one comp (else
-      :class:`MeasurementError`);
+      must contain exactly one target and at least one comp (a ``"check"``
+      pick is optional, at most one, and is EXCLUDED from the comp ensemble);
     - ``aperture`` — the :class:`~.picking.ApertureParams` used for picks that
       do not carry their own (store picks do); None = the defaults;
     - ``jd`` — the fallback Julian Date when the header has no usable
       ``DATE-OBS``; the header ``DATE-OBS`` always wins when present. When
       neither yields a JD, :class:`MeasurementError` is raised.
 
-    Returns the :class:`FrameMeasurement`. Raises :class:`FrameSkippedError`
-    when a pick falls outside the image or a flux is non-positive.
+    Returns the :class:`FrameMeasurement` — with the check star's differential
+    mag + error (``check_mag`` / ``check_mag_err``, same error propagation as
+    the target) and the target-minus-check curve (``target_minus_check`` /
+    ``target_minus_check_err``) when a check pick is present. Raises
+    :class:`FrameSkippedError` when a pick falls outside the image or a flux
+    is non-positive.
     """
     norm = _normalize_picks(picks, aperture)
     plane = _as_2d_plane(data)
@@ -485,9 +526,25 @@ def measure_frame_data(
     ]
     target = next(s for s in stars if s.role == ROLE_TARGET)
     comps = tuple(s for s in stars if s.role == ROLE_COMP)
+    check = next((s for s in stars if s.role == ROLE_CHECK), None)
+    # the comp ensemble: the mean of the COMPS only — the check star is
+    # excluded (check-star-plot ticket 01)
     ens = ensemble_mag([s.mag for s in comps])
     mag = differential_mag(target.mag, ens)
     mag_err = differential_mag_err(target.mag_err, [s.mag_err for s in comps])
+    check_mag: float | None = None
+    check_mag_err: float | None = None
+    target_minus_check: float | None = None
+    target_minus_check_err: float | None = None
+    if check is not None:
+        # the check star is measured EXACTLY like the target: same ensemble,
+        # same error propagation
+        check_mag = differential_mag(check.mag, ens)
+        check_mag_err = differential_mag_err(check.mag_err, [s.mag_err for s in comps])
+        # target minus check: the ensemble cancels, so the error is the
+        # quadrature of the two star mag errors
+        target_minus_check = differential_mag(target.mag, check.mag)
+        target_minus_check_err = math.sqrt(target.mag_err**2 + check.mag_err**2)
     jd_value = _header_jd(header)
     if jd_value is None:
         if jd is None:
@@ -503,6 +560,11 @@ def measure_frame_data(
         ensemble_mag=ens,
         mag=mag,
         mag_err=mag_err,
+        check=check,
+        check_mag=check_mag,
+        check_mag_err=check_mag_err,
+        target_minus_check=target_minus_check,
+        target_minus_check_err=target_minus_check_err,
     )
 
 
@@ -521,10 +583,20 @@ class SkippedFrame:
 @dataclass(frozen=True)
 class MeasureReport:
     """The result of :func:`measure_project`: the stored measurements plus the
-    skipped frames (in frame order)."""
+    skipped frames (in frame order).
+
+    - ``measurements`` — the stored
+      :class:`~seestar_controller.store.measurements.Measurement`\\ s;
+    - ``skipped`` — the :class:`SkippedFrame`\\ s;
+    - ``frame_results`` — the full per-frame :class:`FrameMeasurement`\\ s of
+      the measured frames (in frame order, aligned with ``measurements``) —
+      they carry the check star's differential mag + error and the
+      target-minus-check curve (check-star-plot ticket 01).
+    """
 
     measurements: tuple[Measurement, ...]
     skipped: tuple[SkippedFrame, ...]
+    frame_results: tuple[FrameMeasurement, ...] = ()
 
     @property
     def frames(self) -> int:
@@ -564,20 +636,34 @@ def _read_frame_fits(project: Any, frame: Any) -> tuple[Any, dict[str, Any]]:
     return data, header
 
 
-def _measure_frame_obj(
+def _measure_frame_full(
     project: Any, frame: Any, picks: Iterable[Any], aperture: ApertureParams | None
-) -> Measurement:
+) -> tuple[Measurement, FrameMeasurement]:
     """Measure one already-located stored ``frame`` and store the measurement
-    via :func:`seestar_controller.store.measurements.add_measurement`."""
+    via :func:`seestar_controller.store.measurements.add_measurement`.
+
+    Returns ``(measurement, frame_measurement)`` — the stored
+    :class:`~seestar_controller.store.measurements.Measurement` and the full
+    :class:`FrameMeasurement` (which carries the check-star curves)."""
     data, header = _read_frame_fits(project, frame)
     fm = measure_frame_data(data, header, picks, aperture=aperture, jd=frame.jd)
     try:
-        return add_measurement(project, frame.id, fm.mag, jd=fm.jd, mag_err=fm.mag_err)
+        measurement = add_measurement(project, frame.id, fm.mag, jd=fm.jd, mag_err=fm.mag_err)
     except StoreMeasurementError as exc:
         raise MeasurementError(
             f"could not store the measurement for frame {frame.id} of project "
             f"{project.slug!r}: {exc}"
         ) from exc
+    return measurement, fm
+
+
+def _measure_frame_obj(
+    project: Any, frame: Any, picks: Iterable[Any], aperture: ApertureParams | None
+) -> Measurement:
+    """Measure one already-located stored ``frame`` and return only the stored
+    :class:`~seestar_controller.store.measurements.Measurement` (see
+    :func:`_measure_frame_full`)."""
+    return _measure_frame_full(project, frame, picks, aperture)[0]
 
 
 def measure_frame(
@@ -633,11 +719,19 @@ def measure_project(
     picks = list(picks)  # materialize: validated once, then measured per frame
     _normalize_picks(picks, aperture)  # validate the ensemble up front (raises)
     measurements: list[Measurement] = []
+    frame_results: list[FrameMeasurement] = []
     skipped: list[SkippedFrame] = []
     for frame in list_frames(project, kind=KIND_SUB):
         try:
-            measurements.append(_measure_frame_obj(project, frame, picks, aperture))
+            measurement, fm = _measure_frame_full(project, frame, picks, aperture)
         except MeasurementError as exc:
             logger.info("skipping sub-frame %s: %s", frame.id, exc)
             skipped.append(SkippedFrame(frame_id=frame.id, reason=str(exc)))
-    return MeasureReport(measurements=tuple(measurements), skipped=tuple(skipped))
+        else:
+            measurements.append(measurement)
+            frame_results.append(fm)
+    return MeasureReport(
+        measurements=tuple(measurements),
+        skipped=tuple(skipped),
+        frame_results=tuple(frame_results),
+    )

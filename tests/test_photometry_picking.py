@@ -391,7 +391,7 @@ def test_star_pick_spec_validation_describe_and_frozen():
     pixel_only = StarPickSpec(role="comp", x=1, y=2)
     assert pixel_only.coord is None and "RA" not in pixel_only.describe()
     for bad in (
-        {"role": "check", "x": 0, "y": 0},
+        {"role": "bogus", "x": 0, "y": 0},
         {"role": "target", "x": float("nan"), "y": 0},
         {"role": "target", "x": 0, "y": float("inf")},
         {"role": "target", "x": 0, "y": 0, "coord": "83,22"},
@@ -416,7 +416,7 @@ def test_pick_at_requires_image_and_bounds_and_validates_role():
         with pytest.raises(PickingError, match="outside"):
             ctrl.pick_at(x, y, "target")
     with pytest.raises(PickingError, match="role"):
-        ctrl.pick_at(1, 1, "check")
+        ctrl.pick_at(1, 1, "bogus")
     with pytest.raises(PickingError):
         ctrl.pick_at(float("nan"), 1, "target")
 
@@ -641,7 +641,7 @@ def test_remove_pick_set_role_clear():
     assert moved.role == "target"
     assert ctrl.picks == (moved, c2) and ctrl.target is moved
     with pytest.raises(PickingError):
-        ctrl.set_role(0, "check")
+        ctrl.set_role(0, "bogus")
     # remove (negatives allowed)
     removed = ctrl.remove_pick(-1)
     assert removed is c2
@@ -799,7 +799,7 @@ def test_save_load_errors_and_empty_save_clears(wcs_stack_project):
     ctrl.clear()
     assert ctrl.save() == []
     assert load_star_picks(project) == []
-    assert project.config["star_picks"] == {"target": None, "comps": []}
+    assert project.config["star_picks"] == {"target": None, "comps": [], "check": None}
 
     # set_project(None) clears the session
     ctrl.set_project(None)
@@ -897,6 +897,7 @@ def test_public_api_is_exported_from_package():
         "PickListener",
         "PickSession",
         "PickingError",
+        "ROLE_CHECK",
         "ROLE_COMP",
         "ROLE_TARGET",
         "ROLES",
@@ -929,3 +930,65 @@ def test_public_api_is_exported_from_package():
     assert issubclass(photometry.SuggestionError, photometry.PhotometryError)
     with pytest.raises(AttributeError):
         photometry.no_such_thing  # type: ignore[attr-defined]  # noqa: B018
+
+
+# --- check-star role in the pick session (check-star-plot ticket 01) -------------------------
+
+
+def test_star_pick_spec_accepts_check_role():
+    spec = StarPickSpec(role="check", x=12.0, y=50.0, label="Check K")
+    assert spec.role == "check" and "check" in spec.describe()
+    assert photometry.ROLE_CHECK == "check"
+    assert "check" in photometry.ROLES
+
+
+def test_pick_at_check_replaces_and_check_property():
+    header = wcs_header()
+    ctrl = PickController()
+    ctrl.set_image(FakeImage(synthetic_image(64), header))
+    ctrl.pick_at(10, 10, "target", snap=False)
+    ctrl.pick_at(20, 20, "comp", snap=False, label="Comp A")
+    k1 = ctrl.pick_at(30, 30, "check", snap=False, label="Check K")
+    assert ctrl.check is k1
+    assert [p.role for p in ctrl.picks] == ["target", "comp", "check"]
+    # re-picking the check star replaces the existing check pick
+    k2 = ctrl.pick_at(40, 40, "check", snap=False, label="Check K2")
+    assert ctrl.check is k2 and k1 not in ctrl.picks
+    assert [p.role for p in ctrl.picks] == ["target", "comp", "check"]
+    # set_role to check replaces the other check pick too
+    moved = ctrl.set_role(1, "check")
+    assert moved.role == "check"
+    assert ctrl.check is moved
+    assert [p.role for p in ctrl.picks] == ["target", "check"]
+    # set_role back to comp: the check slot is free again
+    back = ctrl.set_role(1, "comp")
+    assert ctrl.check is None and back.role == "comp"
+    assert ctrl.comps == (back,)
+
+
+def test_check_pick_save_load_round_trip_on_tmp_project(wcs_stack_project):
+    project, _frame = wcs_stack_project
+    ctrl = PickController(project=project)
+    ctrl.set_image(FakeImage(synthetic_image(64), wcs_header()))
+    ctrl.pick_at(40, 30, "target", label="Target")
+    ctrl.pick_at(16, 16, "comp", label="Comp A")
+    check = ctrl.pick_at(12, 50, "check", label="Check K")
+
+    saved = ctrl.save()
+    assert [p.role for p in saved] == ["target", "comp", "check"]
+    stored = load_star_picks(project)
+    # store load order: target first, then the check star, then the comps
+    assert [p.role for p in stored] == ["target", "check", "comp"]
+    assert stored[1].label == "Check K" and stored[1].role == "check"
+    mirror = project.config["star_picks"]
+    assert mirror["check"]["role"] == "check" and mirror["check"]["label"] == "Check K"
+    assert [c["role"] for c in mirror["comps"]] == ["comp"]
+
+    reloaded = PickController(project=project)
+    assert [p.role for p in reloaded.picks] == ["target", "check", "comp"]
+    assert reloaded.check is not None
+    assert reloaded.check.label == "Check K"
+    assert reloaded.check.x == pytest.approx(check.x)
+    assert reloaded.check.y == pytest.approx(check.y)
+    assert reloaded.check.coord is not None
+    assert reloaded.check.coord.ra_deg == pytest.approx(check.coord.ra_deg)  # ty: ignore[missing-union-attribute]
