@@ -1,6 +1,6 @@
 # Spec: ui-shell
 
-Status: ready-for-agent
+Status: completed 2026-11-20 — all 5 issues implemented and reviewed
 
 ## Problem Statement
 

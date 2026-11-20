@@ -1,6 +1,6 @@
 # Spec: photometry
 
-Status: ready-for-agent
+Status: completed 2026-11-20 — all 4 issues implemented and reviewed
 
 ## Problem Statement
 

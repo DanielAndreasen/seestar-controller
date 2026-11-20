@@ -1,6 +1,6 @@
 # Spec: project-store
 
-Status: ready-for-agent
+Status: completed 2026-11-20 — all 7 issues implemented and reviewed
 
 ## Problem Statement
 
