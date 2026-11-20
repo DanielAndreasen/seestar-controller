@@ -4,7 +4,7 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** implemented in 575fe94
+**Status:** implemented in 636ce1e
 
 - [x] Frequency grid spans from ~2 cycles over the baseline up to the cadence limit
 - [x] Returns top-N peaks (period + power), sorted
