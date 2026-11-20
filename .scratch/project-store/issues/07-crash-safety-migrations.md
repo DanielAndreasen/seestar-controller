@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** implemented in 14dd77c
+**Status:** implemented in 2a0269c
 
 - [x] Schema has a `user_version` pragma and a migration runner
 - [x] Simulated crash mid-write leaves db consistent on reopen
