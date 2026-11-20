@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** implemented in c07b9e4
+**Status:** implemented in 21823f2
 
 - [x] `start_session(project)` records UTC start, returns session id
 - [x] `close_session(project, session_id)` records UTC end
