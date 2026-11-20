@@ -1,6 +1,6 @@
 # Spec: projects-view
 
-Status: ready-for-agent
+Status: ready-for-agent (01 implemented 52d9967; 02 ready-for-agent — create project end-to-end)
 
 ## Problem Statement
 
