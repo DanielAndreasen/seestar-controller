@@ -4,7 +4,7 @@
 
 **Blocked by:** None (catalog cache pattern, project-store, image-enhance all done)
 
-**Status:** ready-for-agent
+**Status:** implemented in 91704f1 (merged 250de0e)
 
 - [ ] Pure `gaia/` package, no gi import (subprocess boundary test like photometry's)
 - [ ] `detect_sources(stack_data, header, threshold=...)` -> detected x/y + RA/Dec via WCS (astropy.wcs); missing WCS -> clear error
