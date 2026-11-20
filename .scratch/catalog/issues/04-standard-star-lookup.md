@@ -4,9 +4,9 @@
 
 **Blocked by:** 01, 02
 
-**Status:** ready-for-agent
+**Status:** implemented in 1b12d96
 
-- [ ] Given RA/Dec + radius, returns standard stars with coords and magnitudes
-- [ ] Results filtered by angular distance and sorted by magnitude closeness to the target
-- [ ] Empty result (no standards nearby) is a normal, handled outcome
-- [ ] Tests with mocked VizieR/AAVSO responses cover filtering and sorting
+- [x] Given RA/Dec + radius, returns standard stars with coords and magnitudes
+- [x] Results filtered by angular distance and sorted by magnitude closeness to the target
+- [x] Empty result (no standards nearby) is a normal, handled outcome
+- [x] Tests with mocked VizieR/AAVSO responses cover filtering and sorting
