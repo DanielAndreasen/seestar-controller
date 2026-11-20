@@ -35,6 +35,24 @@ def test_request_echo_params_correlate(transport):
     assert result["echo_params"] == {"n": 5}
 
 
+def test_request_passes_list_params_through_unchanged(transport, mock_scope):
+    """Positional params (fw 9.75 ``scope_goto`` sends ``[ra, dec]``) must go
+    on the wire as a JSON array — ``dict(params)`` would mangle/crash on a
+    list — while mappings still go as a JSON object."""
+    reply = transport.request_raw("positional_method", [13.4, 54.8])
+    assert reply.ok
+    assert mock_scope.last_wire_params["positional_method"] == [13.4, 54.8]
+    # a tuple is sent as an array too
+    transport.request("tuple_method", (1.0, 2.0))
+    assert mock_scope.last_wire_params["tuple_method"] == [1.0, 2.0]
+    # mappings are unchanged
+    transport.request("mapping_method", {"n": 5})
+    assert mock_scope.last_wire_params["mapping_method"] == {"n": 5}
+    # and the reply still correlates
+    result = transport.request("positional_method", [0.5, -1.5])
+    assert result["echo_params"] == {"args": [0.5, -1.5]}
+
+
 def test_concurrent_requests_correlated_by_id(transport, mock_scope):
     """Many in-flight requests; replies may arrive out of order, each caller
     must get its own reply (matched by id, not by arrival order)."""

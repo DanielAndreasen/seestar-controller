@@ -9,10 +9,14 @@ All facts below were live-probed against the Seestar S50 in station mode
   the ``View`` node carries ``state``/``mode``/``target_name``/
   ``target_ra_dec`` plus child ``Stack`` (``state``, ``lapse_ms``,
   ``stacked_frame``, ``dropped_frame``) and ``AutoGoto`` (the slew) nodes.
-- ``scope_goto_target`` -> 103. Replacement: ``scope_goto`` with params
-  ``{"ra": hours, "dec": deg}`` (positional ``[ra, dec]`` also accepted);
-  wrong types -> 108, out of range -> 207, and no motion happens on
-  errors. The ``ScopeGoto`` event is still pushed.
+- ``scope_goto_target`` -> 103. Replacement: ``scope_goto`` with
+  POSITIONAL params ``[ra_hours, dec_deg]`` (seestarpy ``raw.scope_goto``
+  sends ``{'method': 'scope_goto', 'params': [ra, dec]}``). A dict
+  ``{"ra": ..., "dec": ...}`` is *silently ignored* by fw 9.75 — the reply
+  is code 0 but no slew happens (live-observed on the S50: the desktop goto
+  "succeeded" while the scope never moved). Wrong types in the list -> 108,
+  out of range -> 207, and no motion happens on errors. The ``ScopeGoto``
+  event is still pushed.
 - ``iscope_start_stacking`` / ``iscope_stop_stacking`` -> 103. Replacements:
   ``iscope_start_stack`` with ``{"restart": bool, ...}`` (code 259 when
   already running and ``restart`` is true) and ``iscope_stop_view`` with
@@ -48,7 +52,8 @@ METHOD_NOT_FOUND_CODE = 103
 
 #: fw 9.75 replacement for ``get_scope_state`` (full app function tree).
 GET_APP_STATE_METHOD = "iscope_get_app_state"
-#: fw 9.75 replacement for ``scope_goto_target`` (params ``{"ra", "dec"}``).
+#: fw 9.75 replacement for ``scope_goto_target`` (POSITIONAL params
+#: ``[ra_hours, dec_deg]`` — a dict is silently ignored by the firmware).
 GOTO_METHOD_975 = "scope_goto"
 #: fw 9.75 replacement for ``iscope_start_stacking`` (params ``{"restart", ...}``).
 START_STACK_METHOD_975 = "iscope_start_stack"
@@ -108,7 +113,7 @@ def reset_cache(transport: LinkTransport | None = None) -> None:
 def call(
     transport: LinkTransport,
     methods: Sequence[str],
-    params_for: Callable[[str], Mapping[str, Any] | None] | None = None,
+    params_for: Callable[[str], Mapping[str, Any] | Sequence[Any] | None] | None = None,
     *,
     timeout: float | None = None,
 ) -> tuple[str, Any]:
@@ -118,8 +123,10 @@ def call(
     cached winner is tried first; a code-103 reply moves on to the next
     candidate; any other non-zero code raises :class:`RpcError` immediately.
     ``params_for(method)`` builds the params per candidate (they differ
-    between firmware versions). Returns ``(method, result)`` and caches
-    the winner on ``transport``.
+    between firmware versions — e.g. fw 9.75 ``scope_goto`` takes the
+    positional list ``[ra, dec]`` while legacy ``scope_goto_target`` takes
+    the dict ``{"ra": ..., "dec": ...}``; a list is sent as a JSON array).
+    Returns ``(method, result)`` and caches the winner on ``transport``.
     """
     methods = tuple(methods)
     if not methods:

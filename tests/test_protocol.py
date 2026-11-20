@@ -75,6 +75,18 @@ def test_classify_request():
     }
 
 
+def test_request_to_dict_keeps_positional_params_a_list():
+    # fw 9.75 scope_goto: {"id": 113, "method": "scope_goto", "params": [13.4, 54.8]}
+    decoded = classify({"id": 113, "method": "scope_goto", "params": [13.4, 54.8]})
+    assert isinstance(decoded, Request)
+    assert decoded.params == [13.4, 54.8]
+    assert decoded.to_dict() == {
+        "id": 113,
+        "method": "scope_goto",
+        "params": [13.4, 54.8],
+    }
+
+
 def test_classify_reply():
     raw = {
         "jsonrpc": "2.0",

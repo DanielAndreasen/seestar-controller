@@ -11,9 +11,12 @@ operations in GLOSSARY vocabulary:
 - :meth:`Device.state` — the Scope's current **mode**, current **target**
   (ra, dec) and **stacking** progress, via the ``get_scope_state`` RPC
   (fw 9.75: ``iscope_get_app_state`` — see :mod:`.compat`);
-- :meth:`Device.goto` — slew to a target's RA/Dec (``scope_goto_target``,
-  fw 9.75: ``scope_goto``); arrival is reported by the pushed ``ScopeGoto``
-  "complete" event, with a state-polling fallback if the event is missed;
+- :meth:`Device.goto` — slew to a target's RA/Dec (``scope_goto_target``
+  with dict params on fw < 9.75; fw 9.75: ``scope_goto`` with POSITIONAL
+  params ``[ra_hours, dec_deg]`` — a dict is silently ignored by the
+  firmware, so the desktop goto never slewed); arrival is reported by the
+  pushed ``ScopeGoto`` "complete" event, with a state-polling fallback if
+  the event is missed;
 - :meth:`Device.start_stack` / :meth:`Device.stop_stack` — stack sub-frames
   into a Stack on the current target (``iscope_start_stacking`` /
   ``iscope_stop_stacking``, fw 9.75: ``iscope_start_stack`` /
@@ -102,9 +105,10 @@ logger = logging.getLogger(__name__)
 GET_SCOPE_STATE_METHOD = "get_scope_state"
 #: fw 9.75 state RPC — full app function tree (``View``/``Stack``/``AutoGoto``).
 GET_APP_STATE_METHOD = compat.GET_APP_STATE_METHOD
-#: RPC the facade uses to slew to a target on fw < 9.75.
+#: RPC the facade uses to slew to a target on fw < 9.75 (dict params).
 GOTO_METHOD = "scope_goto_target"
-#: fw 9.75 goto RPC — params ``{"ra": hours, "dec": deg}``.
+#: fw 9.75 goto RPC — POSITIONAL params ``[ra_hours, dec_deg]`` (a dict
+#: ``{"ra", "dec"}`` is answered code 0 but silently ignored: no slew).
 GOTO_METHOD_975 = compat.GOTO_METHOD_975
 #: RPC the facade uses to park the Scope.
 PARK_METHOD = "scope_park"
@@ -156,12 +160,15 @@ class DeviceState:
     """A snapshot of the Scope's device state.
 
     ``target`` is the current target's ``(ra, dec)`` in hours/degrees, or
-    None when no target is set.
+    None when no target is set. ``target_name`` is the target's display name
+    (``View.target_name`` on fw 9.75, with the last-goto name as fallback —
+    see :func:`_parse_app_state`), or None when unknown.
     """
 
     mode: str
     target: tuple[float, float] | None
     stacking: StackingProgress
+    target_name: str | None = None
 
     @property
     def ra(self) -> float | None:
@@ -184,7 +191,53 @@ class DeviceState:
         return self.mode == MODE_PARKED
 
 
-def _parse_state(result: Mapping[str, Any]) -> DeviceState:
+#: Tolerance (hours / degrees) when matching ``View.target_ra_dec`` against
+#: the coordinates of the last goto, for the stale-``target_name`` fallback.
+_GOTO_COORD_TOLERANCE = 1e-4
+
+#: ``View.stage`` values (fw 9.75) meaning the Scope is slewing.
+_STAGES_SLEWING = ("AutoGoto", "ScopeGoto")
+#: ``View.stage`` value meaning the Scope is stacking.
+_STAGE_STACKING = "Stack"
+#: ``View.stage`` value meaning the Scope is parked.
+_STAGE_PARKED = "Park"
+
+
+def _resolve_target_name(
+    target_name: str | None,
+    target: tuple[float, float] | None,
+    goto_hint: tuple[float, float, str | None] | None,
+) -> str | None:
+    """Apply the last-goto fallback to a parsed target name.
+
+    On fw 9.75 a coordinate ``scope_goto`` does NOT update
+    ``View.target_name`` (live-observed: after ``scope_goto(23.9556,
+    56.7261)`` — NGC 7789 — the scope kept writing sub-frames to
+    ``M 31_sub/Light_M 31_...``; see
+    ``~/SeestarProjects/ngc7789/subs/*/session_log.jsonl``). When
+    ``goto_hint`` ``(ra, dec, name)`` is the last goto issued through the
+    facade and the reported ``target`` matches its coordinates, the hint's
+    name wins over a stale ``View.target_name`` (and fills in when the View
+    carries none).
+    """
+    if goto_hint is None:
+        return target_name
+    hint_ra, hint_dec, hint_name = goto_hint
+    if not hint_name or target is None:
+        return target_name
+    if (
+        abs(target[0] - hint_ra) <= _GOTO_COORD_TOLERANCE
+        and abs(target[1] - hint_dec) <= _GOTO_COORD_TOLERANCE
+    ):
+        return hint_name
+    return target_name
+
+
+def _parse_state(
+    result: Mapping[str, Any],
+    *,
+    goto_hint: tuple[float, float, str | None] | None = None,
+) -> DeviceState:
     """Parse a ``get_scope_state`` result into a :class:`DeviceState`."""
     mode = str(result.get("mode", "unknown"))
     target_raw = result.get("target")
@@ -192,30 +245,81 @@ def _parse_state(result: Mapping[str, Any]) -> DeviceState:
     if target_raw:
         target = (float(target_raw["ra"]), float(target_raw["dec"]))
     stacking = _stacking_progress_from(result.get("stacking") or {})
-    return DeviceState(mode=mode, target=target, stacking=stacking)
+    target_name = result.get("target_name")
+    if target_name is None and isinstance(target_raw, Mapping):
+        target_name = target_raw.get("name")
+    target_name = (
+        str(target_name) if target_name is not None else None
+    )
+    return DeviceState(
+        mode=mode,
+        target=target,
+        stacking=stacking,
+        target_name=_resolve_target_name(target_name, target, goto_hint),
+    )
 
 
-def _parse_app_state(result: Mapping[str, Any]) -> DeviceState:
+def _node_state(node: Any) -> str:
+    """The ``state`` field of an app-state child node ("" when absent)."""
+    return str(node.get("state", "")) if isinstance(node, Mapping) else ""
+
+
+def _child_node(
+    result: Mapping[str, Any], view: Mapping[str, Any], name: str
+) -> Mapping[str, Any]:
+    """The ``name`` child of ``View``, falling back to the app-state root
+    (some firmware builds hang the node off the root instead of ``View``)."""
+    node = view.get(name)
+    if isinstance(node, Mapping):
+        return node
+    root_node = result.get(name) if isinstance(result, Mapping) else None
+    return root_node if isinstance(root_node, Mapping) else {}
+
+
+def _parse_app_state(
+    result: Mapping[str, Any],
+    *,
+    goto_hint: tuple[float, float, str | None] | None = None,
+) -> DeviceState:
     """Parse a fw 9.75 ``iscope_get_app_state`` function tree into a
     :class:`DeviceState`.
 
-    Live-probed shape (fw 9.75): the ``View`` node (absent when idle)
-    carries ``state`` ("idle"/"working"/"complete"/"fail"/"cancel"),
-    ``mode``, ``target_name`` and ``target_ra_dec: [ra_hours, dec_deg]``,
-    with child nodes ``Stack`` (``state``, ``lapse_ms``, ``stacked_frame``,
-    ``dropped_frame``) and ``AutoGoto`` (the slew). Mapping to the facade
-    vocabulary: ``Stack`` working -> mode "stacking", ``AutoGoto`` working
-    -> "slewing", ``View.stage == "Park"`` -> "parked", else "idle".
+    Live-probed shape (Seestar S50, station mode, fw 9.75, polled read-only
+    on 192.168.87.185:4700, 2026-11-20)::
+
+        {"FocuserMove": {"state": "complete", "position": 1571, ...},
+         "View": {"state": "working", "mode": "star",
+                  "stage": "ContinuousExposure",
+                  "target_name": "M 31",
+                  "target_ra_dec": [0.736843, 41.415901],
+                  "cam_id": 0, "gain": 80, "lapse_ms": 1077651,
+                  "lp_filter": false,
+                  "ContinuousExposure": {"state": "working", "fps": 2.02, ...}},
+         "ViewPlan": {...}}
+
+    ``View.stage`` is the authoritative activity field: ``"Stack"`` while
+    stacking, ``"AutoGoto"``/``"ScopeGoto"`` while slewing, ``"Park"`` when
+    parked, ``"ContinuousExposure"`` for a plain live view. The child node
+    named after the stage carries the details — ``View.Stack`` with
+    ``state`` / ``lapse_ms`` / ``stacked_frame`` / ``dropped_frame``,
+    ``View.AutoGoto`` with ``state`` — and may also hang off the app-state
+    root on some builds (both locations are accepted). Mapping to the
+    facade vocabulary: Stack node working (or stage ``"Stack"``) ->
+    "stacking", AutoGoto node working (or stage ``"AutoGoto"`` /
+    ``"ScopeGoto"``) -> "slewing", stage ``"Park"`` -> "parked", else
+    "idle" (including a live view in ``"ContinuousExposure"``).
+
+    ``View.target_name`` is NOT updated by a coordinate ``scope_goto`` on
+    fw 9.75 (live-observed — see :func:`_resolve_target_name`), so
+    ``goto_hint`` ``(ra, dec, name)`` — the last goto issued through the
+    facade — overrides a stale ``View.target_name`` when the reported
+    ``target_ra_dec`` matches its coordinates.
     """
     view = result.get("View") if isinstance(result, Mapping) else None
     view = view if isinstance(view, Mapping) else {}
-    stack_node = view.get("Stack")
-    if not isinstance(stack_node, Mapping):
-        fallback = result.get("Stack")
-        stack_node = fallback if isinstance(fallback, Mapping) else {}
-    goto_node = view.get("AutoGoto")
-    if not isinstance(goto_node, Mapping):
-        goto_node = {}
+    stack_node = _child_node(result, view, "Stack")
+    goto_node = _child_node(result, view, "AutoGoto")
+    stage = str(view.get("stage", ""))
 
     target: tuple[float, float] | None = None
     ra_dec = view.get("target_ra_dec")
@@ -225,21 +329,29 @@ def _parse_app_state(result: Mapping[str, Any]) -> DeviceState:
         except (TypeError, ValueError):
             target = None
 
+    target_name = view.get("target_name")
+    target_name = str(target_name) if target_name is not None else None
+
     stacking = StackingProgress(
-        state=str(stack_node.get("state", "idle")),
+        state=_node_state(stack_node) or "idle",
         lapse_ms=int(stack_node.get("lapse_ms", 0) or 0),
         frames=int(stack_node.get("stacked_frame", 0) or 0),
     )
 
-    if str(stack_node.get("state", "")) == "working":
+    if _node_state(stack_node) == "working" or stage == _STAGE_STACKING:
         mode = MODE_STACKING
-    elif str(goto_node.get("state", "")) == "working":
+    elif _node_state(goto_node) == "working" or stage in _STAGES_SLEWING:
         mode = MODE_SLEWING
-    elif str(view.get("stage", "")) == "Park":
+    elif stage == _STAGE_PARKED:
         mode = MODE_PARKED
     else:
         mode = MODE_IDLE
-    return DeviceState(mode=mode, target=target, stacking=stacking)
+    return DeviceState(
+        mode=mode,
+        target=target,
+        stacking=stacking,
+        target_name=_resolve_target_name(target_name, target, goto_hint),
+    )
 
 
 class Device:
@@ -251,6 +363,10 @@ class Device:
         self.goto_timeout = goto_timeout
         self._state_lock = threading.Lock()
         self._last_state: DeviceState | None = None
+        #: last goto issued through :meth:`goto` as ``(ra, dec, name)`` —
+        #: the stale-``View.target_name`` fallback hint for :meth:`state`
+        #: (fw 9.75 coordinate gotos do not update ``View.target_name``)
+        self._last_goto: tuple[float, float, str | None] | None = None
         #: StackingProgress handler -> registered raw Stack event wrapper
         self._progress_handlers: dict[Callable[[StackingProgress], None], EventHandler] = {}
         # Translate the final Stack event (state "idle") into the unified
@@ -351,17 +467,23 @@ class Device:
     # -- state -----------------------------------------------------------------
 
     def state(self) -> DeviceState:
-        """Read the Scope's live state: mode, current target, stacking progress.
+        """Read the Scope's live state: mode, current target (ra/dec and
+        name), stacking progress.
 
         Uses ``iscope_get_app_state`` on fw 9.75 and falls back to
         ``get_scope_state`` on older firmware (:mod:`.compat` shim, the
-        working method is cached per transport).
+        working method is cached per transport). On fw 9.75 the target
+        name falls back to the last :meth:`goto` name when
+        ``View.target_name`` is stale (a coordinate goto does not update
+        it — see :func:`_parse_app_state`).
         """
         method, result = compat.call(self._transport, compat.STATE_METHODS)
+        with self._state_lock:
+            goto_hint = self._last_goto
         if method == GET_APP_STATE_METHOD:
-            parsed = _parse_app_state(result)
+            parsed = _parse_app_state(result, goto_hint=goto_hint)
         else:
-            parsed = _parse_state(result)
+            parsed = _parse_state(result, goto_hint=goto_hint)
         with self._state_lock:
             self._last_state = parsed
         return parsed
@@ -369,18 +491,30 @@ class Device:
     # -- goto / park -------------------------------------------------------------
 
     def goto(
-        self, ra: float, dec: float, *, timeout: float | None = None
+        self,
+        ra: float,
+        dec: float,
+        *,
+        name: str | None = None,
+        timeout: float | None = None,
     ) -> DeviceState:
         """Slew the Scope to the target at ``ra`` (hours) / ``dec`` (degrees).
 
-        Sends ``scope_goto`` (fw 9.75) or ``scope_goto_target`` (older
-        firmware — :mod:`.compat` picks the one the Scope implements) and
-        waits for the pushed ``ScopeGoto`` "complete" event (arrival). If
-        the event does not arrive within ``timeout`` (default
-        :attr:`goto_timeout`), the state is polled once as a fallback; if
-        the Scope is no longer slewing the slew is treated as arrived,
-        otherwise :class:`GotoTimeoutError` is raised. Returns the state
-        after arrival.
+        Sends ``scope_goto`` with POSITIONAL params ``[ra, dec]`` on fw 9.75
+        (a dict ``{"ra", "dec"}`` is answered code 0 but silently ignored —
+        no slew) or ``scope_goto_target`` with dict params on older firmware
+        (:mod:`.compat` picks the one the Scope implements) and waits for
+        the pushed ``ScopeGoto`` "complete" event (arrival). If the event
+        does not arrive within ``timeout`` (default :attr:`goto_timeout`),
+        the state is polled once as a fallback; if the Scope is no longer
+        slewing the slew is treated as arrived, otherwise
+        :class:`GotoTimeoutError` is raised. Returns the state after
+        arrival.
+
+        ``name`` is the target's display name; it is remembered as the
+        last-goto hint so :meth:`state` can report it even when the
+        firmware's ``View.target_name`` is stale after a coordinate goto
+        (fw 9.75 does not update it).
         """
         ra = float(ra)
         dec = float(dec)
@@ -395,15 +529,23 @@ class Device:
             if event.payload.get("state") == GOTO_ARRIVED_STATE:
                 arrived.set()
 
+        def params_for(method: str) -> Mapping[str, Any] | list[float]:
+            if method == compat.GOTO_METHOD_975:
+                # fw 9.75 scope_goto takes POSITIONAL [ra_hours, dec_deg]
+                return [ra, dec]
+            return {"ra": ra, "dec": dec}
+
         # Register before sending the request so a fast slew cannot be missed.
         self._transport.add_event_handler(GOTO_EVENT, on_goto_event)
         try:
             compat.call(
                 self._transport,
                 compat.GOTO_METHODS,
-                lambda _method: {"ra": ra, "dec": dec},
+                params_for,
                 timeout=timeout,
             )
+            with self._state_lock:
+                self._last_goto = (ra, dec, name)
             wait = timeout if timeout is not None else self.goto_timeout
             if not arrived.wait(wait):
                 # Fallback: state polling in case the arrival event was missed.

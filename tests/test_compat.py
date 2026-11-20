@@ -161,7 +161,7 @@ def test_call_propagates_non_103_errors_immediately(transport975):
         compat.call(
             transport975,
             compat.GOTO_METHODS,
-            lambda _m: {"ra": 99.0, "dec": 99.0},
+            lambda _m: [99.0, 99.0],  # fw 9.75 scope_goto takes positional [ra, dec]
         )
     assert excinfo.value.reply.code == 207
     assert compat.cached_method(transport975, compat.GOTO_METHODS) is None
@@ -229,28 +229,30 @@ def test_state_reflects_slew_and_target_on_975(device975, mock975):
 
 def test_goto_wire_params_on_975(device975, mock975):
     device975.goto(5.5, 12.25)
-    # the fw 9.75 scope_goto got {"ra": hours, "dec": deg}
+    # fw 9.75 scope_goto got POSITIONAL [ra_hours, dec_deg] on the wire
+    # (seestarpy raw.scope_goto: 'params': [ra, dec]) — a dict would be
+    # silently ignored by the firmware (code 0, no slew)
+    assert mock975.last_wire_params[compat.GOTO_METHOD_975] == [5.5, 12.25]
     assert mock975.last_goto == {"ra": 5.5, "dec": 12.25}
 
 
 def test_goto_bad_params_on_975_wire(transport975, mock975):
-    # wrong types -> 108 "expected float param", no motion
-    for bad in (None, {}, {"ra": "x", "dec": 0.0}, {"ra": 1.0}):
+    # wrong types / wrong arity in the positional list -> 108, no motion
+    for bad in ([None, None], ["x", 0.0], [1.0], [1.0, 2.0, 3.0]):
         with pytest.raises(RpcError) as excinfo:
             transport975.request(compat.GOTO_METHOD_975, bad)
         assert excinfo.value.reply.code == 108
     # out of range -> 207 "fail to operate", no motion
-    for bad in ({"ra": 99.0, "dec": 0.0}, {"ra": 0.0, "dec": -91.0}):
+    for bad in ([99.0, 0.0], [0.0, -91.0]):
         with pytest.raises(RpcError) as excinfo:
             transport975.request(compat.GOTO_METHOD_975, bad)
         assert excinfo.value.reply.code == 207
     assert mock975.last_goto is None
-    # positional [ra, dec] is accepted too (handler level: the client
-    # transport sends dict params)
-    handled, result, code = mock975.handle_scope_command(
-        compat.GOTO_METHOD_975, {"args": [7.0, 8.0]}
-    )
-    assert (handled, result, code) == (True, 0, 0)
+    # dict params are silently ignored by fw 9.75: code 0 but NO slew
+    assert transport975.request(compat.GOTO_METHOD_975, {"ra": 7.0, "dec": 8.0}) == 0
+    assert mock975.last_goto is None
+    # positional [ra, dec] slews
+    assert transport975.request(compat.GOTO_METHOD_975, [7.0, 8.0]) == 0
     assert mock975.last_goto == {"ra": 7.0, "dec": 8.0}
 
 
@@ -371,6 +373,123 @@ def test_parse_app_state_park_stage():
     state = _parse_app_state({"View": {"state": "idle", "stage": "Park"}})
     assert state.mode == "parked"
     assert state.parked
+
+
+def test_parse_app_state_stage_stack_means_stacking():
+    # live fw 9.75 shape: View.stage is the authoritative activity field
+    state = _parse_app_state(
+        {
+            "View": {
+                "state": "working",
+                "stage": "Stack",
+                "target_ra_dec": [23.9556, 56.7261],
+                "Stack": {
+                    "state": "working",
+                    "lapse_ms": 1000,
+                    "stacked_frame": 1,
+                    "dropped_frame": 0,
+                },
+            }
+        }
+    )
+    assert state.mode == "stacking"
+    assert state.stacking.frames == 1
+    # the stage alone (no Stack child node) still means stacking
+    assert _parse_app_state({"View": {"state": "working", "stage": "Stack"}}).mode == (
+        "stacking"
+    )
+
+
+def test_parse_app_state_stage_autogoto_means_slewing():
+    state = _parse_app_state(
+        {"View": {"state": "working", "stage": "AutoGoto", "AutoGoto": {"state": "working"}}}
+    )
+    assert state.mode == "slewing"
+    assert _parse_app_state({"View": {"state": "working", "stage": "ScopeGoto"}}).mode == (
+        "slewing"
+    )
+    # root-level AutoGoto node (some builds hang it off the app-state root)
+    state = _parse_app_state(
+        {"AutoGoto": {"state": "working"}, "View": {"state": "working"}}
+    )
+    assert state.mode == "slewing"
+
+
+def test_parse_app_state_continuous_exposure_is_idle():
+    # live-probed fw 9.75 live view: stage ContinuousExposure, state working
+    state = _parse_app_state(
+        {
+            "View": {
+                "state": "working",
+                "mode": "star",
+                "stage": "ContinuousExposure",
+                "target_name": "M 31",
+                "target_ra_dec": [0.736843, 41.415901],
+                "ContinuousExposure": {"state": "working", "fps": 2.0},
+            }
+        }
+    )
+    assert state.mode == "idle"
+    assert state.target == (0.736843, 41.415901)
+    assert state.target_name == "M 31"
+
+
+def test_parse_app_state_target_name_and_stale_goto_hint():
+    tree = {
+        "View": {
+            "state": "working",
+            "stage": "Stack",
+            "target_name": "M 31",  # stale: a coordinate goto does not update it
+            "target_ra_dec": [23.9556, 56.7261],
+            "Stack": {"state": "working", "lapse_ms": 0, "stacked_frame": 0},
+        }
+    }
+    # without a hint the (stale) View.target_name is reported as-is
+    assert _parse_app_state(tree).target_name == "M 31"
+    # with a matching last-goto hint, the hint's name wins
+    state = _parse_app_state(tree, goto_hint=(23.9556, 56.7261, "NGC 7789"))
+    assert state.target_name == "NGC 7789"
+    # a hint for different coordinates does not apply
+    assert _parse_app_state(tree, goto_hint=(1.0, 2.0, "M 42")).target_name == "M 31"
+    # a hint without a name changes nothing
+    assert _parse_app_state(tree, goto_hint=(23.9556, 56.7261, None)).target_name == "M 31"
+    # no target_name in the View at all -> the hint fills it in
+    tree2 = {"View": {"state": "working", "stage": "Stack", "target_ra_dec": [23.9556, 56.7261]}}
+    assert _parse_app_state(tree2).target_name is None
+    assert (
+        _parse_app_state(tree2, goto_hint=(23.9556, 56.7261, "NGC 7789")).target_name
+        == "NGC 7789"
+    )
+
+
+def test_state_target_name_falls_back_to_last_goto_on_975(device975, mock975):
+    """fw 9.75: a coordinate ``scope_goto`` does NOT update
+    ``View.target_name`` (live-observed: after goto NGC 7789 the scope kept
+    writing ``M 31_sub/Light_M 31_...`` sub-frames), so :meth:`Device.state`
+    reports the last goto's name instead of the stale one."""
+    mock975.set_view_target_name("M 31")  # stale name from a previous target
+    device975.goto(23.9556, 56.7261, name="NGC 7789")
+    state = device975.state()
+    assert state.target == (23.9556, 56.7261)
+    assert state.target_name == "NGC 7789"
+    # the wire View still carries the stale name
+    view = device975.transport.request(compat.GET_APP_STATE_METHOD)["View"]
+    assert view["target_name"] == "M 31"
+    assert view["target_ra_dec"] == [23.9556, 56.7261]
+
+
+def test_state_reports_stacking_while_stacking_on_975(device975, mock975):
+    """While the Stack is working the facade reports mode "stacking" (the
+    fw 9.75 ``View.stage == "Stack"`` / ``View.Stack.state == "working"``)."""
+    mock975.stack_event_interval = 0.05
+    device975.goto(23.9556, 56.7261, name="NGC 7789")
+    state = device975.start_stack(10.0, 80)
+    assert state.mode == "stacking"
+    assert state.stacking.state == "working"
+    polled = device975.state()
+    assert polled.mode == "stacking"
+    assert polled.target_name == "NGC 7789"
+    assert device975.stop_stack().mode == "idle"
 
 
 def device_stacking(state, lapse_ms, frames):
