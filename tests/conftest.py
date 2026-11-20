@@ -1,8 +1,15 @@
+import os
+
 import pytest
 
 from seestar_controller.link import auth
 from seestar_controller.link.mock_scope import MockScope
 from seestar_controller.link.transport import LinkTransport
+
+# Keep the test suite hermetic: the protocol log is ON by default (it writes
+# under ~/.config/seestar-controller), so disable it for the whole session
+# unless a test opts in explicitly (protocol_log=... / monkeypatch.setenv).
+os.environ["SEESTAR_PROTOCOL_LOG"] = "0"
 
 
 @pytest.fixture(scope="session")

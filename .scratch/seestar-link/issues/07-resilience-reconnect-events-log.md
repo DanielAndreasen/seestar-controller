@@ -4,10 +4,10 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** implemented
 
-- [ ] Dropped connection triggers reconnect with exponential backoff
-- [ ] Reconnect re-runs the handshake and restores subscriptions
-- [ ] Connection/scope events are dispatched to registered handlers exactly once
-- [ ] Protocol log writes all traffic to a rotating log file, toggleable
-- [ ] Tests: mock scope drops connection, client reconnects; event dispatch verified
+- [x] Dropped connection triggers reconnect with exponential backoff
+- [x] Reconnect re-runs the handshake and restores subscriptions
+- [x] Connection/scope events are dispatched to registered handlers exactly once
+- [x] Protocol log writes all traffic to a rotating log file, toggleable
+- [x] Tests: mock scope drops connection, client reconnects; event dispatch verified

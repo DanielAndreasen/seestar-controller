@@ -30,6 +30,27 @@ received pre-parsed as :class:`StackingProgress` via
 :meth:`Device.add_stacking_progress_handler` / :meth:`Device.on_stacking_progress`,
 and are reflected in :meth:`Device.state` (``state().stacking``).
 
+**Resilience** (ticket 07): :meth:`Device.connect` enables automatic
+reconnect with exponential backoff by default (pass ``reconnect=None`` to
+disable, or a :class:`~seestar_controller.link.resilience.ReconnectPolicy`
+to tune ``max_attempts`` / ``base_delay`` / ``cap``). When the Link drops,
+the transport reconnects, re-runs the signed handshake, and re-arms the
+event subscriptions; :attr:`Device.connection_state` surfaces
+``connected`` / ``reconnecting`` / ``disconnected``. Link lifecycle and
+error events — ``connection_lost``, ``reconnecting``, ``reconnected``,
+``scope_error``, ``stack_finished`` — are dispatched through the same
+:meth:`Device.add_event_handler` registry as wire events, exactly once per
+occurrence::
+
+    device.add_event_handler("connection_lost", lambda e: print("link lost:", e.payload))
+    device.add_event_handler("reconnected", lambda e: print("back after", e.payload["attempts"], "attempts"))
+    device.add_event_handler("stack_finished", lambda e: print("stack done:", e.payload["frames"], "sub-frames"))
+
+All JSON-RPC traffic is written to a rotating protocol log under the config
+dir (toggleable via ``protocol_log=`` / ``protocol_log_path=`` or the
+``SEESTAR_PROTOCOL_LOG`` env var; signatures/PEM are redacted — see
+:mod:`seestar_controller.link.protocol_log`).
+
 NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
 the facade is exercised against the mock Scope
 (:mod:`seestar_controller.link.mock_scope`) only.
@@ -51,7 +72,12 @@ from typing import Any, Callable, Mapping
 
 from . import frames, stacking
 from .protocol import Event
-from .stacking import START_STACK_METHOD, STACK_EVENT, STOP_STACK_METHOD
+from .resilience import (
+    STACK_FINISHED_EVENT,
+    ConnectionState,
+    ReconnectPolicy,
+)
+from .stacking import START_STACK_METHOD, STACK_EVENT, STACK_STATE_IDLE, STOP_STACK_METHOD
 from .transport import COMMAND_PORT, EventHandler, LinkTransport
 
 logger = logging.getLogger(__name__)
@@ -162,6 +188,20 @@ class Device:
         self._last_state: DeviceState | None = None
         #: StackingProgress handler -> registered raw Stack event wrapper
         self._progress_handlers: dict[Callable[[StackingProgress], None], EventHandler] = {}
+        # Translate the final Stack event (state "idle") into the unified
+        # "stack_finished" lifecycle event, dispatched through the transport.
+        transport.add_event_handler(STACK_EVENT, self._on_stack_event)
+
+    def _on_stack_event(self, event: Event) -> None:
+        if str(event.payload.get("state", "")) == STACK_STATE_IDLE:
+            self._transport.dispatch_lifecycle(
+                STACK_FINISHED_EVENT,
+                {
+                    "state": STACK_STATE_IDLE,
+                    "lapse_ms": int(event.payload.get("lapse_ms", 0) or 0),
+                    "frames": int(event.payload.get("frames", 0) or 0),
+                },
+            )
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -182,12 +222,23 @@ class Device:
         ``private_key=``, timeouts, ...) which are forwarded to
         :class:`LinkTransport`. The signed handshake runs on connect; the
         Scope's state is read once so the facade starts live.
+
+        Unless a ``transport`` is passed, the facade enables automatic
+        reconnect with a default
+        :class:`~seestar_controller.link.resilience.ReconnectPolicy`
+        (exponential backoff, unlimited attempts) — pass ``reconnect=None``
+        to disable or a custom policy to tune it. On a dropped Link the
+        transport reconnects, re-runs the handshake, and re-arms the event
+        subscriptions; see :attr:`connection_state`.
         """
         if transport is not None and transport_kwargs:
             raise ValueError(
                 "pass either transport= or LinkTransport keyword arguments, not both"
             )
         if transport is None:
+            # Resilient by default at the facade level (spec user story 12:
+            # a WiFi blip must not kill the session).
+            transport_kwargs.setdefault("reconnect", ReconnectPolicy())
             transport = LinkTransport(ip, port, **transport_kwargs)
         if not transport.connected:
             transport.connect()
@@ -213,6 +264,17 @@ class Device:
     @property
     def connected(self) -> bool:
         return self._transport.connected
+
+    @property
+    def connection_state(self) -> ConnectionState:
+        """Link state surfaced to callers: ``connected`` / ``reconnecting`` /
+        ``disconnected`` / ``connecting``."""
+        return self._transport.connection_state
+
+    @property
+    def reconnect_attempts(self) -> int:
+        """Reconnect attempts made in the current/last reconnect cycle."""
+        return self._transport.reconnect_attempts
 
     @property
     def last_state(self) -> DeviceState | None:
@@ -385,8 +447,11 @@ class Device:
     def add_event_handler(self, name: str, handler: EventHandler) -> None:
         """Register ``handler`` for pushed events named ``name`` ("*" = all).
 
-        Reuses the transport's event dispatch, so every event the Scope
-        pushes reaches the facade's callbacks.
+        Reuses the transport's unified event dispatch, so every event the
+        Scope pushes — and every link lifecycle/error event
+        (``connection_lost``, ``reconnecting``, ``reconnected``,
+        ``scope_error``, ``stack_finished``) — reaches the facade's
+        callbacks, exactly once per occurrence.
         """
         self._transport.add_event_handler(name, handler)
 
@@ -416,19 +481,32 @@ def connect(ip: str, port: int = COMMAND_PORT, **kwargs: Any) -> Device:
 
 def main(argv: list[str] | None = None) -> None:
     """Demo against a local mock Scope: connect -> state -> goto -> stack ->
-    download frames -> park."""
+    download frames -> drop the link (reconnect demo) -> park."""
     parser = argparse.ArgumentParser(
         description="Device facade demo against a local mock Scope"
     )
     parser.add_argument("--slew-duration", type=float, default=0.5)
     parser.add_argument("--stack-watch", type=float, default=1.2,
                         help="seconds to watch stack progress before stopping")
+    parser.add_argument(
+        "--protocol-log",
+        type=Path,
+        default=None,
+        help="protocol log file (default: $SEESTAR_PROTOCOL_LOG_PATH, else "
+             "~/.config/seestar-controller/protocol.log; SEESTAR_PROTOCOL_LOG=0 disables)",
+    )
+    parser.add_argument(
+        "--no-reconnect-demo",
+        action="store_true",
+        help="skip the drop-connection/reconnect demo",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     from . import auth
     from .mock_scope import MockScope
+    from .resilience import LIFECYCLE_EVENTS
 
     private_pem, public_pem = auth.generate_keypair()
     scope = MockScope(
@@ -441,10 +519,15 @@ def main(argv: list[str] | None = None) -> None:
             scope.command_port,
             pem=private_pem,
             heartbeat_interval=0.5,
+            protocol_log_path=args.protocol_log,
         )
         device.add_event_handler(
             "*", lambda e: print(f"  event: {e.name} {dict(e.payload)}")
         )
+        for name in LIFECYCLE_EVENTS:
+            device.add_event_handler(
+                name, lambda e: print(f"  lifecycle: {e.name} {dict(e.payload)}")
+            )
 
         @device.on_stacking_progress
         def on_progress(p: StackingProgress) -> None:
@@ -466,6 +549,20 @@ def main(argv: list[str] | None = None) -> None:
                         f"(time={d.meta.time} exposure={d.meta.exposure}s "
                         f"gain={d.meta.gain} target={d.meta.target})"
                     )
+        if not args.no_reconnect_demo:
+            # Kill the link mid-session: the mock drops the command socket
+            # without heartbeat; the client must detect the loss, reconnect
+            # with backoff, re-run the signed handshake, and keep its
+            # subscriptions (the gap is visible in the protocol log).
+            print("dropping the link (mock scope closes the socket)...")
+            reconnected = threading.Event()
+            device.add_event_handler("reconnected", lambda e: reconnected.set())
+            scope.drop_connections()
+            if reconnected.wait(timeout=15):
+                print(f"reconnected (state={device.connection_state}, "
+                      f"attempts={device.reconnect_attempts}) -> state:", device.state())
+            else:
+                print("reconnect did not happen within 15s")
         print("park() ->", device.park())
         device.disconnect()
     finally:

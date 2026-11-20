@@ -31,6 +31,11 @@ START_STACK_METHOD = "iscope_start_stacking"
 STOP_STACK_METHOD = "iscope_stop_stacking"
 #: Pushed event carrying stack progress (frames stacked, elapsed).
 STACK_EVENT = "Stack"
+#: ``Stack`` event state while the Stack is being collected.
+STACK_STATE_WORKING = "working"
+#: ``Stack`` event state of the final event once the Stack stopped — the
+#: "stack finished" occurrence (dispatched as ``stack_finished``).
+STACK_STATE_IDLE = "idle"
 
 #: Sub-frame exposure range accepted by the Scope, in seconds.
 EXPOSURE_MIN_S = 1.0

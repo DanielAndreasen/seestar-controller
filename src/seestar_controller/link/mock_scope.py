@@ -37,6 +37,12 @@ real hardware sends). ``chunk_size`` splits each frame into small TCP
 segments (partial-frame reassembly tests), and :meth:`stop_streaming` /
 :meth:`start_streaming` gate the push.
 
+Resilience test hooks: :meth:`set_heartbeat_silent` stops answering
+heartbeats (link loss via heartbeat timeout), and :meth:`drop_connections`
+closes every command-channel socket without heartbeat (link loss via socket
+EOF) — the client must detect the loss, reconnect with backoff, and re-run
+the signed handshake.
+
 NOTE (user AFK, no real scope / no PEM key — docs/wiki/assumptions.md):
 this mock is the only counterpart the client is tested against. Only the
 20-byte frame framing and the synthetic payloads are exercised; real JPEGs
@@ -412,6 +418,27 @@ class MockScope:
     def set_heartbeat_silent(self, silent: bool) -> None:
         """When silent, stop replying to ``test_connection`` (dropped heartbeat)."""
         self.heartbeat_silent = silent
+
+    def drop_connections(self) -> None:
+        """Test hook simulating link loss: close every connected command-channel
+        socket abruptly — no heartbeat, no goodbye — so the client's reader
+        sees a plain socket EOF (the immediate connection-loss signal).
+
+        The handler threads clean up and forget the clients; a client that
+        reconnects gets a fresh, unverified connection and must re-run the
+        signed handshake.
+        """
+        with self._clients_lock:
+            clients = list(self._clients)
+        for client in clients:
+            try:
+                client.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                client.sock.close()
+            except OSError:
+                pass
 
     # -- preview streaming knobs -------------------------------------------------
 

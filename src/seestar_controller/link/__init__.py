@@ -3,7 +3,9 @@
 - :mod:`.protocol` — wire envelope on the command channel (TCP :4700)
 - :mod:`.auth` — firmware >= 7.18 PEM-signed handshake
 - :mod:`.keys` — PEM key management (config path, load/save 0600, extraction)
-- :mod:`.transport` — client transport (connect, RPC correlation, events, heartbeat)
+- :mod:`.transport` — client transport (connect, RPC correlation, events, heartbeat, reconnect)
+- :mod:`.resilience` — connection states, reconnect policy, lifecycle event names
+- :mod:`.protocol_log` — rotating on-disk log of all JSON-RPC traffic (key material redacted)
 - :mod:`.stacking` — stacking wire contract (methods, Stack event, param ranges)
 - :mod:`.frames` — frame-download wire contract (list_frames/get_frame), atomic
   .fits + .json sidecar writes, :func:`~.frames.download_frames`
@@ -17,12 +19,22 @@
 ``python -m seestar_controller.link.device`` / ``...preview``.
 """
 
-from . import auth, frames, image, keys, protocol, stacking
+from . import auth, frames, image, keys, protocol, protocol_log, resilience, stacking
 from .keys import (
     InvalidKeyError,
     KeyExtractionError,
     KeyManagementError,
     MissingKeyError,
+)
+from .protocol_log import ProtocolLog
+from .resilience import (
+    CONNECTION_LOST_EVENT,
+    RECONNECTED_EVENT,
+    RECONNECTING_EVENT,
+    SCOPE_ERROR_EVENT,
+    STACK_FINISHED_EVENT,
+    ConnectionState,
+    ReconnectPolicy,
 )
 from .transport import ConnectionLostError, LinkTransport, RpcError
 
@@ -58,6 +70,8 @@ __all__ = [
     "keys",
     "preview",
     "protocol",
+    "protocol_log",
+    "resilience",
     "stacking",
     "Device",
     "DeviceState",
@@ -71,6 +85,14 @@ __all__ = [
     "LinkTransport",
     "RpcError",
     "ConnectionLostError",
+    "ProtocolLog",
+    "ConnectionState",
+    "ReconnectPolicy",
+    "CONNECTION_LOST_EVENT",
+    "RECONNECTING_EVENT",
+    "RECONNECTED_EVENT",
+    "SCOPE_ERROR_EVENT",
+    "STACK_FINISHED_EVENT",
     "KeyManagementError",
     "MissingKeyError",
     "InvalidKeyError",
