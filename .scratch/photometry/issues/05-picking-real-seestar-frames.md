@@ -4,7 +4,7 @@
 
 **Blocked by:** None (photometry 01-04 done). Real debug data: FITS files under /home/daniel/SeestarProjects/ngc7789/subs/*/ and stacks/ (subs: NAXIS=2, no CTYPE; stacks: NAXIS=3 RGB + SIP). Tests must NOT read the user's home dir — copy a small real FITS into tests/fixtures/ or generate a synthetic equivalent.
 
-**Status:** ready-for-agent
+**Status:** implemented in 8f00932 (merged)
 
 - [ ] `pick_at` works in pixel space on any frame; sky conversion only attempted when a 2D celestial WCS is present (RGB stack: WCS from celestial axes only, SIP dropped or handled); no-WCS frames pick fine, sky fields None
 - [ ] Catalog-assist/suggestion path degrades gracefully without WCS (clear hint, no exception)
