@@ -23,6 +23,9 @@ dialog-level semantics on top of an :class:`~.state.AppState`):
     file is only *flagged* by :func:`flag_settings` and does NOT block saving;
   - ``project_root`` — empty (unset) or a plausible path that IS an existing
     directory (the app writes projects under it, so a typo must not save);
+  - ``photometry_comp_search_radius_deg`` — a number of degrees in
+    ``(0, 180]`` (the catalog-assist comp-search cone radius, photometry
+    ticket 02; reuses :func:`.state.validate_comp_search_radius`);
   - unknown keys are errors too.
 
 - :func:`flag_settings` — per-field SOFT flags (warnings) for the dialog:
@@ -46,9 +49,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .state import (
+    DEFAULT_COMP_SEARCH_RADIUS_DEG,
     SETTINGS_KEYS,
     AppState,
     SettingsValidationError,
+    validate_comp_search_radius,
     validate_scope_ip,
 )
 
@@ -106,6 +111,8 @@ def validate_settings(values: Mapping[str, Any]) -> dict[str, str]:
       missing file is only flagged by :func:`flag_settings`);
     - ``project_root`` — empty (unset) or a plausible path that IS an
       existing directory;
+    - ``photometry_comp_search_radius_deg`` — a number of degrees in
+      ``(0, 180]`` (photometry ticket 02);
     - any other key — an "unknown setting" error.
     """
     errors: dict[str, str] = {}
@@ -116,6 +123,11 @@ def validate_settings(values: Mapping[str, Any]) -> dict[str, str]:
         if key == "scope_ip":
             try:
                 validate_scope_ip(value)
+            except SettingsValidationError as exc:
+                errors[key] = str(exc)
+        elif key == "photometry_comp_search_radius_deg":
+            try:
+                validate_comp_search_radius(value)
             except SettingsValidationError as exc:
                 errors[key] = str(exc)
         else:  # key_path / project_root
@@ -150,6 +162,23 @@ def flag_settings(values: Mapping[str, Any]) -> dict[str, str]:
             "(extract it with `seestar-controller extract-key <apk>`)"
         )
     return flags
+
+
+def comp_search_radius_deg(values: Mapping[str, Any]) -> float:
+    """The configured photometry comp-search radius in degrees, as a float.
+
+    Reads ``photometry_comp_search_radius_deg`` from a settings mapping
+    (e.g. :meth:`SettingsController.values`); a missing or unparsable value
+    falls back to :data:`.state.DEFAULT_COMP_SEARCH_RADIUS_DEG` — never
+    raises. This is the bridge from the string settings dict to the pure
+    photometry layer, which takes the radius as an injected float (the pure
+    layer stays settings-agnostic).
+    """
+    raw = values.get("photometry_comp_search_radius_deg")
+    try:
+        return float(validate_comp_search_radius(raw))
+    except (SettingsValidationError, TypeError, ValueError):
+        return DEFAULT_COMP_SEARCH_RADIUS_DEG
 
 
 class SettingsController:
@@ -219,11 +248,12 @@ class SettingsController:
         scope_ip: Any = None,
         key_path: Any = None,
         project_root: Any = None,
+        photometry_comp_search_radius_deg: Any = None,
     ) -> dict[str, str]:
         """Validate, apply, persist, and notify; returns the new settings dict.
 
         Each keyword overrides the current value (``None`` = keep current,
-        ``""`` = unset). Raises :class:`SettingsFieldError` on any hard
+        ``""`` = unset a path). Raises :class:`SettingsFieldError` on any hard
         validation error — in that case nothing is applied, nothing is
         persisted, and no listener is notified.
         """
@@ -232,6 +262,7 @@ class SettingsController:
             "scope_ip": scope_ip,
             "key_path": key_path,
             "project_root": project_root,
+            "photometry_comp_search_radius_deg": photometry_comp_search_radius_deg,
         }
         for key, value in overrides.items():
             if value is not None:

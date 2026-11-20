@@ -26,9 +26,11 @@ window passes both down via
   (Target / Comp :class:`Gtk.DropDown`), the **aperture** spin buttons
   (radius + sky-annulus inner/outer, bound to
   :meth:`~seestar_controller.photometry.picking.PickController.set_aperture_params`),
-  the **picks list** with a **Remove selected** button, and the
+  the **picks list** with a **Remove selected** button, the
   **Save picks** button (persists the picks into the project via the
-  controller's ``save()``);
+  controller's ``save()``), and the **catalog comps** panel
+  (:class:`~.suggestions_panel.SuggestionsPanel`, ticket 02: list the standard
+  stars near the target and add one as a comp pick);
 - **right pane** — the current stack's tone-mapped preview in a
   :class:`Gtk.Picture` (``CONTAIN`` fit, PIL -> PNG -> :class:`Gdk.Texture`,
   the same pattern as :class:`~seestar_controller.enhance.viewer.ImageViewer`)
@@ -69,6 +71,8 @@ from .picking import (  # noqa: E402
     PickSession,
     StarPickSpec,
 )
+from .suggest import SuggestionController  # noqa: E402
+from .suggestions_panel import SuggestionsPanel  # noqa: E402
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
 LEFT_PANE_POSITION = 320
@@ -92,17 +96,21 @@ Mark = tuple[float, float, float, float, float, str, str]
 
 class StarPickerView(Gtk.Box):
     """The Photometry view's star picker: stack list + role/aperture controls
-    + picks list + Save picks on the left, the clickable preview with the
-    aperture overlay on the right.
+    + picks list + Save picks + catalog-comps panel on the left, the
+    clickable preview with the aperture overlay on the right.
 
     Constructed with the shared controllers (the app passes them; fresh ones
-    are created when omitted, so the widget also works standalone).
+    are created when omitted, so the widget also works standalone):
+    ``picker_controller`` / ``viewer_controller`` (ticket 01) and
+    ``suggest_controller`` (ticket 02 — defaults to one bound to this view's
+    pick controller).
     """
 
     def __init__(
         self,
         picker_controller: PickController | None = None,
         viewer_controller: ViewerController | None = None,
+        suggest_controller: SuggestionController | None = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("orientation", Gtk.Orientation.VERTICAL)
@@ -118,6 +126,11 @@ class StarPickerView(Gtk.Box):
         elif picker_controller.viewer_controller is None:
             picker_controller.attach_viewer(viewer_controller)
         self._picker_controller = picker_controller
+        if suggest_controller is None:
+            # default: follow this view's pick controller (ticket 02); the app
+            # passes the shared one, configured with the settings radius
+            suggest_controller = SuggestionController(picker_controller=picker_controller)
+        self._suggest_controller = suggest_controller
         self._stack_ids: tuple[int, ...] = ()
         self._rows: dict[int, Gtk.ListBoxRow] = {}
         self._updating = False  # guard against programmatic signal loops
@@ -229,6 +242,9 @@ class StarPickerView(Gtk.Box):
         self._save_button.connect("clicked", self._on_save_clicked)
         left.append(self._save_button)
 
+        self._suggestions_panel = SuggestionsPanel(self._suggest_controller)
+        left.append(self._suggestions_panel)
+
         self._status_label = Gtk.Label(label="", wrap=True, halign=Gtk.Align.CENTER)
         left.append(self._status_label)
         return left
@@ -300,6 +316,17 @@ class StarPickerView(Gtk.Box):
     def viewer_controller(self) -> ViewerController:
         """The pure-layer viewer controller (stack list) backing this widget."""
         return self._viewer_controller
+
+    @property
+    def suggest_controller(self) -> SuggestionController:
+        """The pure-layer catalog-assist controller (ticket 02) backing the
+        suggestions panel."""
+        return self._suggest_controller
+
+    @property
+    def suggestions_panel(self) -> SuggestionsPanel:
+        """The catalog-comps suggestions panel in the left pane (ticket 02)."""
+        return self._suggestions_panel
 
     @property
     def paned(self) -> Gtk.Paned:

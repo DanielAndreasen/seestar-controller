@@ -18,7 +18,8 @@ Layout: an :class:`Adw.Dialog` titled "Settings" with an
 (left) and **Save** (right, ``suggested-action``) — and an
 :class:`Adw.PreferencesPage` content with one :class:`Adw.PreferencesGroup`
 holding one :class:`Adw.EntryRow` per settings key (``scope_ip``,
-``key_path``, ``project_root``), each with a validation label as its suffix.
+``key_path``, ``project_root``, ``photometry_comp_search_radius_deg``), each
+with a validation label as its suffix.
 
 Validation UX (documented choices):
 
@@ -56,6 +57,7 @@ FIELD_TITLES: dict[str, str] = {
     "scope_ip": "Scope IP",
     "key_path": "PEM key path",
     "project_root": "Project root",
+    "photometry_comp_search_radius_deg": "Comp search radius (deg)",
 }
 
 
@@ -87,10 +89,11 @@ class SettingsDialog(Adw.Dialog):
 
         page = Adw.PreferencesPage()
         group = Adw.PreferencesGroup(
-            title="Connection & storage",
+            title="Connection, storage & photometry",
             description=(
-                "Scope address, PEM key, and project root — saved to the app "
-                "config dir and reloaded on start."
+                "Scope address, PEM key, project root, and the photometry "
+                "comp-search radius — saved to the app config dir and reloaded "
+                "on start."
             ),
         )
         self._rows: dict[str, Adw.EntryRow] = {}

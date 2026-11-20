@@ -21,10 +21,12 @@ import seestar_controller.ui as ui
 from seestar_controller.ui.settings import (
     SettingsController,
     SettingsFieldError,
+    comp_search_radius_deg,
     flag_settings,
     validate_settings,
 )
 from seestar_controller.ui.state import (
+    DEFAULT_COMP_SEARCH_RADIUS_DEG,
     DEFAULT_SETTINGS,
     SETTINGS_FILE_NAME,
     SETTINGS_KEYS,
@@ -70,6 +72,48 @@ def test_validate_settings_empty_mapping_is_valid():
 
 def test_validate_settings_all_unset_is_valid():
     assert validate_settings({"scope_ip": "", "key_path": "", "project_root": ""}) == {}
+
+
+# --- validate_settings: the photometry comp-search radius (photometry ticket 02) ------
+
+
+@pytest.mark.parametrize("good", ["1.5", "2", 0.5, "0.1", "180", 180.0])
+def test_validate_settings_comp_search_radius_valid(good):
+    assert validate_settings({"photometry_comp_search_radius_deg": good}) == {}
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "180.5", "abc", "", True, None])
+def test_validate_settings_comp_search_radius_invalid(bad):
+    errors = validate_settings({"photometry_comp_search_radius_deg": bad})
+    assert set(errors) == {"photometry_comp_search_radius_deg"}
+    assert "photometry_comp_search_radius_deg" in errors["photometry_comp_search_radius_deg"]
+
+
+def test_comp_search_radius_deg_helper_reads_and_falls_back():
+    assert comp_search_radius_deg(DEFAULT_SETTINGS) == DEFAULT_COMP_SEARCH_RADIUS_DEG == 1.5
+    assert comp_search_radius_deg({"photometry_comp_search_radius_deg": "2.5"}) == 2.5
+    assert comp_search_radius_deg({"photometry_comp_search_radius_deg": 0.25}) == 0.25
+    # missing / invalid -> the default, never raises
+    assert comp_search_radius_deg({}) == 1.5
+    assert comp_search_radius_deg({"photometry_comp_search_radius_deg": "abc"}) == 1.5
+    assert comp_search_radius_deg({"photometry_comp_search_radius_deg": "0"}) == 1.5
+
+
+def test_update_comp_search_radius_persists_and_reloads(settings_file, controller, root_dir):
+    controller.update(project_root=str(root_dir))
+    new_values = controller.update(photometry_comp_search_radius_deg="2.5")
+    assert new_values["photometry_comp_search_radius_deg"] == "2.5"
+    assert comp_search_radius_deg(new_values) == 2.5
+    reloaded = load_state(settings_file)
+    assert reloaded.get_setting("photometry_comp_search_radius_deg") == "2.5"
+    assert comp_search_radius_deg(reloaded.settings) == 2.5
+    # invalid radius -> SettingsFieldError, nothing persisted
+    before = settings_file.read_bytes()
+    with pytest.raises(SettingsFieldError) as excinfo:
+        controller.update(photometry_comp_search_radius_deg="-3")
+    assert excinfo.value.field == "photometry_comp_search_radius_deg"
+    assert settings_file.read_bytes() == before
+    assert controller.values["photometry_comp_search_radius_deg"] == "2.5"
 
 
 @pytest.mark.parametrize("good", ["", "192.168.1.50", "seestar.local", "scope-1", "10.0.0.2"])
@@ -196,6 +240,7 @@ def test_update_valid_persists_and_reloads(settings_file, controller, root_dir, 
         "scope_ip": "192.168.1.50",
         "key_path": str(key_path),
         "project_root": str(root_dir),
+        "photometry_comp_search_radius_deg": "1.5",
     }
     assert controller.values == new_values
     # persisted atomically to the settings file
@@ -215,6 +260,7 @@ def test_update_partial_keeps_other_fields(controller, root_dir):
         "scope_ip": "10.0.0.9",
         "key_path": "/tmp/k.pem",
         "project_root": str(root_dir),
+        "photometry_comp_search_radius_deg": "1.5",
     }
 
 
@@ -350,6 +396,7 @@ def test_defaults_when_no_config_file(settings_file, controller):
         "scope_ip",
         "key_path",
         "project_root",
+        "photometry_comp_search_radius_deg",
     }
 
 

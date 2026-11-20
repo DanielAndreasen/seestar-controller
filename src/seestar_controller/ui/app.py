@@ -105,6 +105,15 @@ whose :class:`~seestar_controller.photometry.star_picker.StarPickerView`
 renders the clickable preview with the aperture overlay, the role/aperture
 controls, the picks list and the Save picks button (persisting the picks into
 the project via :mod:`seestar_controller.store.stars`).
+
+Photometry (ticket 02): the application also owns a shared
+:class:`~seestar_controller.photometry.suggest.SuggestionController` — the
+catalog assist for comps — bound to the shared pick controller and configured
+with the comp-search radius read from the settings
+(:func:`seestar_controller.ui.settings.comp_search_radius_deg`; a settings
+listener keeps it in sync live). The window passes it to the Photometry view,
+whose :class:`~seestar_controller.photometry.suggestions_panel.SuggestionsPanel`
+lists the standard stars near the target and adds one as a comp pick.
 """
 
 from __future__ import annotations
@@ -123,13 +132,13 @@ from seestar_controller.observing import (  # noqa: E402
     ObserveController,
     PlanQueueController,
 )
-from seestar_controller.photometry import PickController  # noqa: E402
+from seestar_controller.photometry import PickController, SuggestionController  # noqa: E402
 
 from .connection import ConnectionController  # noqa: E402
 from .connection_panel import ConnectionPanel  # noqa: E402
 from .notification_log import NotificationLogDialog  # noqa: E402
 from .notifications import NotificationBus, NotificationController  # noqa: E402
-from .settings import SettingsController  # noqa: E402
+from .settings import SettingsController, comp_search_radius_deg  # noqa: E402
 from .settings_dialog import SettingsDialog  # noqa: E402
 from .state import (  # noqa: E402
     AppState,
@@ -220,6 +229,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         viewer_controller: ViewerController | None = None,
         editor_controller: EditorController | None = None,
         picker_controller: PickController | None = None,
+        suggest_controller: SuggestionController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -310,6 +320,17 @@ class SeestarWindow(Adw.ApplicationWindow):
             else getattr(app, "picker_controller", None)
             or PickController(viewer_controller=self._viewer_controller)
         )
+        # Photometry ticket 02: one shared catalog-assist controller bound to
+        # the pick controller (it follows the target pick); the Photometry
+        # view's suggestions panel lists the nearby standard stars and adds
+        # them as comp picks. Configured with the comp-search radius from the
+        # settings (kept in sync by the settings listener below).
+        self._suggest_controller = (
+            suggest_controller
+            if suggest_controller is not None
+            else getattr(app, "suggest_controller", None)
+            or SuggestionController(picker_controller=self._picker_controller)
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -356,6 +377,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     viewer_controller=self._viewer_controller,
                     editor_controller=self._editor_controller,
                     picker_controller=self._picker_controller,
+                    suggest_controller=self._suggest_controller,
                 ),
                 view.id,
                 view.title,
@@ -491,6 +513,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         view renders its snapshots and binds its controls to it)."""
         return self._picker_controller
 
+    @property
+    def suggest_controller(self) -> SuggestionController:
+        """The shared catalog-assist controller (photometry ticket 02 — the
+        Photometry view's suggestions panel binds to it)."""
+        return self._suggest_controller
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -522,11 +550,15 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._notification_log_dialog.present(self)
 
     def _on_settings_changed(self, values: dict[str, str]) -> None:
-        """Observer: settings changed -> reflect the scope IP in the header."""
+        """Observer: settings changed -> reflect the scope IP in the header
+        and keep the photometry comp-search radius in sync (ticket 02)."""
         scope_ip = values.get("scope_ip", "")
         self._settings_button.set_tooltip_text(
             f"Settings (scope: {scope_ip})" if scope_ip else "Settings"
         )
+        # comp_search_radius_deg() never raises (invalid -> default), and
+        # set_radius() is a no-op when the radius is unchanged.
+        self._suggest_controller.set_radius(comp_search_radius_deg(values))
 
     def _on_close_request(self, *_args) -> bool:
         """Persist geometry + state on close; never block closing."""
@@ -602,6 +634,22 @@ class SeestarApplication(Adw.Application):
         # shared viewer controller (the open stack becomes the pick
         # session's image); the window passes it to the Photometry view.
         self.picker_controller = PickController(viewer_controller=self.viewer_controller)
+        # Photometry ticket 02: the shared catalog-assist controller, bound to
+        # the shared pick controller and configured with the comp-search
+        # radius from the settings; the window passes it to the Photometry
+        # view's suggestions panel. The settings listener keeps the radius in
+        # sync when the settings change (set_radius is a no-op when
+        # unchanged).
+        self.suggest_controller = SuggestionController(
+            picker_controller=self.picker_controller,
+            radius_deg=comp_search_radius_deg(self.settings_controller.values),
+        )
+        self.settings_controller.add_listener(self._on_settings_changed)
+
+    def _on_settings_changed(self, values: dict[str, str]) -> None:
+        """Settings observer: keep the photometry comp-search radius (ticket
+        02) in sync with the configured value."""
+        self.suggest_controller.set_radius(comp_search_radius_deg(values))
 
     @property
     def state(self) -> AppState:

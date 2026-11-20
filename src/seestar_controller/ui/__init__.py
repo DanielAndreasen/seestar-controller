@@ -73,6 +73,7 @@ from .settings import (
     validate_settings,
 )
 from .state import (
+    DEFAULT_COMP_SEARCH_RADIUS_DEG,
     DEFAULT_CONFIG_DIR,
     DEFAULT_DARK_THEME,
     DEFAULT_KEY_PATH,
@@ -81,6 +82,7 @@ from .state import (
     DEFAULT_VIEW_ID,
     DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
+    MAX_COMP_SEARCH_RADIUS_DEG,
     MAX_WINDOW_COORD,
     MAX_WINDOW_SIZE,
     MIN_WINDOW_SIZE,
@@ -98,6 +100,9 @@ from .state import (
     default_settings_path,
     load_state,
     resolve_settings_path,
+    validate_comp_search_radius,
+    validate_path_setting,
+    validate_scope_ip,
     view_by_id,
 )
 
@@ -148,6 +153,8 @@ __all__ = [
     "MAX_WINDOW_COORD",
     "SETTINGS_KEYS",
     "DEFAULT_SETTINGS",
+    "DEFAULT_COMP_SEARCH_RADIUS_DEG",
+    "MAX_COMP_SEARCH_RADIUS_DEG",
     "DEFAULT_CONFIG_DIR",
     "DEFAULT_KEY_PATH",
     "DEFAULT_PROJECT_ROOT",
@@ -161,6 +168,9 @@ __all__ = [
     "resolve_settings_path",
     "load_state",
     "view_by_id",
+    "validate_scope_ip",
+    "validate_path_setting",
+    "validate_comp_search_radius",
     "SettingsController",
     "SettingsFieldError",
     "SettingsListener",

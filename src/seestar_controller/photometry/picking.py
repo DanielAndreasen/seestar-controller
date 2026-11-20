@@ -12,7 +12,9 @@ package ``__init__``.
 
 What lives here:
 
-- :class:`PickingError` — the package's error type (a :class:`ValueError`);
+- :class:`PhotometryError` — the package's error base (a :class:`ValueError`);
+  :class:`PickingError` (ticket 01) and :class:`~.suggest.SuggestionError`
+  (ticket 02) both subclass it, so widget code can catch one type;
 - :func:`pixel_to_sky` / :func:`sky_to_pixel` — the FITS-WCS pixel <-> sky
   conversion (:mod:`astropy.wcs`, lazy);
 - :class:`StarPickSpec` — one picked star (role, pixel, sky coord, label);
@@ -23,7 +25,9 @@ What lives here:
 - :class:`PickController` — the app-level shared controller: the current image
   (a :class:`~seestar_controller.enhance.fits_io.FitsImage`, duck-typed), the
   picks, :meth:`~PickController.pick_at` (click -> optional snap to the local
-  brightness centroid -> WCS -> pick), remove/set_role/clear, aperture
+  brightness centroid -> WCS -> pick), :meth:`~PickController.add_at_sky`
+  (the inverse: a sky position — e.g. a catalog suggestion, ticket 02 — ->
+  WCS pixel -> pick), remove/set_role/clear, aperture
   settings, save/load into the project via
   :func:`seestar_controller.store.stars.save_star_picks` /
   :func:`~seestar_controller.store.stars.load_star_picks`, and listeners with
@@ -93,7 +97,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the runtime import gr
 logger = logging.getLogger(__name__)
 
 
-class PickingError(ValueError):
+class PhotometryError(ValueError):
+    """Base class of every photometry-layer error — a :class:`ValueError`.
+
+    :class:`PickingError` (ticket 01, star picking) and
+    :class:`~seestar_controller.photometry.suggest.SuggestionError` (ticket 02,
+    catalog assist) both subclass it, so callers (and the widget layer) can
+    catch one type for any photometry failure.
+    """
+
+
+class PickingError(PhotometryError):
     """Any star-picking failure — a :class:`ValueError` with a clear message:
     a missing/invalid WCS, a click outside the image, a bad pick field, a bad
     aperture value, a bad index, no image/project set, or a store failure
@@ -384,6 +398,7 @@ class PickController:
       image as its current image (see :meth:`attach_viewer`).
 
     Operations: :meth:`pick_at` (click -> snap -> WCS -> pick),
+    :meth:`add_at_sky` (sky -> WCS pixel -> pick; ticket 02),
     :meth:`remove_pick`, :meth:`set_role`, :meth:`clear`,
     :meth:`set_aperture` / :meth:`set_aperture_params`,
     :meth:`set_image` / :meth:`set_project` / :meth:`attach_viewer`,
@@ -531,6 +546,16 @@ class PickController:
             raise PickingError(f"index {index} out of range for {n} picks")
         return index
 
+    def _add_spec(self, spec: StarPickSpec) -> StarPickSpec:
+        """Add ``spec`` with the ticket-01 role semantics: re-picking
+        ``"target"`` REPLACES the existing target pick, comps accumulate.
+        Notifies the listeners and returns the spec."""
+        if spec.role == ROLE_TARGET:
+            self._picks = [p for p in self._picks if p.role != ROLE_TARGET]
+        self._picks.append(spec)
+        self._notify()
+        return spec
+
     def pick_at(
         self,
         x: float,
@@ -575,11 +600,57 @@ class PickController:
             sx, sy = px, py
         coord = pixel_to_sky(self._image.header, sx, sy)
         spec = StarPickSpec(role=role, x=sx, y=sy, coord=coord, label=label)
-        if role == ROLE_TARGET:
-            self._picks = [p for p in self._picks if p.role != ROLE_TARGET]
-        self._picks.append(spec)
-        self._notify()
-        return spec
+        return self._add_spec(spec)
+
+    def add_at_sky(
+        self,
+        coord: Any,
+        role: str = ROLE_COMP,
+        *,
+        label: str | None = None,
+        snap: bool = False,
+    ) -> StarPickSpec:
+        """Add a pick at a SKY position (ticket 02 — e.g. a catalog standard
+        star): the inverse of :meth:`pick_at`.
+
+        - the sky position (a :class:`~seestar_controller.catalog.coords.J2000Coord`,
+          a ``(ra_deg, dec_deg)`` pair, or a duck-typed object) is converted to
+          a 0-based image pixel via :func:`sky_to_pixel` against the current
+          image's WCS header;
+        - the pixel must lie inside the current image (else
+          :class:`PickingError` — a catalog star outside the frame cannot be
+          picked);
+        - with ``snap=True`` the pixel snaps to the local brightness centroid
+          (default False: a catalog position is already precise, so the exact
+          WCS pixel is used);
+        - the pick keeps the GIVEN sky coord (not re-derived from the pixel);
+        - the pick is added with the usual role semantics: ``"target"``
+          replaces the existing target, comps accumulate (default role is
+          ``"comp"``).
+
+        Returns the new :class:`StarPickSpec` and notifies the listeners.
+        """
+        if self._image is None:
+            raise PickingError(
+                "no image — open a stack first (the PickController follows the "
+                "shared ViewerController, or set_image() directly)"
+            )
+        if role not in ROLES:
+            raise PickingError(f"role must be one of {ROLES}, got {role!r}")
+        ra_deg, dec_deg = _ra_dec_deg(coord)
+        sky = J2000Coord(ra_deg=ra_deg, dec_deg=dec_deg)
+        x, y = sky_to_pixel(self._image.header, sky)
+        data = np.asarray(self._image.data)
+        height, width = int(data.shape[0]), int(data.shape[1])
+        if not (0.0 <= x < width and 0.0 <= y < height):
+            raise PickingError(
+                f"sky position {sky} maps to pixel ({x:.2f}, {y:.2f}), outside "
+                f"the {width}x{height} image — cannot add it as a pick"
+            )
+        if snap:
+            x, y = _snap_centroid(data, x, y)
+        spec = StarPickSpec(role=role, x=x, y=y, coord=sky, label=label)
+        return self._add_spec(spec)
 
     def remove_pick(self, index: int) -> StarPickSpec:
         """Remove and return the pick at ``index`` (negatives allowed).

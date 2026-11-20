@@ -33,14 +33,17 @@ shared
 :class:`~seestar_controller.enhance.editor_controller.EditorController`
 (both passed in via :func:`build_view`; with no project set yet the view
 shows a "no project" placeholder — the Projects view is a later ticket). The
-**Photometry** view (photometry ticket 01) carries the
+**Photometry** view (photometry tickets 01 + 02) carries the
 :class:`~seestar_controller.photometry.star_picker.StarPickerView` widget —
-the project's stack list + role/aperture controls + picks list + Save picks
-on the left, the clickable preview with the aperture overlay on the right —
+the project's stack list + role/aperture controls + picks list + Save picks +
+catalog-comps panel on the left, the clickable preview with the aperture
+overlay on the right —
 driven by the app's shared
 :class:`~seestar_controller.photometry.picking.PickController` (which follows
-the shared viewer controller's open stack) and that same viewer controller
-(both passed in via :func:`build_view`).
+the shared viewer controller's open stack), the shared
+:class:`~seestar_controller.photometry.suggest.SuggestionController` (ticket
+02, catalog assist for comps) and that same viewer controller (all passed in
+via :func:`build_view`).
 :data:`VIEW_CLASSES` maps the pure-layer view ids
 (:mod:`seestar_controller.ui.state`) to the widget classes, and
 :func:`build_view` is the factory the app window uses.
@@ -69,7 +72,7 @@ from seestar_controller.observing.observe_view import (  # noqa: E402
     ObserveView as ObserveViewWidget,
 )
 from seestar_controller.observing.queue_editor import QueueEditor  # noqa: E402
-from seestar_controller.photometry import PickController  # noqa: E402
+from seestar_controller.photometry import PickController, SuggestionController  # noqa: E402
 from seestar_controller.photometry.star_picker import (  # noqa: E402
     StarPickerView as StarPickerWidget,
 )
@@ -274,21 +277,25 @@ class EnhanceView(_PlaceholderView):
 
 
 class PhotometryView(_PlaceholderView):
-    """Photometry view (photometry ticket 01): wraps the
+    """Photometry view (photometry tickets 01 + 02): wraps the
     :class:`~seestar_controller.photometry.star_picker.StarPickerView` widget —
     the project's stack list + role selector + aperture spins + picks list +
-    Save picks on the left, the clickable preview with the aperture overlay
-    on the right.
+    Save picks + catalog-comps panel on the left, the clickable preview with
+    the aperture overlay on the right.
 
     ``picker_controller`` is the app's shared
     :class:`~seestar_controller.photometry.picking.PickController` (it follows
-    the shared viewer controller's open stack) and ``viewer_controller`` the
+    the shared viewer controller's open stack), ``viewer_controller`` the
     shared
-    :class:`~seestar_controller.enhance.viewer_controller.ViewerController`
-    (the app window passes both via :func:`build_view`); when omitted, the
-    view creates its own, so it also constructs standalone. With no project
-    set on the viewer controller the view shows a "no stack open" placeholder
-    (the Projects view is a later ticket; the project can be set later via
+    :class:`~seestar_controller.enhance.viewer_controller.ViewerController`,
+    and ``suggest_controller`` the shared catalog-assist
+    :class:`~seestar_controller.photometry.suggest.SuggestionController`
+    (ticket 02, bound to the pick controller and configured with the
+    comp-search radius from the settings) — the app window passes all three
+    via :func:`build_view`; when omitted, the view creates its own, so it
+    also constructs standalone. With no project set on the viewer controller
+    the view shows a "no stack open" placeholder (the Projects view is a
+    later ticket; the project can be set later via
     :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.set_project`).
     """
 
@@ -299,6 +306,7 @@ class PhotometryView(_PlaceholderView):
         self,
         picker_controller: PickController | None = None,
         viewer_controller: ViewerController | None = None,
+        suggest_controller: SuggestionController | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -312,6 +320,7 @@ class PhotometryView(_PlaceholderView):
             if picker_controller is not None
             else PickController(viewer_controller=self._viewer_controller)
         )
+        self._suggest_controller = suggest_controller
         # the inner widget handles its own padding
         kwargs.setdefault("margin_top", 0)
         kwargs.setdefault("margin_bottom", 0)
@@ -324,6 +333,7 @@ class PhotometryView(_PlaceholderView):
         self._picker_widget = StarPickerWidget(
             picker_controller=self._picker_controller,
             viewer_controller=self._viewer_controller,
+            suggest_controller=self._suggest_controller,
         )
         self.append(self._picker_widget)
 
@@ -336,6 +346,12 @@ class PhotometryView(_PlaceholderView):
     def viewer_controller(self) -> ViewerController:
         """The shared pure-layer viewer controller backing this view."""
         return self._viewer_controller
+
+    @property
+    def suggest_controller(self) -> SuggestionController:
+        """The shared pure-layer catalog-assist controller (ticket 02) driving
+        this view's suggestions panel."""
+        return self._picker_widget.suggest_controller
 
     @property
     def picker_widget(self) -> StarPickerWidget:
@@ -383,6 +399,7 @@ def build_view(
     viewer_controller: ViewerController | None = None,
     editor_controller: EditorController | None = None,
     picker_controller: PickController | None = None,
+    suggest_controller: SuggestionController | None = None,
     project: Any = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
@@ -392,9 +409,9 @@ def build_view(
     ``observe_controller`` / ``project`` are forwarded to the Observe view
     (observing tickets 01 + 03), ``viewer_controller`` /
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
-    and ``picker_controller`` / ``viewer_controller`` to the Photometry view
-    (photometry ticket 01) — the app window passes its shared controllers;
-    the other views ignore them.
+    and ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
+    to the Photometry view (photometry tickets 01 + 02) — the app window
+    passes its shared controllers; the other views ignore them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
@@ -412,5 +429,6 @@ def build_view(
         return PhotometryView(
             picker_controller=picker_controller,
             viewer_controller=viewer_controller,
+            suggest_controller=suggest_controller,
         )
     return VIEW_CLASSES[view_id]()

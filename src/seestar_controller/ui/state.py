@@ -37,7 +37,8 @@ On-disk shape (``schema_version`` :data:`SETTINGS_SCHEMA_VERSION`)::
       "settings": {
         "scope_ip": "",                                  # unset placeholder
         "key_path": "/home/.../.config/seestar-controller/key.pem",
-        "project_root": "/home/.../SeestarProjects"
+        "project_root": "/home/.../SeestarProjects",
+        "photometry_comp_search_radius_deg": "1.5"        # catalog-assist cone radius
       }
     }
 
@@ -54,6 +55,7 @@ leftover survives a failed write.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -127,7 +129,20 @@ MAX_WINDOW_COORD = 32768
 DEFAULT_DARK_THEME = True
 
 #: The keys of the settings dict.
-SETTINGS_KEYS: tuple[str, ...] = ("scope_ip", "key_path", "project_root")
+SETTINGS_KEYS: tuple[str, ...] = (
+    "scope_ip",
+    "key_path",
+    "project_root",
+    "photometry_comp_search_radius_deg",
+)
+
+#: Default catalog-assist comp-search radius, in degrees (photometry ticket
+#: 02) — a sane cone around the target for standard-star suggestions.
+DEFAULT_COMP_SEARCH_RADIUS_DEG = 1.5
+
+#: Largest comp-search radius accepted, in degrees (mirrors the catalog's
+#: cone-search limit, ``catalog.standards.MAX_RADIUS_DEG``).
+MAX_COMP_SEARCH_RADIUS_DEG = 180.0
 
 #: The default settings dict (``scope_ip`` empty = unset placeholder, see
 #: docs/wiki/assumptions.md).
@@ -135,6 +150,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "scope_ip": "",
     "key_path": str(DEFAULT_KEY_PATH),
     "project_root": str(DEFAULT_PROJECT_ROOT),
+    "photometry_comp_search_radius_deg": f"{DEFAULT_COMP_SEARCH_RADIUS_DEG:g}",
 }
 
 #: A scope address: an IPv4 address or a hostname (labels of letters, digits,
@@ -280,6 +296,31 @@ def validate_path_setting(value: Any, name: str) -> str:
     if not value.strip():
         return ""  # empty = unset
     return value
+
+
+def validate_comp_search_radius(value: Any) -> str:
+    """Validate the photometry comp-search radius setting (photometry ticket
+    02): a number in ``(0, MAX_COMP_SEARCH_RADIUS_DEG]`` degrees, given as a
+    string (settings values are strings) or a number; bools rejected.
+
+    Returns the normalized string form (``f"{radius:g}"``). Raises
+    :class:`SettingsValidationError` naming the value otherwise. Public
+    because the settings-dialog layer (:mod:`.settings`) reuses it.
+    """
+    name = "photometry_comp_search_radius_deg"
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise SettingsValidationError(f"{name} must be a number, got {value!r}")
+    try:
+        radius = float(value)
+    except (TypeError, ValueError):
+        raise SettingsValidationError(
+            f"{name} must be a number of degrees, got {value!r}"
+        ) from None
+    if not math.isfinite(radius) or not 0.0 < radius <= MAX_COMP_SEARCH_RADIUS_DEG:
+        raise SettingsValidationError(
+            f"{name} must be in (0, {MAX_COMP_SEARCH_RADIUS_DEG:g}] degrees, got {value!r}"
+        )
+    return f"{radius:g}"
 
 
 def _atomic_write_json(path: Path, obj: Any) -> Path:
@@ -448,7 +489,7 @@ class AppState:
     @property
     def settings(self) -> dict[str, str]:
         """A copy of the settings dict (``scope_ip``, ``key_path``,
-        ``project_root``)."""
+        ``project_root``, ``photometry_comp_search_radius_deg``)."""
         return dict(self._settings)
 
     def get_setting(self, key: str) -> str:
@@ -465,7 +506,10 @@ class AppState:
 
         - ``scope_ip`` — empty string (unset) or an IPv4 address / hostname;
         - ``key_path`` / ``project_root`` — a path string; empty (unset)
-          allowed and normalized to ``""``.
+          allowed and normalized to ``""``;
+        - ``photometry_comp_search_radius_deg`` — a number of degrees in
+          ``(0, MAX_COMP_SEARCH_RADIUS_DEG]`` (string or number), normalized
+          to its ``%g`` string form.
 
         Raises :class:`SettingsValidationError` for an unknown key or an
         invalid value.
@@ -476,6 +520,8 @@ class AppState:
             )
         if key == "scope_ip":
             value = validate_scope_ip(value)
+        elif key == "photometry_comp_search_radius_deg":
+            value = validate_comp_search_radius(value)
         else:
             value = validate_path_setting(value, key)
         self._settings[key] = value

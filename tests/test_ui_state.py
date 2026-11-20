@@ -128,10 +128,12 @@ def test_defaults(state):
     assert state.get_setting("scope_ip") == ""
     assert state.get_setting("key_path") == str(DEFAULT_KEY_PATH)
     assert state.get_setting("project_root") == str(DEFAULT_PROJECT_ROOT)
+    assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"
     assert set(state.settings) == set(SETTINGS_KEYS) == {
         "scope_ip",
         "key_path",
         "project_root",
+        "photometry_comp_search_radius_deg",
     }
 
 
@@ -428,6 +430,46 @@ def test_path_settings_accept_paths_and_round_trip(settings_file, state):
     loaded = AppState(settings_file).load()
     assert loaded.get_setting("key_path") == "/tmp/keys/key.pem"
     assert loaded.get_setting("project_root") == "/mnt/data/SeestarProjects"
+
+
+# --- photometry comp-search radius setting (photometry ticket 02) ----------------------
+
+
+def test_comp_search_radius_default_and_normalization(state):
+    assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"
+    assert state.set_setting("photometry_comp_search_radius_deg", "2") == "2"
+    assert state.set_setting("photometry_comp_search_radius_deg", 0.25) == "0.25"
+    assert state.set_setting("photometry_comp_search_radius_deg", " 1.50 ") == "1.5"
+    assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"
+
+
+@pytest.mark.parametrize(
+    "bad", ["0", "-1", "0.0", "181", "180.5", "abc", "", "  ", float("nan"), float("inf"), 0, -2, 200, True, None, ["1"]]
+)
+def test_comp_search_radius_invalid(state, bad):
+    with pytest.raises(SettingsValidationError):
+        state.set_setting("photometry_comp_search_radius_deg", bad)
+    assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"  # unchanged
+
+
+def test_comp_search_radius_round_trip(settings_file, state):
+    state.set_setting("photometry_comp_search_radius_deg", "2.5")
+    state.save()
+    loaded = AppState(settings_file).load()
+    assert loaded.get_setting("photometry_comp_search_radius_deg") == "2.5"
+    # an old settings file without the key keeps the default
+    settings_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "settings": {"scope_ip": "seestar.local", "unknown": "ignored"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = AppState(settings_file).load()
+    assert loaded.get_setting("photometry_comp_search_radius_deg") == "1.5"
+    assert loaded.get_setting("scope_ip") == "seestar.local"
 
 
 def test_unknown_setting_key_raises(state):

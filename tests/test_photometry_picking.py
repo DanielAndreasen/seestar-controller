@@ -13,8 +13,10 @@ Also covered: the package boundary — a subprocess test (no ``gi``, no
 ``link``, no ``ui``, no ``enhance`` in ``sys.modules``, the widget layer stays
 lazy) + a source-scan audit mirroring tests/test_enhance_fits.py.
 
-The widget layer (``StarPickerView``) is tested in
-tests/test_photometry_widgets.py (skips headless).
+The catalog-assist pure layer (ticket 02, :mod:`seestar_controller.photometry.suggest`)
+is tested in tests/test_photometry_suggest.py; the widget layer
+(``StarPickerView`` + ``SuggestionsPanel``) in tests/test_photometry_widgets.py
+(skips headless).
 """
 
 import dataclasses
@@ -53,10 +55,10 @@ from seestar_controller.store import (
 PHOTOMETRY_PACKAGE_DIR = Path(photometry.__file__).resolve().parent
 
 #: The pure photometry modules — no ``gi`` import allowed (subprocess-enforced).
-PURE_PHOTOMETRY_MODULES = ("__init__", "picking")
+PURE_PHOTOMETRY_MODULES = ("__init__", "picking", "suggest")
 
 #: The widget photometry modules — ``gi`` at module top, lazy-exported via PEP 562.
-WIDGET_PHOTOMETRY_MODULES = ("star_picker",)
+WIDGET_PHOTOMETRY_MODULES = ("star_picker", "suggestions_panel")
 
 T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
 DATE1 = "2026-11-20T22:00:00.000"
@@ -568,12 +570,15 @@ def test_pure_photometry_modules_import_no_gi_no_link_no_ui_no_enhance_and_widge
         "import sys;"
         "import seestar_controller.photometry;"
         "import seestar_controller.photometry.picking;"
+        "import seestar_controller.photometry.suggest;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
         "assert 'seestar_controller.enhance' not in sys.modules, 'enhance imported eagerly';"
         "assert 'seestar_controller.photometry.star_picker' not in sys.modules, "
         "'star_picker imported eagerly';"
+        "assert 'seestar_controller.photometry.suggestions_panel' not in sys.modules, "
+        "'suggestions_panel imported eagerly';"
         "print('clean')"
     )
     result = subprocess.run(
@@ -607,9 +612,14 @@ def test_every_photometry_module_is_pure_or_widget_and_lazy_exported():
 def test_public_api_is_exported_from_package():
     for name in (
         "ApertureParams",
+        "CompSuggestion",
         "DEFAULT_APERTURE_RADIUS_PX",
+        "DEFAULT_COMP_SEARCH_RADIUS_DEG",
         "DEFAULT_SKY_IN_PX",
         "DEFAULT_SKY_OUT_PX",
+        "LookupFn",
+        "MAX_COMP_SEARCH_RADIUS_DEG",
+        "PhotometryError",
         "PickController",
         "PickListener",
         "PickSession",
@@ -619,15 +629,26 @@ def test_public_api_is_exported_from_package():
         "ROLES",
         "SNAP_WINDOW_PX",
         "StarPickSpec",
+        "SuggestListener",
+        "SuggestionController",
+        "SuggestionError",
+        "SuggestionSnapshot",
+        "default_standards_lookup",
         "pixel_to_sky",
         "sky_to_pixel",
     ):
         assert name in photometry.__all__, name
         assert hasattr(photometry, name), name
     assert "StarPickerView" in photometry.__all__
-    assert photometry._WIDGET_EXPORTS == {"StarPickerView": "star_picker"}
+    assert "SuggestionsPanel" in photometry.__all__
+    assert photometry._WIDGET_EXPORTS == {
+        "StarPickerView": "star_picker",
+        "SuggestionsPanel": "suggestions_panel",
+    }
     assert photometry.PickController is picking.PickController
     assert photometry.pixel_to_sky is picking.pixel_to_sky
-    assert issubclass(photometry.PickingError, ValueError)
+    assert issubclass(photometry.PhotometryError, ValueError)
+    assert issubclass(photometry.PickingError, photometry.PhotometryError)
+    assert issubclass(photometry.SuggestionError, photometry.PhotometryError)
     with pytest.raises(AttributeError):
         photometry.no_such_thing  # type: ignore[attr-defined]
