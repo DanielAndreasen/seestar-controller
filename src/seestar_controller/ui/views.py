@@ -60,6 +60,12 @@ via :func:`build_view`).
 :data:`VIEW_CLASSES` maps the pure-layer view ids
 (:mod:`seestar_controller.ui.state`) to the widget classes, and
 :func:`build_view` is the factory the app window uses.
+
+**Scrollable pages:** every page (:class:`_PlaceholderView`) wraps its content
+in a vertical :class:`Gtk.ScrolledWindow` whose minimum height is only
+:data:`PAGE_MIN_CONTENT_HEIGHT` — pages scroll instead of demanding their full
+natural height, so the window's minimum size stays small enough for the WM to
+apply maximize on laptop screens (see the class docstring).
 """
 
 from __future__ import annotations
@@ -118,6 +124,15 @@ from .settings import SettingsController  # noqa: E402
 from .state import VIEWS, AppState, UnknownViewError, view_by_id  # noqa: E402
 
 
+#: Minimum content height (pixels) of a view page's scrolled window. Every
+#: page scrolls vertically instead of demanding its full natural height, so
+#: the window's program-specified minimum size stays small and the WM can
+#: actually apply maximize on small screens (a page whose minimum exceeds the
+#: workarea makes the WM drop the maximize request, leaving the window
+#: smaller than the screen with controls off-screen).
+PAGE_MIN_CONTENT_HEIGHT = 240
+
+
 class _PlaceholderView(Gtk.Box):
     """Base placeholder view: a centered label naming the view.
 
@@ -125,6 +140,14 @@ class _PlaceholderView(Gtk.Box):
     :class:`~seestar_controller.ui.state.View`) and may override
     :meth:`_build_content` to append real content instead of the placeholder
     label.
+
+    Layout: the page is a thin outer box whose single child is a
+    :class:`Gtk.ScrolledWindow` (vertical scrolling, never horizontal) over
+    an inner content box (:attr:`content`) that :meth:`_build_content` fills.
+    The scrolled window's minimum height is only
+    :data:`PAGE_MIN_CONTENT_HEIGHT`, so the page — and therefore the
+    :class:`Adw.ViewStack` and the window — never demands more than that;
+    taller content stays reachable through the scrollbar.
     """
 
     view_id: str = ""
@@ -132,15 +155,40 @@ class _PlaceholderView(Gtk.Box):
 
     def __init__(self, **kwargs) -> None:
         kwargs.setdefault("orientation", Gtk.Orientation.VERTICAL)
-        kwargs.setdefault("spacing", 12)
-        kwargs.setdefault("margin_top", 24)
-        kwargs.setdefault("margin_bottom", 24)
-        kwargs.setdefault("margin_start", 24)
-        kwargs.setdefault("margin_end", 24)
+        kwargs.setdefault("spacing", 0)
         kwargs.setdefault("hexpand", True)
         kwargs.setdefault("vexpand", True)
         super().__init__(**kwargs)
+        self._scrolled = Gtk.ScrolledWindow(
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            min_content_height=PAGE_MIN_CONTENT_HEIGHT,
+            hexpand=True,
+            vexpand=True,
+        )
+        self._content = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            hexpand=True,
+            vexpand=True,
+            margin_top=12,
+            margin_bottom=12,
+            margin_start=12,
+            margin_end=12,
+        )
+        self._scrolled.set_child(self._content)
+        self.append(self._scrolled)
         self._build_content()
+
+    @property
+    def scrolled(self) -> Gtk.ScrolledWindow:
+        """The page's vertical scrolled window (the page's only child)."""
+        return self._scrolled
+
+    @property
+    def content(self) -> Gtk.Box:
+        """The inner content box :meth:`_build_content` fills."""
+        return self._content
 
     def _build_content(self) -> None:
         label = Gtk.Label(
@@ -148,7 +196,7 @@ class _PlaceholderView(Gtk.Box):
             halign=Gtk.Align.CENTER,
             valign=Gtk.Align.CENTER,
         )
-        self.append(label)
+        self._content.append(label)
 
 
 class ObserveView(_PlaceholderView):
@@ -188,12 +236,6 @@ class ObserveView(_PlaceholderView):
             )
         )
         self._project = project
-        # the inner widget handles its own padding
-        kwargs.setdefault("margin_top", 0)
-        kwargs.setdefault("margin_bottom", 0)
-        kwargs.setdefault("margin_start", 0)
-        kwargs.setdefault("margin_end", 0)
-        kwargs.setdefault("spacing", 0)
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
@@ -202,7 +244,7 @@ class ObserveView(_PlaceholderView):
             queue_controller=self._queue_controller,
             project=self._project,
         )
-        self.append(self._observe_widget)
+        self._content.append(self._observe_widget)
 
     @property
     def queue_controller(self) -> PlanQueueController:
@@ -262,19 +304,13 @@ class EnhanceView(_PlaceholderView):
             if editor_controller is not None
             else EditorController(self._viewer_controller)
         )
-        # the inner widget handles its own padding
-        kwargs.setdefault("margin_top", 0)
-        kwargs.setdefault("margin_bottom", 0)
-        kwargs.setdefault("margin_start", 0)
-        kwargs.setdefault("margin_end", 0)
-        kwargs.setdefault("spacing", 0)
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
         self._editor = EnhanceEditorWidget(
             self._viewer_controller, self._editor_controller
         )
-        self.append(self._editor)
+        self._content.append(self._editor)
 
     @property
     def viewer_controller(self) -> ViewerController:
@@ -365,12 +401,6 @@ class PhotometryView(_PlaceholderView):
             if run_controller is not None
             else RunController(picker_controller=self._picker_controller)
         )
-        # the inner widget handles its own padding
-        kwargs.setdefault("margin_top", 0)
-        kwargs.setdefault("margin_bottom", 0)
-        kwargs.setdefault("margin_start", 0)
-        kwargs.setdefault("margin_end", 0)
-        kwargs.setdefault("spacing", 0)
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
@@ -388,7 +418,7 @@ class PhotometryView(_PlaceholderView):
             shrink_end_child=False,
             wide_handle=True,
         )
-        self.append(paned)
+        self._content.append(paned)
 
     @property
     def picker_controller(self) -> PickController:
@@ -475,12 +505,6 @@ class LightcurveView(_PlaceholderView):
             if period_controller is not None
             else PeriodController(self._lightcurve_controller)
         )
-        # the inner widgets handle their own padding
-        kwargs.setdefault("margin_top", 0)
-        kwargs.setdefault("margin_bottom", 0)
-        kwargs.setdefault("margin_start", 0)
-        kwargs.setdefault("margin_end", 0)
-        kwargs.setdefault("spacing", 0)
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
@@ -497,11 +521,11 @@ class LightcurveView(_PlaceholderView):
         toolbar.append(self._export_folded_csv_button)
         self._export_status = Gtk.Label(label="", halign=Gtk.Align.START, hexpand=True)
         toolbar.append(self._export_status)
-        self.append(toolbar)
+        self._content.append(toolbar)
         self._lightcurve_widget = LightcurveViewWidget(self._lightcurve_controller)
-        self.append(self._lightcurve_widget)
+        self._content.append(self._lightcurve_widget)
         self._period_widget = PeriodViewWidget(self._period_controller)
-        self.append(self._period_widget)
+        self._content.append(self._period_widget)
 
     # -- ticket 04: CSV export ------------------------------------------------------------
 
