@@ -73,6 +73,7 @@ from .picking import (
     PickingError,
     PickSession,
     StarPickSpec,
+    has_celestial_wcs,
 )
 from .suggest import SuggestionController
 from .suggestions_panel import SuggestionsPanel
@@ -570,8 +571,9 @@ class StarPickerView(Gtk.Box):
             return
         target = next((p for p in snapshot.picks if p.role == ROLE_TARGET), None)
         comps = sum(1 for p in snapshot.picks if p.role == ROLE_COMP)
+        wcs_note = "" if has_celestial_wcs(image.header) else " — no WCS (pixel-only picks)"
         self._info_label.set_label(
-            f"{image.width}x{image.height} — {len(snapshot.picks)} pick(s): "
+            f"{image.width}x{image.height}{wcs_note} — {len(snapshot.picks)} pick(s): "
             f"target {'set' if target is not None else '—'}, {comps} comp(s)"
         )
 
@@ -590,7 +592,17 @@ class StarPickerView(Gtk.Box):
         except PickingError as exc:
             self._set_status(str(exc), error=True)
             return
-        self._set_status(f"picked {spec.describe()}", error=False)
+        if spec.coord is None:
+            # pixel-only pick: the frame has no usable WCS (e.g. a raw Seestar
+            # sub) — the pick works in pixel space, sky coords need a
+            # plate-solved frame (ticket 05)
+            self._set_status(
+                f"picked {spec.describe()} — pixel-only (no WCS on this frame; "
+                "plate-solve it for sky coords)",
+                error=False,
+            )
+        else:
+            self._set_status(f"picked {spec.describe()}", error=False)
 
     def _next_label(self, role: str) -> str:
         """The automatic label for the next pick: ``"Target"`` / ``"Comp A"``,

@@ -22,7 +22,9 @@ suggestion as a comp pick at the exact ``sky_to_pixel`` pixel (round-trip on
 the synthetic WCS), duplicate/out-of-frame/bad-index/no-picker/no-image
 errors, following the target pick, the listener pattern (idempotent, isolated,
 frozen snapshots), the lazy default catalog facade, and save/load with a
-catalog-added comp.
+catalog-added comp. Ticket 05: a pixel-only target (frame without a WCS, e.g.
+a raw Seestar sub) degrades gracefully — the "plate-solve first" hint in the
+snapshot ``error``, no catalog lookup, no exception.
 
 The widget layer (``SuggestionsPanel``) is tested in
 tests/test_photometry_widgets.py (skips headless).
@@ -45,12 +47,14 @@ from seestar_controller.catalog.coords import J2000Coord, angular_distance
 from seestar_controller.catalog.facade import CatalogUnavailableError
 from seestar_controller.catalog.standards import StandardStar
 from seestar_controller.photometry import (
+    NO_WCS_HINT,
     PhotometryError,
     PickController,
     PickingError,
     SuggestionController,
     SuggestionError,
     SuggestionSnapshot,
+    has_celestial_wcs,
     pixel_to_sky,
     sky_to_pixel,
 )
@@ -270,6 +274,75 @@ def test_refresh_without_target_is_empty_and_does_not_call_lookup():
     snap = ctrl.refresh()
     assert snap.target is None and snap.suggestions == ()
     assert calls == []
+
+
+# --- ticket 05: pixel-only target (frame without WCS) -> plate-solve hint, never an error -------
+
+
+def no_wcs_header() -> dict:
+    """A Seestar-style SUB header: NAXIS=2, NO CTYPE cards (no celestial WCS)."""
+    return {
+        "SIMPLE": True,
+        "BITPIX": 16,
+        "NAXIS": 2,
+        "NAXIS1": 64,
+        "NAXIS2": 64,
+        "COMMENT": "  FITS (Flexible Image Transport System) format is defined in 'Astronomy\n  and Astrophysics'",
+        "RA": 359.47083,
+        "DEC": 56.726111,
+        "DATE-OBS": "2026-11-20T21:33:33.024310",
+        "OBJECT": "M 31",
+    }
+
+
+def test_pixel_only_target_gives_plate_solve_hint_without_lookup_or_exception():
+    """A target picked on a frame WITHOUT a WCS (a raw Seestar sub) is
+    pixel-only: catalog assist degrades gracefully — the catalog lookup is
+    NOT called, nothing raises, and the snapshot carries the clear
+    "plate-solve first" hint (ticket 05)."""
+    calls: list = []
+    picker = PickController()
+    picker.set_image(FakeImage(synthetic_image(64), no_wcs_header()))
+    image = picker.image
+    assert image is not None
+    assert not has_celestial_wcs(image.header)
+    picker.pick_at(40, 30, "target", label="Target", snap=False)
+    assert picker.target is not None and picker.target.coord is None
+
+    ctrl = SuggestionController(picker, lookup=make_lookup([STAR_A], calls), radius_deg=1.5)
+    snap = ctrl.snapshot  # the attach already refreshed
+    assert snap.target is None and snap.suggestions == ()
+    assert snap.error == NO_WCS_HINT and "plate-solve" in snap.error
+    assert calls == []  # no catalog lookup without sky coords
+    # refresh keeps the hint and never raises
+    snap = ctrl.refresh()
+    assert snap.error == NO_WCS_HINT and snap.suggestions == () and calls == []
+    # adding a suggestion is impossible (no suggestions) — a clean error
+    with pytest.raises(SuggestionError, match="out of range"):
+        ctrl.add_suggestion(0)
+    # a radius change with a pixel-only target keeps the hint, no lookup
+    ctrl.set_radius(2.0)
+    assert ctrl.snapshot.error == NO_WCS_HINT and calls == []
+
+    # recovery: the same picker on a WCS frame clears the hint and searches
+    picker.set_image(FakeImage(synthetic_image(64), wcs_header()))
+    picker.pick_at(40, 30, "target", snap=False)
+    snap = ctrl.snapshot
+    assert snap.error is None and calls and [s.name for s in snap.suggestions] == ["APASS A"]
+    assert snap.target == picker.target.coord
+
+
+def test_pixel_only_target_hint_notifies_listeners_and_clears_on_clear():
+    seen: list[SuggestionSnapshot] = []
+    picker = PickController()
+    picker.set_image(FakeImage(synthetic_image(64), no_wcs_header()))
+    ctrl = SuggestionController(picker, lookup=make_lookup([STAR_A]), radius_deg=1.5)
+    ctrl.add_listener(seen.append)
+    picker.pick_at(40, 30, "target", snap=False)  # auto-triggers the hint state
+    assert seen and seen[-1].error == NO_WCS_HINT and seen[-1].suggestions == ()
+    # clearing the picks returns to the clean empty state (no hint)
+    picker.clear()
+    assert ctrl.snapshot.error is None and ctrl.snapshot.target is None
 
 
 def test_refresh_lists_suggestions_nearest_first_and_filters_by_radius(picker, target_coord):
