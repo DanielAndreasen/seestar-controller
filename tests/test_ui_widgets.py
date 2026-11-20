@@ -27,7 +27,11 @@ window content sits in an ``Adw.ToastOverlay`` fed by the shared pure
 toasts, severity-based timeouts, main-thread marshalling), the header bar
 has a notifications button opening the user-invoked ``NotificationLogDialog``
 (bus log, newest first, Clear), and the app owns the shared bus +
-``NotificationController``.
+``NotificationController``. The fit tests assert that every view page wraps
+its content in a vertical ``Gtk.ScrolledWindow`` with a small minimum content
+height (pages scroll instead of demanding their full natural height) and that
+the window's program-specified minimum size stays well under 1600x900, so the
+WM can actually apply the maximize request on laptop screens.
 """
 
 import importlib.util
@@ -178,6 +182,49 @@ def test_window_opens_maximized(app, gtk):
         ui_state.DEFAULT_WINDOW_WIDTH,
         ui_state.DEFAULT_WINDOW_HEIGHT,
     )
+
+
+def test_view_pages_scroll_instead_of_demanding_full_height(app, gtk):
+    """Every view page wraps its content in a vertical Gtk.ScrolledWindow
+    whose minimum height is only PAGE_MIN_CONTENT_HEIGHT — a page scrolls
+    instead of forcing the window to demand its full natural height (a page
+    minimum taller than the workarea is what made the WM drop the maximize
+    request, leaving controls off-screen on laptop screens)."""
+    from seestar_controller.ui.app import SeestarWindow
+    from seestar_controller.ui.views import PAGE_MIN_CONTENT_HEIGHT
+
+    window = SeestarWindow(app, app.state)
+    stack = window.view_stack
+    for view in ui_state.VIEWS:
+        page = stack.get_child_by_name(view.id)
+        assert page is not None
+        scrolled = page.scrolled
+        assert isinstance(scrolled, Gtk.ScrolledWindow)
+        assert page.get_first_child() is scrolled  # the page's only child
+        # GTK4 wraps a non-scrollable child in a Gtk.Viewport automatically
+        inner = scrolled.get_child()
+        if isinstance(inner, Gtk.Viewport):
+            inner = inner.get_child()
+        assert inner is page.content
+        assert scrolled.props.hscrollbar_policy == Gtk.PolicyType.NEVER
+        assert scrolled.props.vscrollbar_policy == Gtk.PolicyType.AUTOMATIC
+        assert scrolled.props.min_content_height == PAGE_MIN_CONTENT_HEIGHT
+        minimum, _natural = page.get_preferred_size()
+        assert minimum.height <= PAGE_MIN_CONTENT_HEIGHT + 160  # small slack
+        assert minimum.width <= 1200
+
+
+def test_window_minimum_size_fits_a_laptop_screen(app, gtk):
+    """The window's program-specified minimum size must stay well under a
+    1600x900 laptop screen: when the minimum exceeds the workarea, the WM
+    (marco) leaves _NET_WM_STATE empty and the maximize request is silently
+    not applied."""
+    from seestar_controller.ui.app import SeestarWindow
+
+    window = SeestarWindow(app, app.state)
+    minimum, _natural = window.get_preferred_size()
+    assert minimum.width < 1600
+    assert minimum.height < 900
 
 
 def test_restored_smaller_geometry_does_not_unmaximize_the_window(app, gtk, tmp_path):
