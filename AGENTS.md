@@ -10,7 +10,7 @@ New features are developed on a new branch off `main`, not on `main` itself. Mer
 
 ## Lint/typecheck (last implementation step)
 
-Before committing a ticket's code, run `uv run ty check` and `uv run ruff check` and fix all errors and warnings they report.
+Before committing a ticket's code, run `uv tool run ty check` and `uv tool run ruff check` and fix all errors and warnings they report.
 
 ## Agent skills
 
