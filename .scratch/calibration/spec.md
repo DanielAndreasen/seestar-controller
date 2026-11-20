@@ -4,40 +4,39 @@ Status: needs-info
 
 ## Problem Statement
 
-Before observing, the SeeStar app performs an instrument calibration: leveling the scope (so the alt-az mount knows its horizontal plane) and a star alignment (plate-solve based position calibration, so goto accuracy is good). Without this, gotos land off-target and tracking drifts. The user wants the same flow available from this app before starting a night.
+Instrument calibration (leveling the scope, star alignment) is physical work done at the scope — the user adjusts the tripod while standing next to it, using the official Seestar phone app. The desktop app cannot do that part. What the desktop app should do is know whether the scope is calibrated: read the level/alignment state from the device, show it, record it per session, and warn before starting a night if the mount was not calibrated.
 
 ## Solution
 
-A calibration flow in the app that mirrors the official Seestar app: (1) level the scope — drive the mount to level using the built-in routine and show live tilt readout until within tolerance; (2) star alignment — slew to one or more bright stars, capture a frame, plate-solve it locally to get the actual pointing, and feed the offset back so subsequent gotos are accurate. Calibration state (level OK, alignment stars done) is stored per session/project and shown in the Observe view, gating "Start night".
+A calibration-status flow: the desktop app polls/reads the scope's calibration state (level OK, alignment done — via the fw 9.75 app-state tree through the link compat shim), displays it in the Observe view, records it in the session log when a night starts, and warns (not blocks) on "Start night" if calibration is missing or stale. Optionally, the desktop can verify pointing independently (slew to a bright star, capture, plate-solve locally) as a cross-check.
 
 ## User Stories
 
-1. As a user, I want to level the scope from the app, with a live tilt/level indicator, so that the mount's horizontal reference is set before observing.
-2. As a user, I want to run a star alignment: the app slews to a suggested bright star, captures and plate-solves a frame, computes the pointing offset, and repeats for N stars, so that goto accuracy improves.
-3. As a user, I want to see alignment quality (RMS error, per-star residuals) after the procedure, so that I know whether to redo it.
-4. As a user, I want the calibration state (level + alignment) shown in the Observe view and recorded in the session log, so that I know the night started from a calibrated mount.
-5. As a user, I want "Start night" to warn (not hard-block) if level/alignment was not done this session, so that I can proceed deliberately.
-6. As a user, I want the alignment to be repeatable mid-night (re-align on a star) if gotos start missing.
+1. As a user, I level and align the scope with the official phone app while standing at the scope, so that the physical calibration is done where I can adjust it.
+2. As a user, I want the desktop app to show the scope's current level/alignment state (read from the device), so that I can confirm from my office that calibration was done.
+3. As a user, I want "Start night" to warn if the scope reports not-level or not-aligned, so that I don't waste a night on a misaligned mount — but still allow me to proceed deliberately.
+4. As a user, I want the calibration state at night start recorded in the session log, so that later analysis knows the mount was calibrated.
+5. As a user, I optionally want a desktop-side pointing cross-check (goto a bright star, plate-solve a frame, compare), so that I can verify alignment quality without going outside.
 
 ## Implementation Decisions
 
-- Pure `calibration/` package (no gi): level-state parsing from device state (fw 9.75 `iscope_get_app_state` tree via link/compat.py — check what level/tilt fields exist; probe live read-only), alignment math (plate-solve result -> RA/Dec offset -> RMS), star suggestion (bright catalog stars near current pointing via catalog module), session recording via store/sessions.
-- Plate solving: local solver (e.g. astrometry.net solve-field if available, or a lightweight WCS fit) — decide during implementation; must work offline. Fallback: use the scope's own reported position if the firmware exposes solved coordinates.
-- Link: reuse Device facade (state/goto/start_stack/stop_stack/download_frames) through the fw-9.75 compat shim; any new wire methods (e.g. a dedicated level command) must be probed live read-only/bad-param only and added to link/compat.py with legacy fallback + mock support. Never send mutating commands with valid params to the real scope during development.
-- GUI: calibration section in the Observe view (Level button + live indicator, Align button + star list + RMS readout, per-session status), wired into the night-start warning.
-- Storage: calibration record per session in the project DB (schema bump + migration per project-store 07 pattern).
+- Pure `calibration/` package (no gi): parse level/alignment fields from the device app-state tree (fw 9.75 `iscope_get_app_state` via link/compat.py; probe the live scope read-only to discover the exact fields — never send mutating commands with valid params), calibration-state model (level_ok, aligned, timestamp, source), session recording via store/sessions (schema bump + migration per project-store 07 pattern).
+- Link: read-only use of Device.state(); any new wire method probed live read-only/bad-param only, added to link/compat.py with legacy fallback + mock support (firmware knob).
+- Optional plate-solve cross-check: local solver (astrometry.net solve-field or WCS fit), offline; only if cheap — otherwise out of scope for v1.
+- GUI: calibration status card in the Observe view (level/alignment indicators, last-calibrated time, refresh), warning toast/inline on Start night when not calibrated; state recorded into the session at night start.
+- No driving of leveling motors from the desktop app.
 
 ## Testing Decisions
 
-- Pure tests: offset/RMS math, star suggestion filtering, level-state parsing from sample app-state trees, session recording — no gi, no network.
-- Mock-scope tests for the full flow (mock serves frames + state; firmware knob "9.75"/"legacy"/"both" from link compat).
+- Pure tests: app-state parsing for level/alignment (sample trees for legacy + 9.75), state model transitions, session recording — no gi, no network.
+- Mock-scope tests: mock serves app-state with calibration fields (firmware knob), Observe controller warning logic.
 - Widget tests via ui harness; full suite stays green.
 
 ## Out of Scope
 
-- Polar alignment for equatorial mode (S50 is alt-az; wedge use is out of scope for now); photometric/bias-dark-flat calibration (separate concern, see earlier draft superseded); permanent mount modeling.
+- Driving the leveling motors / performing alignment from the desktop app (done with the phone app at the scope); bias/dark/flat calibration (different concern); polar alignment in equatorial mode.
 
 ## Further Notes
 
-- Depends on: seestar-link (state/goto/frames + compat shim), catalog (bright-star suggestions), project-store (session records), observing (night flow + gating).
-- Open questions for the user: how many alignment stars does the official app use (1 vs 3)? Should leveling be automatic (motors) or manual (user adjusts tripod) with live readout?
+- Depends on: seestar-link (state + compat shim), project-store (session records), observing (night flow + warning).
+- Open question for the user: does the fw 9.75 app-state tree actually expose level/alignment fields, or does the phone app compute them locally? (To be answered by read-only live probing during implementation.)
