@@ -5,21 +5,27 @@ docs/wiki/assumptions.md) and run on the desktop, where the system packages
 
 Guards, in order: ``pytest.importorskip("gi")`` (no PyGObject at all),
 ``gi.require_version`` for the Gtk 4.0 / Adw 1 typelibs, and a
-``Gtk.init_check()`` fixture (no display -> skip). What is asserted when
-they run: every view widget constructs, the window holds the five stack
-pages, sidebar selection switches the view and updates the pure-layer
-state, the dark-theme helper drives the Adw style manager, geometry
-capture/restore round-trips through the pure settings layer, and the
-settings dialog (ticket 02) live-validates and persists through the pure
-``SettingsController``, and the header-bar connection panel (ticket 03)
-reflects the pure ``ConnectionController`` states (connect/disconnect button
-+ status label, error styling) and shares the app's controller, and the
-notification shell (ticket 04) is wired: the window content sits in an
-``Adw.ToastOverlay`` fed by the shared pure ``NotificationBus`` through a
-``NotificationToasts`` presenter (non-modal toasts, severity-based timeouts,
-main-thread marshalling), the header bar has a notifications button opening
-the user-invoked ``NotificationLogDialog`` (bus log, newest first, Clear),
-and the app owns the shared bus + ``NotificationController``.
+``Gtk.init_check()`` fixture (no display -> skip). Dummy-backend note: when
+``gi`` is importable but there is no display, ``Gtk.init_check()`` returns
+False and these tests skip; on the desktop they run against a real display or
+a virtual one (``xvfb-run -a uv run pytest``), which stands in for a dummy
+GTK backend. What is asserted when they run: the ticket-05 smoke test
+constructs EVERY view class and adds it to an ``Adw.ViewStack`` (no exception,
+expected widget types, one page per view id) and instantiates the application
+window holding the five stack pages; sidebar selection switches the view and
+updates the pure-layer state, the dark-theme helper drives the Adw style
+manager, geometry capture/restore round-trips through the pure settings
+layer, and the settings dialog (ticket 02) live-validates and persists
+through the pure ``SettingsController``, and the header-bar connection panel
+(ticket 03) reflects the pure ``ConnectionController`` states
+(connect/disconnect button + status label, error styling) and shares the
+app's controller, and the notification shell (ticket 04) is wired: the
+window content sits in an ``Adw.ToastOverlay`` fed by the shared pure
+``NotificationBus`` through a ``NotificationToasts`` presenter (non-modal
+toasts, severity-based timeouts, main-thread marshalling), the header bar
+has a notifications button opening the user-invoked ``NotificationLogDialog``
+(bus log, newest first, Clear), and the app owns the shared bus +
+``NotificationController``.
 """
 
 import importlib.util
@@ -72,6 +78,27 @@ def test_every_view_widget_constructs(gtk):
         assert widget.title == view.title
     with pytest.raises(ui_state.UnknownViewError):
         build_view("nope")
+
+
+def test_smoke_every_view_constructs_and_adds_to_a_view_stack(gtk):
+    """Ticket-05 smoke test: construct EVERY view class, add each to an
+    Adw.ViewStack — no exception, expected widget types, one page per view."""
+    from seestar_controller.ui.views import VIEW_CLASSES
+
+    stack = Adw.ViewStack()
+    for view in ui_state.VIEWS:
+        widget = VIEW_CLASSES[view.id]()
+        assert type(widget) is VIEW_CLASSES[view.id]
+        assert isinstance(widget, Gtk.Box)
+        assert widget.view_id == view.id
+        assert widget.title == view.title
+        stack.add_titled(widget, view.id, view.title)  # must not raise
+    assert stack.get_n_pages() == len(ui_state.VIEWS)
+    for view in ui_state.VIEWS:
+        page = stack.get_child_by_name(view.id)
+        assert page is not None
+        assert page.view_id == view.id
+        assert stack.get_title(page) == view.title
 
 
 def test_window_has_five_stack_pages_and_sidebar_switches_views(app, gtk):

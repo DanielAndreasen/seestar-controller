@@ -1,10 +1,15 @@
 import os
+from types import SimpleNamespace
 
 import pytest
 
 from seestar_controller.link import auth
 from seestar_controller.link.mock_scope import MockScope
 from seestar_controller.link.transport import LinkTransport
+from seestar_controller.ui.connection import ConnectionController
+from seestar_controller.ui.notifications import NotificationBus, NotificationController
+from seestar_controller.ui.settings import SettingsController
+from seestar_controller.ui.state import AppState
 
 # Keep the test suite hermetic: the protocol log is ON by default (it writes
 # under ~/.config/seestar-controller), so disable it for the whole session
@@ -49,3 +54,75 @@ def transport(mock_scope, keypair):
     t.connect()
     yield t
     t.disconnect()
+
+
+# --- ui-shell headless harness (ticket 05) ----------------------------------------
+#
+# The ui package's pure layer (state / settings / connection / notifications)
+# is fully testable without a display or GTK (docs/wiki/assumptions.md — the
+# sandbox has no gi). The helpers below build the app-level controllers exactly
+# like SeestarApplication does, but with a FakeDevice — no network, no gi — so
+# view tickets can drive controller logic headless (see tests/test_ui_harness.py).
+
+
+class FakeDevice:
+    """Duck-typed stand-in for the link Device facade — no network, no gi.
+
+    Matches the facade's event-handler shape (``add_event_handler(name,
+    handler)`` / ``remove_event_handler(name, handler)``); :meth:`emit`
+    dispatches a pushed event to the registered handlers, like the transport's
+    dispatch does.
+    """
+
+    def __init__(self, scope_state=None):
+        self._scope_state = scope_state or SimpleNamespace(mode="idle", target=None)
+        self.handlers: dict[str, list] = {}
+        self.disconnected = False
+
+    def state(self):
+        return self._scope_state
+
+    def add_event_handler(self, name, handler):
+        self.handlers.setdefault(name, []).append(handler)
+
+    def remove_event_handler(self, name, handler):
+        handlers = self.handlers.get(name, [])
+        if handler in handlers:
+            handlers.remove(handler)
+
+    def disconnect(self):
+        self.disconnected = True
+
+    def emit(self, name, event=None):
+        """Dispatch a pushed event named ``name`` to its registered handlers."""
+        for handler in list(self.handlers.get(name, ())):
+            handler(event)
+
+
+@pytest.fixture()
+def ui_harness(tmp_path):
+    """The app-level pure ui controllers with fakes — headless, no network, no gi.
+
+    Mirrors what ``SeestarApplication`` owns: an :class:`AppState` (settings
+    file inside ``tmp_path``), the ``SettingsController``, the
+    ``ConnectionController`` (fake device factory), the ``NotificationBus``,
+    and the ``NotificationController``. Returns them as a namespace together
+    with the fake ``device`` and the ``tmp_path``.
+    """
+    state = AppState(tmp_path / "settings.json")
+    state.set_setting("scope_ip", "192.168.1.50")
+    state.set_setting("project_root", str(tmp_path))  # an existing directory
+    settings = SettingsController(state)
+    device = FakeDevice()
+    connection = ConnectionController(settings, device_factory=lambda ip, key_path: device)
+    bus = NotificationBus()
+    notifications = NotificationController(bus, connection)
+    return SimpleNamespace(
+        tmp_path=tmp_path,
+        state=state,
+        settings=settings,
+        connection=connection,
+        bus=bus,
+        notifications=notifications,
+        device=device,
+    )
