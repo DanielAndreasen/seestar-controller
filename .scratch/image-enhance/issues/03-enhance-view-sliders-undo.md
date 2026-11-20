@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02, ui-shell 01
 
-**Status:** implemented in 3519c44bcf6719ddf3918d6feaa165d9592084c9
+**Status:** implemented in 994ed4ecf6719ddf3918d6feaa165d9592084c9
 
 - [x] Slider per pipeline parameter, live re-render
 - [x] Before/after toggle or split view
