@@ -51,3 +51,10 @@ class StarPickError(ProjectError, ValueError):
     Subclasses both :class:`ProjectError` and :class:`ValueError` — pick
     validation failures are value errors, so callers may catch either.
     """
+
+
+class MeasurementError(ProjectError):
+    """A measurement could not be appended or updated (see
+    :mod:`.measurements`): the frame FK does not exist, the measurement id is
+    unknown, or a ``jd``/``mag``/``mag_err`` value is invalid (non-numeric,
+    non-finite, or a negative ``mag_err``)."""
