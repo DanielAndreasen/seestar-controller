@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 03
 
-**Status:** implemented in 0180a2f
+**Status:** implemented in 0ebfede
 
 - [x] `add_measurement(project, frame_id, jd, mag, mag_err)` appends a row
 - [x] `lightcurve(project, include_excluded=False)` returns all measurements ordered by JD across sessions
