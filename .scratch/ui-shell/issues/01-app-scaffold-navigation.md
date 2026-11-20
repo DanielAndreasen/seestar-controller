@@ -4,7 +4,7 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** implemented in 3d31fb0
+**Status:** implemented in cc6a162
 
 - [x] App launches as a native GTK4/libadwaita window on the XFCE desktop
 - [x] Sidebar switches between the five views

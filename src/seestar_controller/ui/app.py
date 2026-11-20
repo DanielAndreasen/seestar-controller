@@ -169,9 +169,11 @@ class SeestarWindow(Adw.ApplicationWindow):
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
-        row = self._rows[view_id]
-        self._stack.set_visible_child_name(view_id)
-        self._state.select_view(view_id)
+        # Validate via the pure layer FIRST: an unknown id raises
+        # UnknownViewError before any widget lookup (review F1).
+        view = self._state.select_view(view_id)
+        row = self._rows[view.id]
+        self._stack.set_visible_child_name(view.id)
         sidebar = row.get_parent()
         if sidebar is not None:
             sidebar.select_row(row)
