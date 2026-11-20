@@ -17,6 +17,12 @@
   :func:`~.coords.angular_distance`, sorted by magnitude closeness to the
   target), and :func:`~.standards.find_standard_stars_cached` is its cached
   variant — the catalog assist for photometry comp picking
+- :mod:`.facade` — the single high-level entry point: :class:`~.facade.Catalog`
+  / :func:`~.facade.lookup_name` / :func:`~.facade.lookup_standards` always use
+  the cache and degrade gracefully offline — a fresh or stale (expired) cache
+  entry is served on any fetch failure, and with no cache the failure becomes
+  a clean :class:`~.facade.CatalogUnavailableError` / ``*ResponseError`, never
+  a raw traceback
 
 Module boundary (see ``.scratch/catalog/spec.md``): pure functions returning
 plain data. Nothing in this package imports GTK or
@@ -42,6 +48,12 @@ from .coords import (
     parse_coords,
     parse_dec,
     parse_ra,
+)
+from .facade import (
+    Catalog,
+    CatalogUnavailableError,
+    lookup_name,
+    lookup_standards,
 )
 from .simbad import (
     DEFAULT_MAG_FILTER,
@@ -90,8 +102,10 @@ __all__ = [
     "SIMBAD_TAP_SYNC_URL",
     "VIZIER_TABLE",
     "VIZIER_TAP_SYNC_URL",
+    "Catalog",
     "CatalogCandidate",
     "CatalogError",
+    "CatalogUnavailableError",
     "CoordinateError",
     "J2000Coord",
     "NameNotFoundError",
@@ -110,6 +124,8 @@ __all__ = [
     "fetch_vizier_tap_json",
     "find_standard_stars",
     "find_standard_stars_cached",
+    "lookup_name",
+    "lookup_standards",
     "parse_cone_response",
     "parse_coords",
     "parse_dec",

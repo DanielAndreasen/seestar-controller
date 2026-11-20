@@ -22,7 +22,9 @@ TTL is configurable per cache (:class:`QueryCache` ``ttl=``, default
 :data:`DEFAULT_TTL_S` = 24 h, ``None`` = infinite) and per write
 (:meth:`QueryCache.set` / :meth:`QueryCache.cached` ``ttl=``). A fresh entry
 is served from disk without any network access; an expired entry is removed
-and refetched.
+and refetched. :meth:`QueryCache.get_any` instead reads an entry ignoring the
+TTL (stale allowed, never removed from disk) — the offline fallback used by
+the facade in :mod:`.facade` to serve a stale entry when a fetch fails.
 
 Robustness: a corrupted, unreadable, or wrongly-shaped cache file is treated
 as a miss and refetched — reading the cache never raises. Writes are atomic
@@ -162,7 +164,8 @@ class QueryCache:
 
     Reads never raise: a missing, unreadable, corrupted, or expired entry is
     a miss (``get`` returns ``None``). Writes are atomic (see
-    :func:`_atomic_write_json`).
+    :func:`_atomic_write_json`). :meth:`get_any` is the stale-allowed read
+    used by the offline facade (:mod:`.facade`).
     """
 
     def __init__(
@@ -189,14 +192,29 @@ class QueryCache:
         or an expired entry (expired entries are also removed from disk).
         Never raises.
         """
+        found = self.get_any(query)
+        if found is None:
+            return None
+        payload, fresh = found
+        if not fresh:
+            self._discard(query)  # expired: drop the stale file, treat as miss
+            return None
+        return payload
+
+    def get_any(self, query: str) -> tuple[Any, bool] | None:
+        """Return ``(payload, is_fresh)`` for ``query``, or ``None`` on a miss.
+
+        Unlike :meth:`get`, an expired entry is returned too (with
+        ``is_fresh=False``) and is NOT removed from disk — the offline layer
+        (:mod:`.facade`) reads through this method to serve a stale entry as a
+        fallback when a fetch fails. Never raises.
+        """
         entry = self._read_entry(query)
         if entry is None:
             return None
         ttl = entry["ttl"]
-        if ttl is not None and self._now() - entry["fetched_at"] > ttl:
-            self._discard(query)  # expired: drop the stale file, treat as miss
-            return None
-        return entry["payload"]
+        fresh = ttl is None or self._now() - entry["fetched_at"] <= ttl
+        return entry["payload"], fresh
 
     def set(self, query: str, payload: Any, *, ttl: Any = _DEFAULT_TTL) -> Path:
         """Store ``payload`` for ``query`` atomically; returns the file path.
