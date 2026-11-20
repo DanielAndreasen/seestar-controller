@@ -149,8 +149,18 @@ class ObserveView(Gtk.Box):
         self._queue_editor = QueueEditor(self._queue_controller)
         left.append(self._queue_editor)
 
-        # Gtk.Box has no wrap property in GTK4; the buttons stay on one row.
-        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        # Gtk.Box has no wrap property in GTK4; a FlowBox wraps the buttons
+        # onto several lines on narrow windows, so the row's minimum width is
+        # one button (not the sum) and the window keeps a small minimum size.
+        controls = Gtk.FlowBox(
+            selection_mode=Gtk.SelectionMode.NONE,
+            homogeneous=False,
+            min_children_per_line=1,
+            max_children_per_line=6,
+            row_spacing=8,
+            column_spacing=8,
+            halign=Gtk.Align.CENTER,
+        )
         self._start_button = Gtk.Button(
             label="Start night", css_classes=["suggested-action"],
             tooltip_text="Start the queue against the connected scope",
@@ -199,7 +209,7 @@ class ObserveView(Gtk.Box):
         self._picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True)
         self._picture.set_hexpand(True)
         self._picture.set_vexpand(True)
-        self._picture.set_size_request(320, 240)
+        self._picture.set_size_request(240, 180)
         placeholder = Gtk.Label(
             label="no preview yet",
             halign=Gtk.Align.CENTER,

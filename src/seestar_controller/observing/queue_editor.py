@@ -120,7 +120,18 @@ class QueueEditor(Gtk.Box):
         self.append(group)
 
         # --- add area: mosaic / exposure / gain ---------------------------------
-        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16, halign=Gtk.Align.CENTER)
+        # A FlowBox (not a Box: GTK4 boxes do not wrap) so the controls wrap
+        # onto several lines on narrow windows — the row's minimum width is
+        # one control, not the sum, keeping the window's minimum size small.
+        controls = Gtk.FlowBox(
+            selection_mode=Gtk.SelectionMode.NONE,
+            homogeneous=False,
+            min_children_per_line=1,
+            max_children_per_line=3,
+            row_spacing=8,
+            column_spacing=16,
+            halign=Gtk.Align.CENTER,
+        )
         mosaic_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
         mosaic_box.append(Gtk.Label(label="Mosaic", valign=Gtk.Align.CENTER))
         self._mosaic_switch = Gtk.Switch(valign=Gtk.Align.CENTER, tooltip_text="Mosaic framing on/off")
