@@ -13,9 +13,12 @@ One project database holds the whole observing campaign (GLOSSARY.md):
   FK, ``kind`` (``sub``/``stack``), the project-relative ``path``, the
   observation time as both ``jd`` (Julian Date — the photometry standard) and
   ``utc`` (ISO-8601), plus ``exposure``/``gain``/``target`` metadata;
-- ``stars`` — the saved star picks: ``role`` is ``target`` or ``comp``, with
-  the pixel position (``x``/``y``) AND the sky position (``ra_deg``/``dec_deg``,
-  J2000 degrees);
+- ``stars`` — the saved star picks (see :mod:`.stars`): ``role`` is ``target``
+  or ``comp``, with the pixel position (``x``/``y``, required — image
+  coordinates) and the sky position (``ra_deg``/``dec_deg``, J2000 degrees,
+  nullable — picks may be pixel-only), plus the per-pick aperture settings
+  (``aperture_radius``, ``sky_annulus_inner``/``sky_annulus_outer``, all in
+  pixels);
 - ``measurements`` — one differential-magnitude data point per frame: the
   frame FK, ``jd``, ``mag``, ``mag_err``, and the ``excluded`` outlier flag.
 
@@ -25,6 +28,11 @@ persisted in the file) so a crash mid-write never corrupts it. The schema
 version is stored twice on purpose: as ``schema_version`` in ``project.json``
 and as the ``user_version`` pragma in the db — :func:`seestar_controller.store.project.open_project`
 requires them to match, and a future migration runner (ticket 07) bumps both.
+
+Note: the ``stars`` table gained its aperture columns (and ``NOT NULL`` on
+``x``/``y``) in-place during schema v1 development, before any release — no
+migration is needed for v1 projects created by this build; ticket 07 owns
+migrations for anything older.
 """
 
 from __future__ import annotations
@@ -68,10 +76,13 @@ SCHEMA_STATEMENTS = (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         role TEXT NOT NULL CHECK (role IN ('target', 'comp')),
         label TEXT,
-        x REAL,
-        y REAL,
+        x REAL NOT NULL,
+        y REAL NOT NULL,
         ra_deg REAL,
-        dec_deg REAL
+        dec_deg REAL,
+        aperture_radius REAL NOT NULL,
+        sky_annulus_inner REAL NOT NULL,
+        sky_annulus_outer REAL NOT NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_stars_role ON stars (role)",

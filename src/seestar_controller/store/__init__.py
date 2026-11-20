@@ -31,6 +31,14 @@ Pure Python, no GTK, no link (module boundary per
   :func:`~.frames.read_frame_bytes`, the :class:`~.frames.Frame` record, the
   kind constants :data:`~.frames.KIND_SUB` / :data:`~.frames.KIND_STACK` /
   :data:`~.frames.KINDS`, and :class:`~.errors.FrameStoreError`
+- :mod:`.stars` — star picks: :func:`~.stars.save_star_picks` (replace all
+  picks in one db transaction + mirror into ``project.json``),
+  :func:`~.stars.load_star_picks` (target first, then comps by label), the
+  :class:`~.stars.StarPick` record (role/label/x/y/ra_deg/dec_deg + per-pick
+  aperture radius and sky annulus), the role constants
+  :data:`~.stars.ROLE_TARGET` / :data:`~.stars.ROLE_COMP` /
+  :data:`~.stars.ROLES`, :func:`~.stars.normalize_role`, and
+  :class:`~.errors.StarPickError`
 
 Module boundary (see ``.scratch/project-store/spec.md``): nothing in this
 package imports GTK or :mod:`seestar_controller.link`.
@@ -45,6 +53,7 @@ from .errors import (
     SessionAlreadyClosedError,
     SessionNotFoundError,
     SessionOpenError,
+    StarPickError,
 )
 from .frames import (
     FITS_SUFFIX,
@@ -84,6 +93,16 @@ from .sessions import (
     list_sessions,
     start_session,
 )
+from .stars import (
+    ROLE_COMP,
+    ROLE_TARGET,
+    ROLES,
+    STAR_PICK_FIELDS,
+    StarPick,
+    load_star_picks,
+    normalize_role,
+    save_star_picks,
+)
 
 __all__ = [
     "DB_FILE",
@@ -96,9 +115,13 @@ __all__ = [
     "PROJECT_FILE",
     "PROJECT_ROOT_ENV_VAR",
     "PROJECT_SUBDIRS",
+    "ROLE_COMP",
+    "ROLE_TARGET",
+    "ROLES",
     "SCHEMA_TABLES",
     "SCHEMA_VERSION",
     "STACKS_DIR",
+    "STAR_PICK_FIELDS",
     "SUBS_DIR",
     "Frame",
     "FrameStoreError",
@@ -112,6 +135,8 @@ __all__ = [
     "SessionAlreadyClosedError",
     "SessionNotFoundError",
     "SessionOpenError",
+    "StarPick",
+    "StarPickError",
     "close_session",
     "create_project",
     "default_project_root",
@@ -121,9 +146,12 @@ __all__ = [
     "list_frames",
     "list_projects",
     "list_sessions",
+    "load_star_picks",
     "normalize_kind",
+    "normalize_role",
     "open_project",
     "read_frame_bytes",
+    "save_star_picks",
     "slugify",
     "start_session",
     "store_frame",

@@ -229,6 +229,9 @@ EXPECTED_COLUMNS = {
         ("y", "REAL", 0),
         ("ra_deg", "REAL", 0),
         ("dec_deg", "REAL", 0),
+        ("aperture_radius", "REAL", 0),
+        ("sky_annulus_inner", "REAL", 0),
+        ("sky_annulus_outer", "REAL", 0),
     ],
     "measurements": [
         ("id", "INTEGER", 1),

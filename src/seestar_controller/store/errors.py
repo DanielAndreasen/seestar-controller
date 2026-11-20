@@ -41,3 +41,13 @@ class FrameStoreError(ProjectError):
     """Storing or reading a frame failed: the bytes are not a readable FITS
     file, the ``frames`` db row could not be inserted, the frame file is
     missing on disk, or the stored path is unsafe (see :mod:`.frames`)."""
+
+
+class StarPickError(ProjectError, ValueError):
+    """Invalid star picks (see :mod:`.stars`): a bad role/label/pixel
+    coordinate/sky coordinate/aperture value on a :class:`~.stars.StarPick`,
+    or a pick ensemble that does not contain exactly one target pick.
+
+    Subclasses both :class:`ProjectError` and :class:`ValueError` — pick
+    validation failures are value errors, so callers may catch either.
+    """

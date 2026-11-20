@@ -4,9 +4,13 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 6ec3e87
 
-- [ ] Save star picks (role target/comp, x/y, RA/Dec, aperture radius, annulus) into the project
-- [ ] Load picks on project open
-- [ ] Replacing picks overwrites cleanly
-- [ ] Tests: save → reopen → load round-trip on temp project
+- [x] Save star picks (role target/comp, x/y, RA/Dec, aperture radius, annulus) into the project
+- [x] Load picks on project open
+- [x] Replacing picks overwrites cleanly
+- [x] Tests: save → reopen → load round-trip on temp project
+
+## Comments
+
+Implemented in `src/seestar_controller/store/stars.py` (pure Python, stdlib only; no GTK / no link imports, subprocess-enforced in tests), `StarPickError(ProjectError, ValueError)` added to `errors.py`, the `stars` table in `schema.py` extended in-place within schema v1 with the per-pick aperture columns (`aperture_radius`, `sky_annulus_inner`, `sky_annulus_outer` REAL NOT NULL; `x`/`y` now NOT NULL — pixel coords are required, `ra_deg`/`dec_deg` stay nullable for pixel-only picks; `EXPECTED_COLUMNS` in `tests/test_store_project.py` updated accordingly), all exported from `store/__init__.py`. API: `StarPick` frozen dataclass `(role, label, x, y, ra_deg, dec_deg, aperture_radius, sky_annulus_inner, sky_annulus_outer)` with `to_dict()`/`from_dict()` and validation in `__post_init__`; role constants `ROLE_TARGET`/`ROLE_COMP`/`ROLES` + `normalize_role`; `save_star_picks(project, picks) -> list[StarPick]`; `load_star_picks(project) -> list[StarPick]`. Documented choices: (1) dual write — the db `stars` table is the authoritative queryable source (`load_star_picks` reads only the db), and every save also mirrors the picks into `project.json` as `config['star_picks']` = `{"target": {...}|null, "comps": [...]}` via `save_config()` after the db transaction (db wins on any conflict); (2) replace semantics — one transaction `DELETE FROM stars` + the new inserts, so a failed/rejected save rolls back and leaves the old picks untouched, and `save_star_picks(project, [])` clears all picks; (3) exactly one target — a non-empty selection must contain exactly one `target` pick (comps-only or ≥2 targets raise `StarPickError` before anything is written), comps unconstrained (≥ 0), the empty list is the allowed zero-target case (it clears); (4) aperture is per-pick, not project-global — every row stores its own radius + annulus; (5) ordering — target first, then comps by `label` (unnamed last), ties by row id; (6) validation raises `StarPickError` (both a `ProjectError` and a `ValueError`) with field + value in the message: role ∈ {target, comp}, label str|None, x/y finite floats, ra_deg ∈ [0, 360) / dec_deg ∈ [-90, 90] when present (J2000 ranges, nullable), aperture_radius > 0, annulus radii > 0 with inner < outer; field validation runs in `StarPick.__post_init__`, so load validates too. Tests: `tests/test_store_stars.py` (70 tests, tmp_path only, no network): save→load round-trip incl. raw db rows, save→reopen→load persistence (db + the `project.json` mirror on disk), pixel-only picks (NULL ra/dec), replace overwrites cleanly, empty picks clear, single target without comps, any-iterable input, non-StarPick → TypeError, two targets / comps-only rejected with nothing written, invalid save leaves previous picks + mirror untouched, db-insert failure (RAISE trigger) rolls back the DELETE, ordering (target first, comps by label, unnamed last, ties by id), all field validations (role, label, finite x/y, radius, annulus, ra/dec ranges), int→float coercion, to_dict/from_dict round-trip + missing keys, db-authoritative-over-mirror (a tampered mirror still loads the db picks), public-API export test, module-boundary subprocess test. `uv run pytest`: 627 passed (557 + 70).
