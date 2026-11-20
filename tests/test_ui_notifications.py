@@ -7,7 +7,9 @@ Covers the ticket-04 pure layer ``seestar_controller.ui.notifications``:
 - :class:`NotificationBus` — push notifies listeners, ``log()`` newest-first,
   the bounded ring-buffer capacity drops the oldest, ``clear()``, listener
   add/remove (idempotent, decorator), consecutive-duplicate dedup
-  (A, A -> one entry; A, B, A -> three), thread-safety of concurrent pushes;
+  (A, A -> one entry; A, B, A -> three), thread-safety of concurrent pushes,
+  a raising listener is logged and skipped (``push`` still returns ``True``
+  and the remaining listeners still run);
 - :class:`NotificationController` driven by a real
   :class:`~seestar_controller.ui.connection.ConnectionController` with a FAKE
   ``device_factory``: connect failure -> one ERROR "Connection error"
@@ -31,6 +33,7 @@ The last section is integration-ish: the REAL
 INFO "Stacking" + "Stack finished" notifications.
 """
 
+import logging
 import subprocess
 import sys
 import threading
@@ -312,6 +315,29 @@ def test_concurrent_pushes_are_thread_safe():
     assert len(bus) == 100
     assert len(seen) == 100
     assert len(bus.log()) == 100
+
+
+def test_raising_listener_is_logged_and_does_not_break_push(bus, caplog):
+    def boom(n):
+        raise RuntimeError("listener exploded")
+
+    seen = []
+    bus.add_listener(boom)  # registered BEFORE the recording listener
+    bus.add_listener(seen.append)
+    n = Notification(NotificationSeverity.ERROR, "Scope error", "m", SCOPE_ERROR_EVENT)
+    with caplog.at_level(logging.ERROR, logger="seestar_controller.ui.notifications"):
+        assert bus.push(n) is True  # push still returns True
+    assert seen == [n]  # the recording listener still received it
+    assert bus.log() == (n,) and len(bus) == 1  # the entry is stored
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "listener" in errors[0].getMessage()
+    assert errors[0].exc_info is not None  # logged via logger.exception
+    # the bus stays usable afterwards
+    n2 = Notification(NotificationSeverity.INFO, "other", "", "s")
+    assert bus.push(n2) is True
+    assert seen == [n, n2]
+    assert [x.title for x in bus.log()] == ["other", "Scope error"]
 
 
 # --- NotificationController: connection snapshots -------------------------------------

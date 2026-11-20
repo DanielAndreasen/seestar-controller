@@ -25,7 +25,9 @@ dialogs** for background events):
     :data:`DEFAULT_LOG_CAPACITY` = 200 — the oldest entries drop off) and
     notifies every registered listener **synchronously on the pushing
     thread** (bus callbacks may come from worker threads — the widget layer
-    marshals them onto the main thread, see :mod:`.toast`);
+    marshals them onto the main thread, see :mod:`.toast`); a listener that
+    raises is logged and skipped, so one bad listener can neither block the
+    remaining listeners nor make :meth:`~NotificationBus.push` raise;
   - :meth:`~NotificationBus.log` returns the log **newest-first** (what the
     notification-log dialog lists), :meth:`~NotificationBus.clear` empties
     it (silently — clearing is a user action, not a notification);
@@ -92,6 +94,7 @@ log (:mod:`.notification_log`).
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections import deque
 from dataclasses import dataclass, field
@@ -105,6 +108,8 @@ from .connection import (
     ConnectionStatus,
     InvokeOnMain,
 )
+
+logger = logging.getLogger(__name__)
 
 # -- device event names ---------------------------------------------------------
 # Re-declared from :mod:`seestar_controller.link.resilience` /
@@ -198,6 +203,10 @@ class NotificationBus:
     listeners are called synchronously on the pushing thread, OUTSIDE the
     lock (a listener must not call back into the bus re-entrantly from the
     same thread while holding it — the lock is only held for the append).
+    A listener that raises is logged (module logger) and skipped: the
+    remaining listeners still run and :meth:`push` still returns ``True``
+    (the same isolation pattern as the link transport's event dispatch,
+    :mod:`seestar_controller.link.transport`).
     """
 
     def __init__(self, capacity: int = DEFAULT_LOG_CAPACITY) -> None:
@@ -238,6 +247,11 @@ class NotificationBus:
         consecutive duplicate of the newest log entry — same
         ``(severity, title, message, source)``, timestamp ignored
         (documented dedup choice, see module docstring).
+
+        A listener that raises is logged (module logger) and skipped: it
+        neither prevents the remaining listeners from being notified nor
+        changes the return value — the notification stays stored, so it is
+        in :meth:`log` and can never be re-delivered by dedup.
         """
         if not isinstance(notification, Notification):
             raise ValueError(f"push expects a Notification, got {notification!r}")
@@ -247,7 +261,10 @@ class NotificationBus:
             self._log.append(notification)
             listeners = list(self._listeners)
         for listener in listeners:
-            listener(notification)
+            try:
+                listener(notification)
+            except Exception:
+                logger.exception("notification listener %r failed", listener)
         return True
 
     def log(self) -> tuple[Notification, ...]:
