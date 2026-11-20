@@ -4,9 +4,9 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** ready-for-agent
+**Status:** implemented in 24590f2
 
-- [ ] Name → candidate list (name, RA/Dec J2000, magnitude) via SIMBAD
-- [ ] Unknown name returns a clear "not found" error
-- [ ] Ambiguous name returns multiple candidates for the caller to choose from
-- [ ] Tests with mocked SIMBAD HTTP responses cover found / not-found / ambiguous
+- [x] Name → candidate list (name, RA/Dec J2000, magnitude) via SIMBAD
+- [x] Unknown name returns a clear "not found" error
+- [x] Ambiguous name returns multiple candidates for the caller to choose from
+- [x] Tests with mocked SIMBAD HTTP responses cover found / not-found / ambiguous
