@@ -55,10 +55,10 @@ from seestar_controller.store import (
 PHOTOMETRY_PACKAGE_DIR = Path(photometry.__file__).resolve().parent
 
 #: The pure photometry modules — no ``gi`` import allowed (subprocess-enforced).
-PURE_PHOTOMETRY_MODULES = ("__init__", "picking", "suggest", "measure")
+PURE_PHOTOMETRY_MODULES = ("__init__", "picking", "suggest", "measure", "run")
 
 #: The widget photometry modules — ``gi`` at module top, lazy-exported via PEP 562.
-WIDGET_PHOTOMETRY_MODULES = ("star_picker", "suggestions_panel")
+WIDGET_PHOTOMETRY_MODULES = ("star_picker", "suggestions_panel", "results_view")
 
 T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
 DATE1 = "2026-11-20T22:00:00.000"
@@ -572,6 +572,7 @@ def test_pure_photometry_modules_import_no_gi_no_link_no_ui_no_enhance_and_widge
         "import seestar_controller.photometry.picking;"
         "import seestar_controller.photometry.suggest;"
         "import seestar_controller.photometry.measure;"
+        "import seestar_controller.photometry.run;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
@@ -580,6 +581,8 @@ def test_pure_photometry_modules_import_no_gi_no_link_no_ui_no_enhance_and_widge
         "'star_picker imported eagerly';"
         "assert 'seestar_controller.photometry.suggestions_panel' not in sys.modules, "
         "'suggestions_panel imported eagerly';"
+        "assert 'seestar_controller.photometry.results_view' not in sys.modules, "
+        "'results_view imported eagerly';"
         "print('clean')"
     )
     result = subprocess.run(
@@ -642,9 +645,11 @@ def test_public_api_is_exported_from_package():
         assert hasattr(photometry, name), name
     assert "StarPickerView" in photometry.__all__
     assert "SuggestionsPanel" in photometry.__all__
+    assert "ResultsPanel" in photometry.__all__
     assert photometry._WIDGET_EXPORTS == {
         "StarPickerView": "star_picker",
         "SuggestionsPanel": "suggestions_panel",
+        "ResultsPanel": "results_view",
     }
     assert photometry.PickController is picking.PickController
     assert photometry.pixel_to_sky is picking.pixel_to_sky

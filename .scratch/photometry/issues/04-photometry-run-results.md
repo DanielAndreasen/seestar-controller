@@ -4,9 +4,9 @@
 
 **Blocked by:** 02, 03, project-store 05
 
-**Status:** ready-for-agent
+**Status:** implemented in 545d3d4
 
-- [ ] Run photometry over all subs of a session (worker thread, progress shown)
-- [ ] Results view: per-frame table + scatter plot, outliers flaggable
-- [ ] Measurements appended to the project lightcurve (jd, mag, mag_err)
-- [ ] Tests: end-to-end on temp project with synthetic FITS; outlier exclusion
+- [x] Run photometry over all subs of a session (worker thread, progress shown)
+- [x] Results view: per-frame table + scatter plot, outliers flaggable
+- [x] Measurements appended to the project lightcurve (jd, mag, mag_err)
+- [x] Tests: end-to-end on temp project with synthetic FITS; outlier exclusion

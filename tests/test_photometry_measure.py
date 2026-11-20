@@ -536,6 +536,7 @@ def test_measure_module_imports_no_gi_no_link_no_ui_no_enhance_and_widgets_stay_
         "import sys;"
         "import seestar_controller.photometry;"
         "import seestar_controller.photometry.measure;"
+        "import seestar_controller.photometry.run;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
@@ -544,6 +545,8 @@ def test_measure_module_imports_no_gi_no_link_no_ui_no_enhance_and_widgets_stay_
         "'star_picker imported eagerly';"
         "assert 'seestar_controller.photometry.suggestions_panel' not in sys.modules, "
         "'suggestions_panel imported eagerly';"
+        "assert 'seestar_controller.photometry.results_view' not in sys.modules, "
+        "'results_view imported eagerly';"
         "print('clean')"
     )
     result = subprocess.run(
@@ -564,8 +567,10 @@ def test_measure_module_source_scan_no_gi_and_package_module_set():
         "picking",
         "suggest",
         "measure",
+        "run",
         "star_picker",
         "suggestions_panel",
+        "results_view",
     }
 
 

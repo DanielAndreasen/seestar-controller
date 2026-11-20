@@ -72,7 +72,14 @@ from seestar_controller.observing.observe_view import (  # noqa: E402
     ObserveView as ObserveViewWidget,
 )
 from seestar_controller.observing.queue_editor import QueueEditor  # noqa: E402
-from seestar_controller.photometry import PickController, SuggestionController  # noqa: E402
+from seestar_controller.photometry import (  # noqa: E402
+    PickController,
+    RunController,
+    SuggestionController,
+)
+from seestar_controller.photometry.results_view import (  # noqa: E402
+    ResultsPanel as ResultsPanelWidget,
+)
 from seestar_controller.photometry.star_picker import (  # noqa: E402
     StarPickerView as StarPickerWidget,
 )
@@ -277,7 +284,9 @@ class EnhanceView(_PlaceholderView):
 
 
 class PhotometryView(_PlaceholderView):
-    """Photometry view (photometry tickets 01 + 02): wraps the
+    """Photometry view (photometry tickets 01 + 02 + 04): a vertical
+    :class:`Gtk.Paned` with the star-picker widget on top and the results
+    panel (ticket 04) below. Wraps the
     :class:`~seestar_controller.photometry.star_picker.StarPickerView` widget —
     the project's stack list + role selector + aperture spins + picks list +
     Save picks + catalog-comps panel on the left, the clickable preview with
@@ -307,6 +316,7 @@ class PhotometryView(_PlaceholderView):
         picker_controller: PickController | None = None,
         viewer_controller: ViewerController | None = None,
         suggest_controller: SuggestionController | None = None,
+        run_controller: RunController | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -321,6 +331,11 @@ class PhotometryView(_PlaceholderView):
             else PickController(viewer_controller=self._viewer_controller)
         )
         self._suggest_controller = suggest_controller
+        self._run_controller = (
+            run_controller
+            if run_controller is not None
+            else RunController(picker_controller=self._picker_controller)
+        )
         # the inner widget handles its own padding
         kwargs.setdefault("margin_top", 0)
         kwargs.setdefault("margin_bottom", 0)
@@ -335,7 +350,16 @@ class PhotometryView(_PlaceholderView):
             viewer_controller=self._viewer_controller,
             suggest_controller=self._suggest_controller,
         )
-        self.append(self._picker_widget)
+        self._results_panel = ResultsPanelWidget(self._run_controller)
+        paned = Gtk.Paned(
+            orientation=Gtk.Orientation.VERTICAL,
+            start_child=self._picker_widget,
+            end_child=self._results_panel,
+            shrink_start_child=False,
+            shrink_end_child=False,
+            wide_handle=True,
+        )
+        self.append(paned)
 
     @property
     def picker_controller(self) -> PickController:
@@ -352,6 +376,17 @@ class PhotometryView(_PlaceholderView):
         """The shared pure-layer catalog-assist controller (ticket 02) driving
         this view's suggestions panel."""
         return self._picker_widget.suggest_controller
+
+    @property
+    def run_controller(self) -> RunController:
+        """The shared pure-layer run + results controller (ticket 04) driving
+        this view's results panel."""
+        return self._run_controller
+
+    @property
+    def results_panel(self) -> ResultsPanelWidget:
+        """The results panel (session chooser + Run + table + scatter plot)."""
+        return self._results_panel
 
     @property
     def picker_widget(self) -> StarPickerWidget:
@@ -400,6 +435,7 @@ def build_view(
     editor_controller: EditorController | None = None,
     picker_controller: PickController | None = None,
     suggest_controller: SuggestionController | None = None,
+    run_controller: RunController | None = None,
     project: Any = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
@@ -410,8 +446,9 @@ def build_view(
     (observing tickets 01 + 03), ``viewer_controller`` /
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
     and ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
-    to the Photometry view (photometry tickets 01 + 02) — the app window
-    passes its shared controllers; the other views ignore them.
+    / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
+    04) — the app window passes its shared controllers; the other views ignore
+    them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
@@ -430,5 +467,6 @@ def build_view(
             picker_controller=picker_controller,
             viewer_controller=viewer_controller,
             suggest_controller=suggest_controller,
+            run_controller=run_controller,
         )
     return VIEW_CLASSES[view_id]()

@@ -114,6 +114,17 @@ with the comp-search radius read from the settings
 listener keeps it in sync live). The window passes it to the Photometry view,
 whose :class:`~seestar_controller.photometry.suggestions_panel.SuggestionsPanel`
 lists the standard stars near the target and adds one as a comp pick.
+
+Photometry (ticket 04): the application also owns a shared
+:class:`~seestar_controller.photometry.run.RunController` — the run + results
+controller — bound to the shared pick controller (its picks are measured; the
+stored picks are the fallback) with its ``invoke_on_main`` bound to
+:func:`GLib.idle_add`, so worker-thread runs marshal their store writes and
+listener notifications onto the GLib main loop. The window passes it to the
+Photometry view, whose
+:class:`~seestar_controller.photometry.results_view.ResultsPanel` runs the
+measurements over a chosen session on a worker thread (progress shown) and
+shows the per-frame table + mag-vs-jd scatter plot with outlier flagging.
 """
 
 from __future__ import annotations
@@ -132,7 +143,11 @@ from seestar_controller.observing import (  # noqa: E402
     ObserveController,
     PlanQueueController,
 )
-from seestar_controller.photometry import PickController, SuggestionController  # noqa: E402
+from seestar_controller.photometry import (  # noqa: E402
+    PickController,
+    RunController,
+    SuggestionController,
+)
 
 from .connection import ConnectionController  # noqa: E402
 from .connection_panel import ConnectionPanel  # noqa: E402
@@ -230,6 +245,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         editor_controller: EditorController | None = None,
         picker_controller: PickController | None = None,
         suggest_controller: SuggestionController | None = None,
+        run_controller: RunController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -331,6 +347,20 @@ class SeestarWindow(Adw.ApplicationWindow):
             else getattr(app, "suggest_controller", None)
             or SuggestionController(picker_controller=self._picker_controller)
         )
+        # Photometry ticket 04: one shared run + results controller bound to
+        # the pick controller (its picks are measured; the stored picks are
+        # the fallback); the Photometry view's results panel runs sessions on
+        # a worker thread and renders the snapshots. Its invoke_on_main is
+        # GLib.idle_add, so worker-thread store writes + notifications land on
+        # the main loop.
+        self._run_controller = (
+            run_controller
+            if run_controller is not None
+            else getattr(app, "run_controller", None)
+            or RunController(
+                picker_controller=self._picker_controller, invoke_on_main=_invoke_on_main
+            )
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -378,6 +408,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     editor_controller=self._editor_controller,
                     picker_controller=self._picker_controller,
                     suggest_controller=self._suggest_controller,
+                    run_controller=self._run_controller,
                 ),
                 view.id,
                 view.title,
@@ -519,6 +550,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         Photometry view's suggestions panel binds to it)."""
         return self._suggest_controller
 
+    @property
+    def run_controller(self) -> RunController:
+        """The shared run + results controller (photometry ticket 04 — the
+        Photometry view's results panel binds to it)."""
+        return self._run_controller
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -643,6 +680,15 @@ class SeestarApplication(Adw.Application):
         self.suggest_controller = SuggestionController(
             picker_controller=self.picker_controller,
             radius_deg=comp_search_radius_deg(self.settings_controller.values),
+        )
+        # Photometry ticket 04: the shared run + results controller, bound to
+        # the shared pick controller (its picks are measured; the stored picks
+        # are the fallback); the window passes it to the Photometry view's
+        # results panel. Worker-thread runs marshal their store writes and
+        # listener notifications onto the GLib main loop, like the connection
+        # controller's.
+        self.run_controller = RunController(
+            picker_controller=self.picker_controller, invoke_on_main=_invoke_on_main
         )
         self.settings_controller.add_listener(self._on_settings_changed)
 

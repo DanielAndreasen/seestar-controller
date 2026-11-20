@@ -33,6 +33,20 @@ behavior with a MOCKED catalog lookup (no network): the panel lists the
 suggestions after a search, an Add button adds the star as a comp pick at
 its WCS pixel, the Search button runs the lookup on a worker thread, and a
 catalog failure (``CatalogUnavailableError``) shows as a clean error status.
+
+Ticket 04 (run + results view): the wiring — ``build_view`` /
+:class:`~seestar_controller.ui.app.SeestarApplication` /
+:class:`~seestar_controller.ui.app.SeestarWindow` share one
+:class:`~seestar_controller.photometry.RunController` bound to the shared pick
+controller, and the window passes it down to the Photometry page's
+:class:`~seestar_controller.photometry.results_view.ResultsPanel` — and the
+panel behavior: after a run the per-frame table lists one row per measurement
+(jd/utc, mag, mag_err, excluded checkbox) and the scatter plot carries one
+point per lightcurve point, the Run button runs the session on a worker thread
+(store calls marshalled through ``GLib.idle_add``, never blocking the main
+loop), a failed run shows a clean error status, and clicking a table row
+toggles the outlier exclusion (``set_excluded``) refreshing both the table
+and the plot.
 """
 
 import io
@@ -60,13 +74,19 @@ from seestar_controller.catalog.standards import StandardStar  # noqa: E402
 from seestar_controller.enhance import ViewerController  # noqa: E402
 from seestar_controller.photometry import (  # noqa: E402
     PickController,
+    RunController,
     SuggestionController,
     sky_to_pixel,
 )
 from seestar_controller.store import (  # noqa: E402
     KIND_STACK,
+    KIND_SUB,
+    StarPick,
     create_project,
+    lightcurve,
+    list_sessions,
     load_star_picks,
+    save_star_picks,
     start_session,
     store_frame,
 )
@@ -414,6 +434,194 @@ def test_suggestions_panel_shows_clean_error_on_catalog_failure(
     assert panel.suggestion_rows() == []
     status = panel.status_label
     assert "offline" in status.get_label()
+
+
+# --- ticket 04: run + results view ---------------------------------------------------------------
+
+
+def _sub_fits(i: int) -> bytes:
+    """A synthetic sub-frame FITS (constant stars) with DATE-OBS T0 + i*10s."""
+    seconds = i * 10
+    date_obs = f"2026-11-20T22:{seconds // 60:02d}:{seconds % 60:02d}.000"
+    return fits_bytes(synthetic_image(64, seed=10 + i), date_obs=date_obs)
+
+
+def _store_subs(project, n: int = 4) -> str:
+    """Store ``n`` synthetic sub-frames in the project's (single) session and
+    return the session id."""
+    session = list_sessions(project)[0].id
+    for i in range(n):
+        store_frame(project, session, KIND_SUB, _sub_fits(i))
+    return session
+
+
+def _save_widget_picks(project) -> None:
+    """Target at (40, 30) + comps at (16, 16) and (50, 12) — the synthetic
+    image's star positions (x=column, y=row)."""
+    save_star_picks(
+        project,
+        [
+            StarPick(role="target", label="Target", x=40.0, y=30.0, ra_deg=None,
+                     dec_deg=None, aperture_radius=4.0, sky_annulus_inner=8.0,
+                     sky_annulus_outer=12.0),
+            StarPick(role="comp", label="Comp A", x=16.0, y=16.0, ra_deg=None,
+                     dec_deg=None, aperture_radius=4.0, sky_annulus_inner=8.0,
+                     sky_annulus_outer=12.0),
+            StarPick(role="comp", label="Comp B", x=50.0, y=12.0, ra_deg=None,
+                     dec_deg=None, aperture_radius=4.0, sky_annulus_inner=8.0,
+                     sky_annulus_outer=12.0),
+        ],
+    )
+
+
+def _drain_run(thread, timeout: float = 30.0) -> None:
+    """Pump the GLib main loop while the run worker thread is alive (the loop
+    runs the marshalled store calls + renders), then join + final drain."""
+    deadline = time.monotonic() + timeout
+    while thread.is_alive() and time.monotonic() < deadline:
+        pump_main(0.1)
+        time.sleep(0.005)
+    thread.join(timeout=10.0)
+    assert not thread.is_alive()
+    pump_main()
+
+
+def test_build_view_photometry_wires_run_controller(gtk):
+    from seestar_controller.ui.views import PhotometryView, build_view
+
+    vc = ViewerController()
+    pc = PickController(viewer_controller=vc)
+    rc = RunController(picker_controller=pc)
+    view = build_view(
+        "photometry", picker_controller=pc, viewer_controller=vc, run_controller=rc
+    )
+    assert isinstance(view, PhotometryView)
+    assert view.run_controller is rc
+    assert view.results_panel.controller is rc
+    # standalone: no run controller passed -> the view creates its own, bound
+    # to its own pick controller
+    standalone = build_view("photometry")
+    assert standalone.run_controller is not rc
+    assert standalone.run_controller.picker_controller is standalone.picker_controller
+    assert standalone.results_panel.controller is standalone.run_controller
+
+
+def test_app_owns_shared_run_controller_and_window_passes_it_down(gtk, tmp_path):
+    from seestar_controller.ui.app import SeestarApplication, SeestarWindow
+
+    app = SeestarApplication(settings_path=str(tmp_path / "settings.json"))
+    assert isinstance(app.run_controller, RunController)
+    assert app.run_controller.picker_controller is app.picker_controller
+    window = SeestarWindow(app, app.state)
+    assert window.run_controller is app.run_controller
+    photometry_page = window.view_stack.get_child_by_name("photometry")
+    assert photometry_page.run_controller is app.run_controller
+    assert photometry_page.results_panel.controller is app.run_controller
+
+
+def test_results_panel_shows_table_and_plot_after_a_run(gtk, project):
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs(project, n=4)
+    _save_widget_picks(project)
+    rc = RunController(project=project)
+    panel = ResultsPanel(run_controller=rc)
+    assert panel.controller is rc
+    assert panel.selected_session_id() == session  # the only session, preselected
+    assert panel.measurement_rows() == []
+    assert panel.plot_points() == ()
+
+    report = rc.run_session(session)  # main thread: rendered synchronously
+    assert len(report.measurements) == 4 and report.skipped == ()
+    rows = panel.measurement_rows()
+    assert len(rows) == 4
+    assert [r.measurement_id for r in rows] == [m.id for m in report.measurements]
+    assert all(r.excluded is False for r in rows)
+    assert all(r.excluded_check.get_active() is False for r in rows)
+    points = panel.plot_points()
+    assert len(points) == 4
+    assert [p[0] for p in points] == [m.jd for m in report.measurements]  # jd
+    assert [p[1] for p in points] == [m.mag for m in report.measurements]  # mag
+    assert all(p[2] is not None for p in points)  # mag_err
+    assert all(p[3] is False for p in points)  # excluded flag
+    assert panel.progress_bar.get_fraction() == 1.0
+    assert "4 measured, 0 skipped" in panel.progress_label.get_label()
+    assert "4 measured" in panel.status_label.get_label()
+    assert panel.run_button.get_sensitive() is True
+    assert len(lightcurve(project)) == 4
+
+
+def test_results_panel_row_click_toggles_outlier_exclusion(gtk, project):
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs(project, n=3)
+    _save_widget_picks(project)
+    rc = RunController(project=project)
+    panel = ResultsPanel(run_controller=rc)
+    report = rc.run_session(session)
+    victim = report.measurements[0]
+    row = panel.measurement_rows()[0]
+    assert row.measurement_id == victim.id and row.excluded is False
+
+    panel._on_row_activated(panel.list_box, row)  # click -> flag as outlier
+    assert victim.id not in [m.id for m in lightcurve(project)]
+    assert victim.id in [m.id for m in lightcurve(project, include_excluded=True)]
+    rows = panel.measurement_rows()  # the table was rebuilt
+    assert rows[0].excluded is True
+    assert rows[0].excluded_check.get_active() is True
+    assert panel.plot_points()[0][3] is True  # the plot point is flagged too
+    assert "outlier" in panel.status_label.get_label()
+
+    panel._on_row_activated(panel.list_box, panel.measurement_rows()[0])  # click again
+    assert victim.id in [m.id for m in lightcurve(project)]
+    assert panel.measurement_rows()[0].excluded is False
+    assert panel.measurement_rows()[0].excluded_check.get_active() is False
+    assert panel.plot_points()[0][3] is False
+
+    # the checkbox toggles the same flag
+    other = report.measurements[1]
+    panel.measurement_rows()[1].excluded_check.set_active(True)
+    assert other.id not in [m.id for m in lightcurve(project)]
+    assert panel.plot_points()[1][3] is True
+
+
+def test_results_panel_run_button_runs_on_a_worker_thread(gtk, project):
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs(project, n=4)
+    _save_widget_picks(project)
+    # like the app: marshal the pure-layer callbacks onto the GLib main loop
+    rc = RunController(project=project, invoke_on_main=lambda cb: GLib.idle_add(cb))
+    panel = ResultsPanel(run_controller=rc)
+    assert panel.selected_session_id() == session
+
+    thread = panel.run()  # same as clicking the Run button
+    assert thread is not None and thread.name == "photometry-run"
+    assert not panel.run_button.get_sensitive()  # disabled while running
+    _drain_run(thread)  # pumps the main loop — never blocks it
+
+    assert len(panel.measurement_rows()) == 4
+    assert len(panel.plot_points()) == 4
+    assert len(lightcurve(project)) == 4
+    assert "4 measured, 0 skipped" in panel.progress_label.get_label()
+    assert panel.progress_bar.get_fraction() == 1.0
+    assert panel.run_button.get_sensitive() is True
+
+
+def test_results_panel_shows_clean_error_when_run_fails(gtk, project):
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs(project, n=2)
+    # NO picks stored -> the run fails with a clean status, never a crash
+    rc = RunController(project=project, invoke_on_main=lambda cb: GLib.idle_add(cb))
+    panel = ResultsPanel(run_controller=rc)
+    thread = panel.run()
+    _drain_run(thread)
+    assert "no target pick" in panel.status_label.get_label()
+    assert panel.run_button.get_sensitive() is True
+    assert panel.measurement_rows() == []
+    assert panel.plot_points() == ()
+    assert lightcurve(project) == []
     assert status.has_css_class("error")
 
 

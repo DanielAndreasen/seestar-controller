@@ -53,12 +53,31 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   :class:`~.picking.PhotometryError`, distinct from the store's
   ``MeasurementError``). Also imports **nothing** from ``gi`` (photutils and
   astropy are lazy inside the functions).
+- **Pure layer** — :mod:`.run` (ticket 04, the run + results controller):
+  :class:`~.run.RunController` — the app-level shared controller bound to the
+  shared :class:`~.picking.PickController`: :meth:`~.run.RunController.run_session`
+  measures ALL sub-frames of one session (stacks/enhanced never) on the
+  calling thread — safe from a worker thread, with store writes marshalled to
+  the db-owning thread — appending each result via the store's
+  ``add_measurement`` (jd, mag, mag_err), collecting skipped frames, reporting
+  progress via an ``on_progress(done, total, frame)`` callback, and returning
+  a frozen :class:`~.run.RunReport`; the results accessor
+  (:meth:`~.run.RunController.sessions` /
+  :meth:`~.run.RunController.lightcurve_points` /
+  :meth:`~.run.RunController.set_excluded` for outlier flagging) is exposed on
+  every frozen :class:`~.run.RunSnapshot` handed to the listeners. Errors are
+  :class:`~.run.RunError` (a :class:`~.picking.PhotometryError`). Also imports
+  **nothing** from ``gi``.
 - **Widget layer** — :mod:`.star_picker` (:class:`~.star_picker.StarPickerView`,
   the Photometry view's image + click-to-pick + aperture overlay + role
-  selector + aperture spins + picks list + Save picks button) and
+  selector + aperture spins + picks list + Save picks button),
   :mod:`.suggestions_panel` (:class:`~.suggestions_panel.SuggestionsPanel`,
   the catalog-assist list next to the image: Search button, one row per
-  suggestion with an Add button, clean error status). They import ``gi`` at
+  suggestion with an Add button, clean error status), and
+  :mod:`.results_view` (:class:`~.results_view.ResultsPanel`, ticket 04: the
+  session chooser + Run button + progress, the per-frame measurements table
+  with outlier checkboxes, and the mag-vs-jd scatter plot on a
+  :class:`Gtk.DrawingArea`). They import ``gi`` at
   module top and are re-exported here **lazily** (PEP 562 ``__getattr__``), so
   ``import seestar_controller.photometry`` never imports ``gi``.
 
@@ -106,6 +125,16 @@ from .measure import (
     measure_project,
     measure_star,
 )
+from .run import (
+    DB_CALL_TIMEOUT_S,
+    ProgressCallback,
+    RunController,
+    RunError,
+    RunListener,
+    RunProgress,
+    RunReport,
+    RunSnapshot,
+)
 from .suggest import (
     DEFAULT_COMP_SEARCH_RADIUS_DEG,
     MAX_COMP_SEARCH_RADIUS_DEG,
@@ -122,6 +151,7 @@ from .suggest import (
 #: Widget-layer names re-exported lazily (importing the module pulls in
 #: ``gi`` — only the GUI path does).
 _WIDGET_EXPORTS = {
+    "ResultsPanel": "results_view",
     "StarPickerView": "star_picker",
     "SuggestionsPanel": "suggestions_panel",
 }
@@ -137,6 +167,7 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "DB_CALL_TIMEOUT_S",
     "DEFAULT_APERTURE_RADIUS_PX",
     "DEFAULT_COMP_SEARCH_RADIUS_DEG",
     "DEFAULT_SKY_IN_PX",
@@ -159,6 +190,13 @@ __all__ = [
     "PickListener",
     "PickSession",
     "PickingError",
+    "ProgressCallback",
+    "RunController",
+    "RunError",
+    "RunListener",
+    "RunProgress",
+    "RunReport",
+    "RunSnapshot",
     "SearchRunner",
     "SkippedFrame",
     "StarMeasurement",
@@ -181,6 +219,7 @@ __all__ = [
     "pixel_to_sky",
     "sky_to_pixel",
     # widget layer (lazy, imports gi):
+    "ResultsPanel",
     "StarPickerView",
     "SuggestionsPanel",
 ]
