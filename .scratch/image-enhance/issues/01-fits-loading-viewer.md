@@ -4,7 +4,7 @@
 
 **Blocked by:** ui-shell 01, project-store 03
 
-**Status:** implemented in 53a64d3
+**Status:** implemented in 932ceb6
 
 - [x] Stacks of the current project are listed and openable
 - [x] FITS loads via astropy and renders as an 8-bit preview image
