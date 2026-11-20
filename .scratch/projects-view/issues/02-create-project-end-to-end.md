@@ -4,7 +4,7 @@
 
 **Blocked by:** projects-view 01 (done, 52d9967), ui-shell 02 settings (done), project-store 01 (done)
 
-**Status:** done
+**Status:** implemented in 9584eb5 (merged)
 
 - [x] Root fallback: unset `project_root` -> default root created on demand; unwritable root -> clear inline error + Settings hint, no crash
 - [x] Create flow verified end-to-end in the running GUI (widget test + manual checklist): New project -> store.create_project -> current project event -> all controllers updated -> `last_project` persisted -> restored on restart
