@@ -1,6 +1,6 @@
 # Spec: astrometry
 
-Status: needs-info
+Status: ready-for-agent (3 issues; blocked by gaia-crossmatch)
 
 ## Problem Statement
 

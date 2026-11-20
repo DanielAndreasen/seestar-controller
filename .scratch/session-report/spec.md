@@ -1,6 +1,6 @@
 # Spec: session-report
 
-Status: needs-info
+Status: ready-for-agent (3 issues; 02 blocked by frame-quality/moving-objects)
 
 ## Problem Statement
 

@@ -230,6 +230,42 @@ def test_window_minimum_size_fits_a_laptop_screen(app, gtk):
     assert minimum.height < 900
 
 
+def test_window_minimum_size_fits_a_small_laptop_workarea(app, gtk):
+    """Tighter bound: the minimum must fit a 1280x720 laptop workarea, so the
+    WM can apply (and keep) the maximize request there — a minimum larger
+    than the workarea makes the WM silently drop maximize, leaving the window
+    smaller than the screen with controls off-screen."""
+    from seestar_controller.ui.app import SeestarWindow
+
+    window = SeestarWindow(app, app.state)
+    minimum, _natural = window.get_preferred_size()
+    assert minimum.width < 1280
+    assert minimum.height < 720
+
+
+def test_window_maximize_is_rerequested_on_first_map(app, gtk):
+    """maximize() is requested in the constructor AND re-requested once on
+    the first ``map`` (some WMs/compositors ignore a pre-map maximize
+    request): after the window is presented and the main context pumped, it
+    is still maximized, and the one-shot map handler has disconnected."""
+    from gi.repository import GLib
+
+    from seestar_controller.ui.app import SeestarWindow
+
+    window = SeestarWindow(app, app.state)
+    assert window.is_maximized()
+    handler = window._maximize_on_map_handler
+    assert window.handler_is_connected(handler)
+    window.present()
+    ctx = GLib.MainContext.default()
+    for _ in range(40):
+        while ctx.pending():
+            ctx.iteration(False)
+    assert window.is_maximized()  # still maximized after mapping
+    assert not window.handler_is_connected(handler)  # one-shot, disconnected
+    window.destroy()
+
+
 def test_restored_smaller_geometry_does_not_unmaximize_the_window(app, gtk, tmp_path):
     """A saved smaller size is still restored as the default size, but it
     cannot un-maximize the window on open: maximize() is requested after
@@ -726,9 +762,17 @@ def test_projects_view_inline_error_when_open_fails(gtk, project_state):
     assert controller.current is not None  # unchanged
 
 
-def test_projects_view_constructs_standalone_and_refreshes_on_events(gtk):
+def test_projects_view_constructs_standalone_and_refreshes_on_events(gtk, tmp_path, monkeypatch):
     from seestar_controller.ui.views import ProjectsView, build_view
 
+    # hermetic: a standalone view builds over a default AppState whose
+    # project_root is ~/SeestarProjects — point it at an empty tmp dir so the
+    # test does not depend on the real home directory contents
+    monkeypatch.setattr(
+        ui_state,
+        "DEFAULT_SETTINGS",
+        {**ui_state.DEFAULT_SETTINGS, "project_root": str(tmp_path)},
+    )
     view = build_view("projects")  # no controller -> its own over a default state
     assert isinstance(view, ProjectsView)
     assert view.controller is not None

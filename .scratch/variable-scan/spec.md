@@ -1,6 +1,6 @@
 # Spec: variable-scan
 
-Status: needs-info
+Status: ready-for-agent (2 issues; blocked by gaia-crossmatch tickets, not yet written)
 
 ## Problem Statement
 

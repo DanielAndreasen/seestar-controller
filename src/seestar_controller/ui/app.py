@@ -36,10 +36,11 @@ may ignore it) and captured on ``close-request`` (``get_width`` /
 ``get_height`` / ``get_position``) into the pure layer, which persists it
 atomically to the settings file. The window always opens **maximized**
 ("full screen (maximized)", NOT fullscreen): ``maximize()`` is requested in
-the window constructor *after* the geometry restore, so the restored size
+the window constructor *after* the geometry restore (so the restored size
 stays only the default (unmaximized) size and a saved smaller size cannot
-un-maximize the window on open; the geometry is still captured on close for
-reference.
+un-maximize the window on open) and re-requested once on the first ``map``
+(some WMs/compositors ignore a pre-map request); the geometry is still
+captured on close for reference.
 
 Settings (ticket 02): the application owns a
 :class:`~seestar_controller.ui.settings.SettingsController` over the loaded
@@ -556,6 +557,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         # un-maximize the window on open. Geometry is still captured on
         # close-request (see _on_close_request) for reference.
         self.maximize()
+        # Some WMs/compositors (notably Wayland) ignore a maximize request
+        # made before the window is mapped, so re-request it once on the
+        # first map — the window then really opens maximized and stays that
+        # way (the maximize button keeps working because the window's
+        # minimum size stays well under a laptop workarea).
+        self._maximize_on_map_handler = self.connect("map", self._on_map_maximize)
         apply_dark_theme(state.dark_theme)
         self.select_view(state.current_view_id)
 
@@ -565,6 +572,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._on_settings_changed(self._settings_controller.values)
 
         self.connect("close-request", self._on_close_request)
+
+    def _on_map_maximize(self, *_args) -> None:
+        """One-shot ``map`` handler: re-request maximize on the first map
+        (see the constructor) and disconnect itself."""
+        self.handler_disconnect(self._maximize_on_map_handler)
+        self.maximize()
 
     @property
     def state(self) -> AppState:

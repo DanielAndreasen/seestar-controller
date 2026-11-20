@@ -1,6 +1,6 @@
 # Spec: check-star-plot
 
-Status: needs-info
+Status: ready-for-agent (2 issues)
 
 ## Problem Statement
 

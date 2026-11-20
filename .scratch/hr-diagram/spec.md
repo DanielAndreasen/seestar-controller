@@ -1,6 +1,6 @@
 # Spec: hr-diagram
 
-Status: needs-info
+Status: ready-for-agent (3 issues; blocked by gaia-crossmatch tickets, not yet written)
 
 ## Problem Statement
 

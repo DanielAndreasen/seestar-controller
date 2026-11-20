@@ -679,3 +679,113 @@ def test_session_log_dialog_summary_counts_stored_frames(gtk, tmp_path):
     dialog.refresh()
     assert "2 frame(s) stored (1 sub, 1 stack)" in dialog.summary_label.get_label()
     dialog.close()
+
+
+# --- layout regression: night controls must stay on-screen ---------------------------------
+#
+# The night-controls FlowBox (and the queue editor's controls FlowBox) must
+# keep the default halign=FILL. With halign=CENTER the parent Box allocates
+# only the FlowBox's natural width (ONE button) while the height was
+# negotiated at the full pane width, so the wrapped lines overflowed the
+# FlowBox's allocation and Skip/Stop/Park/Session log were rendered below the
+# window — clipped off-screen and unreachable (the reported bug).
+
+
+def _pump_main_context(rounds: int = 40) -> None:
+    """Iterate the default main context until idle, so pending map/resize/
+    size-allocate events are processed (no display server round-trip needed
+    beyond what the WM already sent)."""
+    from gi.repository import GLib
+
+    ctx = GLib.MainContext.default()
+    for _ in range(rounds):
+        while ctx.pending():
+            ctx.iteration(False)
+
+
+def _find_flowbox(widget):
+    """The first Gtk.FlowBox among ``widget``'s direct children (or None)."""
+    child = widget.get_first_child()
+    while child is not None:
+        if isinstance(child, Gtk.FlowBox):
+            return child
+        child = child.get_next_sibling()
+    return None
+
+
+def test_night_controls_flowbox_fills_the_pane(gtk, controller, observe_stub):
+    """The night-controls FlowBox keeps halign=FILL (the default): the parent
+    Box then allocates the full pane width, so the buttons wrap within the
+    pane and the negotiated height matches the wrapped lines."""
+    from seestar_controller.ui.views import build_view
+
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    left = widget.paned.get_start_child()
+    flow = _find_flowbox(left)
+    assert flow is not None
+    assert flow.props.halign == Gtk.Align.FILL
+    # all six night buttons live in that FlowBox
+    buttons = [flow.get_child_at_index(i) for i in range(6)]
+    assert all(b is not None for b in buttons)
+
+
+def test_queue_editor_controls_flowbox_fills_the_pane(gtk, editor):
+    """Same guard for the queue editor's add-area controls FlowBox."""
+    flow = _find_flowbox(editor)
+    assert flow is not None
+    assert flow.props.halign == Gtk.Align.FILL
+
+
+def test_observe_view_night_buttons_fit_a_laptop_screen(gtk, controller, observe_stub):
+    """Mapped-layout regression test on a 1280x720 laptop screen: every night
+    button (Start/Pause/Skip/Stop/Park/Session log) must lie INSIDE the page's
+    content allocation — the page wraps its content in a vertical
+    Gtk.ScrolledWindow, so a button inside the content is always reachable by
+    scrolling, never clipped off-screen. With the old halign=CENTER FlowBox
+    the wrapped buttons landed below the content allocation (off-screen)."""
+    from seestar_controller.ui.views import build_view
+
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    window = Gtk.Window()
+    window.set_default_size(1280, 720)  # small laptop screen
+    window.set_child(view)
+    window.present()
+    _pump_main_context()
+    _pump_main_context()
+
+    # the controls FlowBox got the full pane width (wraps within the pane)
+    left = widget.paned.get_start_child()
+    flow = _find_flowbox(left)
+    assert flow is not None
+    assert flow.get_allocated_width() >= left.get_allocated_width() - 24 - 1  # 12px margins
+
+    # every night button is inside the page content allocation (reachable via
+    # the page's scrolled window), not rendered outside it
+    content = view.content
+    alloc = content.get_allocation()
+    assert alloc.width > 0 and alloc.height > 0
+    for name in (
+        "start_button",
+        "pause_button",
+        "skip_button",
+        "stop_button",
+        "park_button",
+        "log_button",
+    ):
+        button = getattr(widget, name)
+        ok, rect = button.compute_bounds(content)
+        assert ok, name
+        x, y, w, h = rect.get_x(), rect.get_y(), rect.get_width(), rect.get_height()
+        assert -1 <= x and x + w <= alloc.width + 1, (name, x, w, alloc.width)
+        assert -1 <= y and y + h <= alloc.height + 1, (name, y, h, alloc.height)
+
+    # the page itself scrolls vertically instead of demanding full height
+    assert isinstance(view.scrolled, Gtk.ScrolledWindow)
+    assert view.scrolled.props.vscrollbar_policy == Gtk.PolicyType.AUTOMATIC
+    window.destroy()
