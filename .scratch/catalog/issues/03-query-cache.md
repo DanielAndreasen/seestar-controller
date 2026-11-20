@@ -4,9 +4,9 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 54114a7
 
-- [ ] All catalog queries go through the cache wrapper
-- [ ] Cache files are JSON under the config dir, keyed by query
-- [ ] TTL respected; expired entries refetch
-- [ ] Tests: cache hit, miss, expiry, corrupted cache file falls back to network
+- [x] All catalog queries go through the cache wrapper
+- [x] Cache files are JSON under the config dir, keyed by query
+- [x] TTL respected; expired entries refetch
+- [x] Tests: cache hit, miss, expiry, corrupted cache file falls back to network
