@@ -4,7 +4,7 @@
 
 **Blocked by:** 05
 
-**Status:** implemented in 10d087a
+**Status:** implemented in d849cf7
 
 - [x] `export_csv(project)` writes `lightcurve.csv` with header `jd,utc,mag,mag_err,session,target`
 - [x] Export reflects exclusion flags (excluded rows omitted or marked — pick one, document it)
