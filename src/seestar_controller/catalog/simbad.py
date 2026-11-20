@@ -4,19 +4,30 @@ Pure-Python catalog client (module boundary per ``.scratch/catalog/spec.md``):
 no GTK imports, no :mod:`seestar_controller.link` imports, stdlib only.
 
 The HTTP layer is a single function, :func:`fetch_tap_json`, which POSTs one
-ADQL query to SIMBAD's public TAP ``sync`` endpoint (:data:`SIMBAD_TAP_SYNC_URL`)
-with :mod:`urllib.request` and returns the parsed JSON body. Tests mock exactly
-that one function (or ``urllib.request.urlopen`` for the fetch itself), so no
-test ever touches the network.
+ADQL query to SIMBAD's public TAP ``sync`` endpoints — :data:`SIMBAD_TAP_SYNC_URLS`,
+CDS Strasbourg first, then the official mirrors — with :mod:`urllib.request`
+and returns the parsed JSON body. Tests mock exactly that one function (or
+``urllib.request.urlopen`` for the fetch itself), so no test ever touches the
+network.
 
 Coordinates are **always J2000** — SIMBAD serves ICRS, which coincides with
 J2000 at the precision we need — and always in **degrees**. All parsing of
 wire values into :class:`CatalogCandidate` happens in one place,
 :func:`_row_to_candidate`.
 
-NOTE (user AFK, docs/wiki/assumptions.md): the SIMBAD HTTP endpoint shapes
-below (the TAP ``sync`` form fields and the JSON ``{"metadata": ..., "data":
-...}`` body) are our contract, unverified against the live service.
+ENDPOINTS (verified live 2026-11-20, see docs/wiki/progress.md): **CDS
+Strasbourg is down** — a cybersecurity incident since ~2026-10-29; the
+canonical ``simbad.cds.unistra.fr`` answers 404 "Page unavailable" or times
+out, with no ETA for recovery. The official mirrors listed on
+https://cds.unistra.fr/ work and serve the identical TAP JSON shape
+(``{"metadata": ..., "data": ...}``), so :func:`fetch_tap_json` tries
+:data:`SIMBAD_TAP_SYNC_URLS` in order and the first success wins. Mirror ADQL
+dialect notes (probed live): the mirrors require the ``FORMAT=json`` form
+field (``RESPONSEFORMAT`` alone yields VOTable XML there — both are sent),
+reject ``LOWER(...)`` and qualified ``ORDER BY b.main_id``, and match
+``i.id = '<name>'`` case- and space-insensitively, so the lookup query uses
+plain ``=`` and an unqualified ``ORDER BY main_id`` (see
+:func:`build_lookup_query`).
 """
 
 from __future__ import annotations
@@ -30,8 +41,23 @@ from typing import Any, Mapping
 
 from .coords import J2000Coord
 
-#: SIMBAD's public TAP synchronous endpoint (POST form: REQUEST/LANG/QUERY/...).
+#: SIMBAD's public TAP synchronous endpoint at CDS Strasbourg (canonical;
+#: down since the 2026-10-29 security incident — see module docstring).
 SIMBAD_TAP_SYNC_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync"
+
+#: Official SIMBAD TAP mirror at the Center for Astrophysics | Harvard & Smithsonian.
+SIMBAD_TAP_SYNC_URL_CFA = "https://simbad.cfa.harvard.edu/simbad/sim-tap/sync"
+
+#: Official SIMBAD TAP mirror at IDIA (South Africa).
+SIMBAD_TAP_SYNC_URL_IDIA = "https://simbad.idia.ac.za/simbad/sim-tap/sync"
+
+#: SIMBAD TAP ``sync`` endpoints tried in order: CDS Strasbourg first, then
+#: the official mirrors (verified live 2026-11-20 during the CDS outage).
+SIMBAD_TAP_SYNC_URLS = (
+    SIMBAD_TAP_SYNC_URL,
+    SIMBAD_TAP_SYNC_URL_CFA,
+    SIMBAD_TAP_SYNC_URL_IDIA,
+)
 
 #: Default HTTP timeout for one SIMBAD query, in seconds.
 DEFAULT_TIMEOUT_S = 15.0
@@ -97,17 +123,15 @@ class CatalogCandidate:
         return self.coord.as_degrees()
 
 
-def fetch_tap_json(
-    query: str,
-    *,
-    maxrec: int = DEFAULT_MAX_CANDIDATES,
-    timeout: float = DEFAULT_TIMEOUT_S,
-    url: str = SIMBAD_TAP_SYNC_URL,
+def _post_tap_form(
+    url: str, query: str, *, maxrec: int, timeout: float
 ) -> dict[str, Any]:
-    """POST one ADQL ``query`` to SIMBAD's TAP sync endpoint; return parsed JSON.
+    """POST one ADQL ``query`` to one TAP sync ``url``; return the parsed JSON.
 
-    This is the single HTTP boundary of the catalog module — tests monkeypatch
-    this function (or :func:`urllib.request.urlopen`) instead of the network.
+    The per-endpoint primitive of :func:`fetch_tap_json`. Both ``FORMAT=json``
+    (honored by the mirrors) and ``RESPONSEFORMAT=application/json`` (the TAP
+    standard field honored by CDS Strasbourg) are sent — verified live
+    2026-11-20 that the mirrors need ``FORMAT`` to answer JSON at all.
 
     Raises :class:`SimbadUnavailableError` on network/HTTP failure and
     :class:`SimbadResponseError` when the body is not a JSON object.
@@ -118,6 +142,7 @@ def fetch_tap_json(
             "LANG": "ADQL",
             "QUERY": query,
             "MAXREC": str(int(maxrec)),
+            "FORMAT": "json",
             "RESPONSEFORMAT": "application/json",
         }
     ).encode("ascii")
@@ -151,29 +176,104 @@ def fetch_tap_json(
     return payload
 
 
+def fetch_tap_json(
+    query: str,
+    *,
+    maxrec: int = DEFAULT_MAX_CANDIDATES,
+    timeout: float = DEFAULT_TIMEOUT_S,
+    url: str | None = None,
+) -> dict[str, Any]:
+    """POST one ADQL ``query`` to SIMBAD's TAP sync endpoints; return parsed JSON.
+
+    This is the single HTTP boundary of the catalog module — tests monkeypatch
+    this function (or :func:`urllib.request.urlopen`) instead of the network.
+
+    Endpoints are tried in order — :data:`SIMBAD_TAP_SYNC_URLS` (CDS
+    Strasbourg, then the official Harvard and IDIA mirrors) unless ``url``
+    pins a single one — each with its own ``timeout``; the first success wins.
+    :class:`SimbadUnavailableError` is raised only when **every** endpoint
+    fails (network/HTTP failure); a malformed body from an endpoint that did
+    answer raises :class:`SimbadResponseError` immediately.
+    """
+    endpoints = (url,) if url is not None else SIMBAD_TAP_SYNC_URLS
+    failures: list[str] = []
+    for endpoint in endpoints:
+        try:
+            return _post_tap_form(endpoint, query, maxrec=maxrec, timeout=timeout)
+        except SimbadUnavailableError as exc:
+            failures.append(f"{endpoint}: {exc}")
+    raise SimbadUnavailableError(
+        "could not reach SIMBAD at any endpoint ("
+        + ", ".join(endpoints)
+        + "): "
+        + "; ".join(failures)
+    )
+
+
 def _adql_quote(value: str) -> str:
     """Escape a string literal for ADQL (single quotes are doubled)."""
     return value.replace("'", "''")
 
 
+def _wildcard_patterns(name: str) -> list[str]:
+    """ADQL ``LIKE`` patterns for a wildcard name: as-typed plus spacing variants.
+
+    ``*`` becomes ``%``. SIMBAD stores identifiers with spaces between the
+    letter and digit runs (``NGC  7789`` with two spaces, ``M 42`` with one),
+    and ``LIKE`` on the mirrors is literal (case/space sensitive), so for
+    wildcard names we also generate the variants with a single and a double
+    space inserted at every letter/digit boundary. Best-effort: the exact
+    match is the primary path.
+    """
+    base = name.replace("*", "%")
+    variants = [base]
+    boundaries = [
+        i
+        for i in range(1, len(base))
+        if (base[i - 1].isalpha() and base[i].isdigit())
+        or (base[i - 1].isdigit() and base[i].isalpha())
+    ]
+    if boundaries:
+        single = list(base)
+        double = list(base)
+        for i in reversed(boundaries):
+            single.insert(i, " ")
+            double.insert(i, "  ")
+        variants.append("".join(single))
+        variants.append("".join(double))
+    unique: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        if variant not in seen:
+            seen.add(variant)
+            unique.append(variant)
+    return unique
+
+
 def build_lookup_query(name: str, *, mag_filter: str = DEFAULT_MAG_FILTER) -> str:
     """Build the ADQL name-lookup query — the one place the wire query lives.
 
-    Exact (case-insensitive) identifier match by default; a name containing
-    ``*`` or ``%`` is treated as a wildcard (``%`` in ADQL ``LIKE``).
+    Exact identifier match by default (``i.id = '<name>'`` — case- and
+    space-insensitive on the mirrors, verified live 2026-11-20); a name
+    containing ``*`` or ``%`` is treated as a wildcard matched with ``LIKE``
+    over the spacing variants from :func:`_wildcard_patterns` (``%`` in ADQL
+    ``LIKE``). The query deliberately avoids ``LOWER(...)`` and qualified
+    ``ORDER BY`` columns — the mirror ADQL dialect rejects both (HTTP 400);
+    it uses the unqualified ``ORDER BY main_id`` instead.
     """
     ident = _adql_quote(name)
     if "*" in name or "%" in name:
-        predicate = f"LOWER(i.id) LIKE LOWER('{ident.replace('*', '%')}')"
+        patterns = [_adql_quote(p) for p in _wildcard_patterns(name)]
+        predicate = "(" + " OR ".join(f"i.id LIKE '{p}'" for p in patterns) + ")"
     else:
-        predicate = f"LOWER(i.id) = LOWER('{ident}')"
+        predicate = f"i.id = '{ident}'"
     return (
         "SELECT b.oid, b.main_id, b.ra, b.dec, b.otype, i.id, f.filter, f.flux "
         "FROM ident i "
         "JOIN basic b ON b.oid = i.oidref "
         f"LEFT JOIN flux f ON f.oidref = b.oid AND f.filter = '{_adql_quote(mag_filter)}' "
         f"WHERE {predicate} "
-        "ORDER BY b.main_id"
+        "ORDER BY main_id"
     )
 
 

@@ -90,8 +90,14 @@ def test_resolve_sends_tap_query_with_exact_identifier(fake_simbad):
     assert call["maxrec"] == simbad.DEFAULT_MAX_CANDIDATES
     assert call["timeout"] == simbad.DEFAULT_TIMEOUT_S
     assert "FROM ident" in call["query"]
-    assert "LOWER(i.id) = LOWER('M 42')" in call["query"]
+    # plain exact match — the mirror ADQL dialect rejects LOWER() (HTTP 400)
+    # and matches i.id = '<name>' case/space-insensitively (verified live)
+    assert "i.id = 'M 42'" in call["query"]
+    assert "LOWER" not in call["query"]
     assert "f.filter = 'V'" in call["query"]
+    # unqualified ORDER BY — qualified ORDER BY b.main_id is rejected on mirrors
+    assert "ORDER BY main_id" in call["query"]
+    assert "ORDER BY b.main_id" not in call["query"]
 
 
 def test_resolve_forwards_maxrec_timeout_and_mag_filter(fake_simbad):
@@ -137,6 +143,36 @@ def test_resolve_wildcard_name_uses_like_and_returns_many(fake_simbad):
     assert candidates[-1].name == "M 43"
     assert candidates[-1].magnitude is None
     assert candidates[-1].otype is None
+
+
+def test_wildcard_name_generates_letter_digit_spacing_variants(fake_simbad):
+    # SIMBAD stores 'NGC  7789' (two spaces); LIKE is literal on the mirrors,
+    # so the wildcard query carries the as-typed + single/double-space variants
+    fake_simbad.responses.append(tap_payload([M42_ROW]))
+    resolve_name("NGC7789*")
+    query = fake_simbad.calls[0]["query"]
+    assert "i.id LIKE 'NGC7789%'" in query
+    assert "i.id LIKE 'NGC 7789%'" in query
+    assert "i.id LIKE 'NGC  7789%'" in query
+    assert "LOWER" not in query
+    assert "ORDER BY main_id" in query
+
+
+@pytest.mark.parametrize(
+    ("name", "patterns"),
+    [
+        ("M 4*", ["M 4%"]),  # already spaced -> only the as-typed variant
+        ("M4*", ["M4%", "M 4%", "M  4%"]),
+        ("NGC7789*", ["NGC7789%", "NGC 7789%", "NGC  7789%"]),
+        ("M*", ["M%"]),
+    ],
+)
+def test_wildcard_patterns(name, patterns):
+    assert simbad._wildcard_patterns(name) == patterns
+    query = simbad.build_lookup_query(name)
+    for pattern in patterns:
+        assert f"i.id LIKE '{pattern}'" in query
+    assert "LOWER" not in query
 
 
 def test_resolve_dedupes_rows_with_same_oid(fake_simbad):
@@ -263,6 +299,9 @@ def test_fetch_posts_tap_form_and_parses_json(monkeypatch):
     assert form["LANG"] == ["ADQL"]
     assert form["QUERY"] == ["SELECT ..."]
     assert form["MAXREC"] == ["7"]
+    # FORMAT=json is what the mirrors honor; RESPONSEFORMAT is the TAP
+    # standard field CDS Strasbourg honors — both are sent (verified live)
+    assert form["FORMAT"] == ["json"]
     assert form["RESPONSEFORMAT"] == ["application/json"]
     assert payload["data"] == [M42_ROW]
 
@@ -307,6 +346,87 @@ def test_fetch_error_propagates_through_resolve_name(fake_simbad):
     fake_simbad.responses.append(SimbadUnavailableError("could not reach SIMBAD"))
     with pytest.raises(SimbadUnavailableError):
         resolve_name("M 42")
+
+
+# --- endpoint fallback (CDS Strasbourg down since 2026-10-29; mirrors verified) ---
+
+
+def test_fetch_tries_mirrors_in_order_when_cds_is_down(monkeypatch):
+    requested = []
+
+    def fake_urlopen(request, timeout):
+        requested.append(request.full_url)
+        if request.full_url == SIMBAD_TAP_SYNC_URL:
+            raise urllib.error.URLError("connection refused")  # CDS is down
+        return _FakeResponse(json.dumps(tap_payload([M42_ROW])).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    payload = simbad.fetch_tap_json("SELECT ...", timeout=5.0)
+    assert payload["data"] == [M42_ROW]
+    # CDS first, then the Harvard mirror — and it stops at the first success
+    assert requested == [SIMBAD_TAP_SYNC_URL, simbad.SIMBAD_TAP_SYNC_URL_CFA]
+
+
+def test_fetch_raises_unavailable_only_after_all_endpoints_fail(monkeypatch):
+    requested = []
+
+    def fake_urlopen(request, timeout):
+        requested.append(request.full_url)
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(SimbadUnavailableError) as excinfo:
+        simbad.fetch_tap_json("SELECT ...")
+    assert requested == list(simbad.SIMBAD_TAP_SYNC_URLS)  # all three, in order
+    message = str(excinfo.value)
+    assert "could not reach SIMBAD" in message
+    for url in simbad.SIMBAD_TAP_SYNC_URLS:
+        assert url in message  # the aggregate error names every endpoint tried
+
+
+def test_fetch_http_error_on_first_endpoint_falls_back_to_mirror(monkeypatch):
+    requested = []
+
+    def fake_urlopen(request, timeout):
+        requested.append(request.full_url)
+        if request.full_url == SIMBAD_TAP_SYNC_URL:
+            raise urllib.error.HTTPError(
+                SIMBAD_TAP_SYNC_URL, 404, "Page unavailable", None, None
+            )  # the CDS outage answers 404
+        return _FakeResponse(json.dumps(tap_payload([M42_ROW])).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    payload = simbad.fetch_tap_json("SELECT ...")
+    assert payload["data"] == [M42_ROW]
+    assert requested == [SIMBAD_TAP_SYNC_URL, simbad.SIMBAD_TAP_SYNC_URL_CFA]
+
+
+def test_fetch_pinned_url_tries_only_that_endpoint(monkeypatch):
+    requested = []
+
+    def fake_urlopen(request, timeout):
+        requested.append(request.full_url)
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(SimbadUnavailableError) as excinfo:
+        simbad.fetch_tap_json("SELECT ...", url=simbad.SIMBAD_TAP_SYNC_URL_IDIA)
+    assert requested == [simbad.SIMBAD_TAP_SYNC_URL_IDIA]
+    assert simbad.SIMBAD_TAP_SYNC_URL_IDIA in str(excinfo.value)
+    assert SIMBAD_TAP_SYNC_URL not in str(excinfo.value)
+
+
+def test_resolve_name_succeeds_via_mirror_when_cds_is_down(monkeypatch):
+    def fake_urlopen(request, timeout):
+        if request.full_url == SIMBAD_TAP_SYNC_URL:
+            raise urllib.error.URLError("connection refused")
+        return _FakeResponse(json.dumps(tap_payload([M42_ROW])).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    candidates = resolve_name("M 42")
+    assert len(candidates) == 1
+    assert candidates[0].name == "M 42"
+    assert candidates[0].ra_deg == pytest.approx(83.82208)
 
 
 # --- module boundary ----------------------------------------------------------

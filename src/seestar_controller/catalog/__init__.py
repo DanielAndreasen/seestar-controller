@@ -4,7 +4,9 @@
   (sexagesimal and decimal), the canonical :class:`~.coords.J2000Coord` type,
   and great-circle :func:`~.coords.angular_distance` (stdlib :mod:`math` only)
 - :mod:`.simbad` — SIMBAD name resolution to J2000 coordinates via the public
-  TAP HTTP interface (stdlib :mod:`urllib` only; tests mock the single
+  TAP HTTP interface with official-mirror fallback (CDS Strasbourg first,
+  then Harvard/IDIA — CDS has been down since 2026-10-29; stdlib
+  :mod:`urllib` only; tests mock the single
   :func:`~.simbad.fetch_tap_json` HTTP boundary)
 - :mod:`.cache` — on-disk JSON query cache under the app config dir with a
   configurable TTL: :class:`~.cache.QueryCache` wraps any catalog query
@@ -13,10 +15,11 @@
   instant and work offline; the raw ``resolve_name`` stays uncached)
 - :mod:`.standards` — standard-star (comparison-star) lookup near a target:
   :func:`~.standards.find_standard_stars` cone-searches APASS DR9 via VizieR
-  TAP for known standard stars within a radius (filtered by
-  :func:`~.coords.angular_distance`, sorted by magnitude closeness to the
-  target), and :func:`~.standards.find_standard_stars_cached` is its cached
-  variant — the catalog assist for photometry comp picking
+  (CDS TAP first, then the asu-tsv mirrors) for known standard stars within a
+  radius (filtered by :func:`~.coords.angular_distance`, sorted by magnitude
+  closeness to the target), and
+  :func:`~.standards.find_standard_stars_cached` is its cached variant — the
+  catalog assist for photometry comp picking
 - :mod:`.facade` — the single high-level entry point: :class:`~.facade.Catalog`
   / :func:`~.facade.lookup_name` / :func:`~.facade.lookup_standards` always use
   the cache and degrade gracefully offline — a fresh or stale (expired) cache
@@ -60,6 +63,9 @@ from .simbad import (
     DEFAULT_MAX_CANDIDATES,
     DEFAULT_TIMEOUT_S,
     SIMBAD_TAP_SYNC_URL,
+    SIMBAD_TAP_SYNC_URL_CFA,
+    SIMBAD_TAP_SYNC_URL_IDIA,
+    SIMBAD_TAP_SYNC_URLS,
     CatalogCandidate,
     CatalogError,
     NameNotFoundError,
@@ -74,15 +80,22 @@ from .standards import (
     BAND_COLUMNS,
     DEFAULT_BAND,
     DEFAULT_MAX_STANDARDS,
+    VIZIER_ASU_TSV_URL_CFA,
+    VIZIER_ASU_TSV_URL_IDIA,
+    VIZIER_ASU_TSV_URLS,
     VIZIER_TABLE,
     VIZIER_TAP_SYNC_URL,
     StandardStar,
     StandardsResponseError,
     StandardsUnavailableError,
+    build_asu_tsv_url,
     build_cone_query,
+    fetch_standards_payload,
+    fetch_vizier_asu_tsv,
     fetch_vizier_tap_json,
     find_standard_stars,
     find_standard_stars_cached,
+    parse_asu_tsv,
     parse_cone_response,
 )
 
@@ -100,6 +113,12 @@ __all__ = [
     "DEFAULT_TIMEOUT_S",
     "DEFAULT_TTL_S",
     "SIMBAD_TAP_SYNC_URL",
+    "SIMBAD_TAP_SYNC_URL_CFA",
+    "SIMBAD_TAP_SYNC_URL_IDIA",
+    "SIMBAD_TAP_SYNC_URLS",
+    "VIZIER_ASU_TSV_URL_CFA",
+    "VIZIER_ASU_TSV_URL_IDIA",
+    "VIZIER_ASU_TSV_URLS",
     "VIZIER_TABLE",
     "VIZIER_TAP_SYNC_URL",
     "Catalog",
@@ -116,16 +135,20 @@ __all__ = [
     "StandardsResponseError",
     "StandardsUnavailableError",
     "angular_distance",
+    "build_asu_tsv_url",
     "build_cone_query",
     "build_lookup_query",
     "cache_key",
     "default_cache_dir",
+    "fetch_standards_payload",
     "fetch_tap_json",
+    "fetch_vizier_asu_tsv",
     "fetch_vizier_tap_json",
     "find_standard_stars",
     "find_standard_stars_cached",
     "lookup_name",
     "lookup_standards",
+    "parse_asu_tsv",
     "parse_cone_response",
     "parse_coords",
     "parse_dec",

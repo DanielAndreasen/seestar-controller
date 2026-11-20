@@ -1,11 +1,14 @@
 """Standard-star lookup near a target with mocked HTTP — no real network.
 
 The HTTP boundary is
-:func:`seestar_controller.catalog.standards.fetch_vizier_tap_json`; the lookup
-tests monkeypatch that single function, and the fetch tests monkeypatch
-``urllib.request.urlopen`` to cover the HTTP layer itself (same pattern as
-tests/test_catalog_names.py). The cached variant is tested with a QueryCache
-in a ``tmp_path`` dir, like tests/test_catalog_cache.py.
+:func:`seestar_controller.catalog.standards.fetch_standards_payload` (which
+composes the per-endpoint primitives ``fetch_vizier_tap_json`` for CDS TAP and
+``fetch_vizier_asu_tsv`` + ``parse_asu_tsv`` for the asu-tsv mirrors); the
+lookup tests monkeypatch that single function, the fallback tests monkeypatch
+the primitives, and the fetch tests monkeypatch ``urllib.request.urlopen`` to
+cover the HTTP layer itself (same pattern as tests/test_catalog_names.py).
+The cached variant is tested with a QueryCache in a ``tmp_path`` dir, like
+tests/test_catalog_cache.py.
 """
 
 import json
@@ -60,18 +63,27 @@ def tap_payload(rows, columns=COLUMNS):
 
 @pytest.fixture()
 def fake_vizier(monkeypatch):
-    """Monkeypatch the single fetch function; queue payloads, record calls."""
+    """Monkeypatch the single standards fetch boundary; queue payloads, record calls."""
     calls = []
     responses = []
 
-    def fake_fetch(query, *, maxrec, timeout, url=VIZIER_TAP_SYNC_URL):
-        calls.append({"query": query, "maxrec": maxrec, "timeout": timeout, "url": url})
+    def fake_fetch(coord, radius_deg, *, band, maxrec, timeout):
+        calls.append(
+            {
+                "coord": coord,
+                "radius_deg": radius_deg,
+                "band": band,
+                "maxrec": maxrec,
+                "timeout": timeout,
+                "query": standards.build_cone_query(coord, radius_deg, band=band),
+            }
+        )
         item = responses.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
 
-    monkeypatch.setattr(standards, "fetch_vizier_tap_json", fake_fetch)
+    monkeypatch.setattr(standards, "fetch_standards_payload", fake_fetch)
     return SimpleNamespace(calls=calls, responses=responses)
 
 
@@ -95,12 +107,14 @@ def cache_files(cache):
 # --- cone-search query construction ----------------------------------------------
 
 
-def test_cone_query_is_built_and_sent_to_vizier_tap(fake_vizier):
+def test_cone_query_is_built_and_sent_through_the_single_boundary(fake_vizier):
     fake_vizier.responses.append(tap_payload([STAR_01]))
     find_standard_stars(TARGET, RADIUS)
     assert len(fake_vizier.calls) == 1
     call = fake_vizier.calls[0]
-    assert call["url"] == VIZIER_TAP_SYNC_URL
+    assert call["coord"] == TARGET
+    assert call["radius_deg"] == RADIUS
+    assert call["band"] == "V"
     assert call["maxrec"] == standards.DEFAULT_MAX_STANDARDS
     assert call["timeout"] == standards.DEFAULT_TIMEOUT_S
     query = call["query"]
@@ -411,6 +425,227 @@ def test_fetch_invalid_json_body_raises_response_error(monkeypatch):
     )
     with pytest.raises(StandardsResponseError, match="not valid JSON"):
         standards.fetch_vizier_tap_json("SELECT ...")
+
+
+# --- the asu-tsv mirror interface (CDS Strasbourg down since 2026-10-29) -----------
+
+#: A realistic viz-bin asu-tsv response (shape probed live on the Harvard
+#: mirror 2026-11-20): '#' metadata lines, a header row, a unit row, a dashes
+#: separator row, then tab-separated data rows. Columns mirror the APASS
+#: rows above (STAR_01/02/03 + NO_MAG); the asu header spells g'mag with an
+#: apostrophe where TAP spells it gmag.
+ASU_TSV = (
+    "#\n"
+    "#   VizieR Astronomical Server vizier.cfa.harvard.edu\n"
+    "#Column\tRAJ2000\t(F10.6)\tRight ascension in decimal degrees (J2000)\n"
+    "#Column\tDEJ2000\t(F10.6)\tDeclination in decimal degrees (J2000)\n"
+    "#Column\tVmag\t(F6.3)\t[0/20] V magnitude\n"
+    "#Column\tg'mag\t(F6.3)\t[0/20] g' magnitude\n"
+    "\n"
+    "RAJ2000\tDEJ2000\te_RAJ2000\te_DEJ2000\tVmag\te_Vmag\tBmag\tg'mag\n"
+    "deg\tdeg\tarcsec\tarcsec\tmag\tmag\tmag\tmag\n"
+    "----------\t----------\t------\t------\t------\t------\t------\t------\n"
+    "083.822080\t-05.291140\t 0.459\t 0.338\t 9.500\t 0.107\t10.559\t11.041\n"
+    "084.322080\t-05.391140\t 0.339\t 0.413\t11.000\t 0.100\t12.115\t12.579\n"
+    "083.822080\t-04.881140\t 0.557\t 0.277\t 8.000\t 0.114\t 8.589\t 9.259\n"
+    "083.922080\t-05.391140\t 0.367\t 0.468\t\t 0.000\t15.527\t15.945\n"
+)
+
+
+def test_parse_asu_tsv_normalizes_to_the_tap_payload_shape():
+    payload = standards.parse_asu_tsv(ASU_TSV, band="V")
+    # apostrophes stripped from column names (g'mag -> gmag, like TAP)
+    assert [m["name"] for m in payload["metadata"]] == [
+        "RAJ2000", "DEJ2000", "e_RAJ2000", "e_DEJ2000", "Vmag", "e_Vmag", "Bmag", "gmag",
+    ]
+    assert payload["data"][0] == [
+        "083.822080", "-05.291140", "0.459", "0.338", "9.500", "0.107", "10.559", "11.041",
+    ]
+    # the empty Vmag cell stays an empty string (the parser maps it to None)
+    assert payload["data"][3][4] == ""
+
+
+def test_asu_tsv_payload_flows_through_the_existing_parser():
+    payload = standards.parse_asu_tsv(ASU_TSV, band="V")
+    stars = standards.parse_cone_response(payload, target=TARGET, radius_deg=RADIUS, band="V")
+    # STAR_03 (8.0 mag, 0.51 deg away) is dropped by the client-side radius
+    # filter; the no-magnitude row sorts last
+    assert [s.magnitude for s in stars] == [9.5, 11.0, None]
+    assert stars[0].ra_deg == pytest.approx(83.82208)
+    assert stars[0].dec_deg == pytest.approx(-5.29114)
+    assert stars[0].name == "APASS J83.82208-05.29114"
+    assert stars[0].distance_deg == pytest.approx(0.1, abs=1e-9)
+    assert stars[0].band == "V"
+
+
+def test_asu_tsv_band_column_with_apostrophe_header():
+    # band "g" maps to gmag; the asu header spells it g'mag -> normalized
+    # (the no-Vmag row still has a g'mag, so all three inside-radius rows show)
+    payload = standards.parse_asu_tsv(ASU_TSV, band="g")
+    stars = standards.parse_cone_response(payload, target=TARGET, radius_deg=RADIUS, band="g")
+    assert [s.magnitude for s in stars] == [11.041, 12.579, 15.945]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",  # empty body
+        "# only\n# metadata\n",  # no header row
+        "RAJ2000\tDEJ2000\ndeg\tdeg\n----\t----\n83.8\t-5.4\n",  # missing Vmag column
+        42,  # not text
+    ],
+)
+def test_malformed_asu_tsv_raises_response_error(text):
+    with pytest.raises(StandardsResponseError):
+        standards.parse_asu_tsv(text, band="V")
+
+
+def test_fetch_vizier_asu_tsv_builds_the_cone_url(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return _FakeResponse(ASU_TSV.encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    text = standards.fetch_vizier_asu_tsv(
+        TARGET, RADIUS, maxrec=7, timeout=3.0, url=standards.VIZIER_ASU_TSV_URL_CFA
+    )
+    assert text == ASU_TSV
+    request = captured["request"]
+    assert request.get_method() == "GET"
+    assert captured["timeout"] == 3.0
+    url = request.full_url
+    assert url.startswith(standards.VIZIER_ASU_TSV_URL_CFA + "?")
+    query = urllib.parse.urlsplit(url).query
+    # the '+' separator of -c is kept literal (the mirrors parse it that way)
+    assert "-c=83.82208+-5.39114" in query
+    qs = urllib.parse.parse_qs(query, keep_blank_values=True)
+    assert qs["-source"] == ["II/336/apass9"]
+    assert qs["-c.rm"] == ["30.0"]  # 0.5 deg -> 30 arcminutes
+    assert qs["-out.max"] == ["7"]
+    assert qs["-out.all"] == [""]
+
+
+def test_fetch_vizier_asu_tsv_http_error_raises_unavailable(monkeypatch):
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            standards.VIZIER_ASU_TSV_URL_CFA, 404, "Page unavailable", None, None
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(StandardsUnavailableError, match="HTTP 404"):
+        standards.fetch_vizier_asu_tsv(TARGET, RADIUS)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        urllib.error.URLError("no route to host"),
+        TimeoutError("timed out"),
+        OSError("network unreachable"),
+    ],
+)
+def test_fetch_vizier_asu_tsv_network_failure_raises_unavailable(monkeypatch, error):
+    def fake_urlopen(request, timeout):
+        raise error
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(StandardsUnavailableError, match="could not reach VizieR mirror"):
+        standards.fetch_vizier_asu_tsv(TARGET, RADIUS)
+
+
+# --- endpoint fallback (CDS TAP down -> asu-tsv mirrors, verified live) -------------
+
+
+def _mock_endpoints(monkeypatch, tap_error, asu_texts):
+    """Mock the per-endpoint primitives: CDS TAP raises ``tap_error``; the
+    asu-tsv mirrors answer in order from ``asu_texts`` (str -> TSV, Exception
+    -> raise). Returns the recorded call lists."""
+    tap_calls = []
+    asu_calls = []
+
+    def fake_tap(query, *, maxrec, timeout, url=VIZIER_TAP_SYNC_URL):
+        tap_calls.append(url)
+        raise tap_error
+
+    def fake_asu(coord, radius_deg, *, band, maxrec, timeout, url):
+        asu_calls.append(url)
+        item = asu_texts[len(asu_calls) - 1]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(standards, "fetch_vizier_tap_json", fake_tap)
+    monkeypatch.setattr(standards, "fetch_vizier_asu_tsv", fake_asu)
+    return SimpleNamespace(tap_calls=tap_calls, asu_calls=asu_calls)
+
+
+def test_fetch_standards_payload_falls_back_from_cds_tap_to_first_mirror(monkeypatch):
+    calls = _mock_endpoints(
+        monkeypatch,
+        StandardsUnavailableError("CDS TAP down"),
+        [ASU_TSV, StandardsUnavailableError("should not be reached")],
+    )
+    payload = standards.fetch_standards_payload(TARGET, RADIUS)
+    assert calls.tap_calls == [VIZIER_TAP_SYNC_URL]
+    assert calls.asu_calls == [standards.VIZIER_ASU_TSV_URL_CFA]  # first mirror wins
+    stars = standards.parse_cone_response(payload, target=TARGET, radius_deg=RADIUS)
+    assert [s.magnitude for s in stars] == [9.5, 11.0, None]
+
+
+def test_fetch_standards_payload_tries_all_endpoints_in_order(monkeypatch):
+    calls = _mock_endpoints(
+        monkeypatch,
+        StandardsUnavailableError("CDS TAP down"),
+        [
+            StandardsUnavailableError("harvard down"),
+            ASU_TSV,  # the IDIA mirror answers
+        ],
+    )
+    payload = standards.fetch_standards_payload(TARGET, RADIUS)
+    assert calls.tap_calls == [VIZIER_TAP_SYNC_URL]
+    assert calls.asu_calls == list(standards.VIZIER_ASU_TSV_URLS)
+    assert payload["data"][0][0] == "083.822080"
+
+
+def test_fetch_standards_payload_raises_unavailable_when_all_endpoints_fail(monkeypatch):
+    calls = _mock_endpoints(
+        monkeypatch,
+        StandardsUnavailableError("CDS TAP down"),
+        [StandardsUnavailableError("harvard down"), StandardsUnavailableError("idia down")],
+    )
+    with pytest.raises(StandardsUnavailableError) as excinfo:
+        standards.fetch_standards_payload(TARGET, RADIUS)
+    assert calls.tap_calls == [VIZIER_TAP_SYNC_URL]
+    assert calls.asu_calls == list(standards.VIZIER_ASU_TSV_URLS)
+    message = str(excinfo.value)
+    assert "could not reach VizieR" in message
+    for url in (VIZIER_TAP_SYNC_URL, *standards.VIZIER_ASU_TSV_URLS):
+        assert url in message  # the aggregate error names every endpoint tried
+
+
+def test_fetch_standards_payload_validates_args_without_any_fetch(monkeypatch):
+    calls = _mock_endpoints(monkeypatch, StandardsUnavailableError("down"), [ASU_TSV])
+    with pytest.raises(ValueError, match="radius_deg"):
+        standards.fetch_standards_payload(TARGET, 0)
+    with pytest.raises(ValueError, match="band"):
+        standards.fetch_standards_payload(TARGET, RADIUS, band="K")
+    with pytest.raises(ValueError, match="maxrec"):
+        standards.fetch_standards_payload(TARGET, RADIUS, maxrec=0)
+    assert calls.tap_calls == [] and calls.asu_calls == []
+
+
+def test_find_standard_stars_uses_mirror_when_cds_tap_is_down(monkeypatch):
+    _mock_endpoints(
+        monkeypatch,
+        StandardsUnavailableError("CDS TAP down"),
+        [ASU_TSV, StandardsUnavailableError("unused")],
+    )
+    stars = find_standard_stars(TARGET, RADIUS)
+    assert [s.magnitude for s in stars] == [9.5, 11.0, None]
+    assert all(isinstance(s, StandardStar) for s in stars)
 
 
 # --- cached variant ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """Offline and error behavior of the catalog facade — mocked HTTP, no real network.
 
 The HTTP boundaries are :func:`seestar_controller.catalog.simbad.fetch_tap_json`
-and :func:`seestar_controller.catalog.standards.fetch_vizier_tap_json`
+and :func:`seestar_controller.catalog.standards.fetch_standards_payload`
 (monkeypatched, same pattern as tests/test_catalog_names.py and
 tests/test_catalog_standards.py); every cache lives in a ``tmp_path`` dir with
 an injected fake clock, so TTL expiry is tested without sleeping.
@@ -24,7 +24,6 @@ import pytest
 
 from seestar_controller.catalog import (
     SIMBAD_TAP_SYNC_URL,
-    VIZIER_TAP_SYNC_URL,
     Catalog,
     CatalogCandidate,
     CatalogError,
@@ -105,18 +104,26 @@ def fake_simbad(monkeypatch):
 
 @pytest.fixture()
 def fake_vizier(monkeypatch):
-    """Monkeypatch the single VizieR fetch function; queue payloads, record calls."""
+    """Monkeypatch the single standards fetch boundary; queue payloads, record calls."""
     calls = []
     responses = []
 
-    def fake_fetch(query, *, maxrec, timeout, url=VIZIER_TAP_SYNC_URL):
-        calls.append({"query": query, "maxrec": maxrec, "timeout": timeout, "url": url})
+    def fake_fetch(coord, radius_deg, *, band, maxrec, timeout):
+        calls.append(
+            {
+                "coord": coord,
+                "radius_deg": radius_deg,
+                "band": band,
+                "maxrec": maxrec,
+                "timeout": timeout,
+            }
+        )
         item = responses.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
 
-    monkeypatch.setattr(standards, "fetch_vizier_tap_json", fake_fetch)
+    monkeypatch.setattr(standards, "fetch_standards_payload", fake_fetch)
     return SimpleNamespace(calls=calls, responses=responses)
 
 

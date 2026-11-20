@@ -11,25 +11,34 @@ no GTK imports, no :mod:`seestar_controller.link` imports, stdlib only.
 Catalog choice: **APASS DR9** — the VizieR table ``II/336/apass9`` (AAVSO
 Photometric All-Sky Survey) — queried through the public **VizieR TAP**
 synchronous endpoint (:data:`VIZIER_TAP_SYNC_URL`) with an ADQL cone search
-(:func:`build_cone_query`). APASS is chosen because it is all-sky and dense (a
-cone search around any target actually returns stars) and carries B/V/g/r/i
-magnitudes; the AAVSO chart sequences are not published as a single TAP
-table, and the Landolt standards (``V/139``) are sparse — about a thousand
-stars in a handful of standard fields, so a cone search around an arbitrary
-target usually comes back empty. The photometric band is selected through
-:data:`BAND_COLUMNS` (default ``V``).
+(:func:`build_cone_query`) when CDS Strasbourg answers, and through the
+classic **viz-bin asu-tsv** interface on the official VizieR mirrors
+(:data:`VIZIER_ASU_TSV_URLS`, :func:`fetch_vizier_asu_tsv`) otherwise. APASS
+is chosen because it is all-sky and dense (a cone search around any target
+actually returns stars) and carries B/V/g/r/i magnitudes; the AAVSO chart
+sequences are not published as a single TAP table, and the Landolt standards
+(``V/139``) are sparse — about a thousand stars in a handful of standard
+fields, so a cone search around an arbitrary target usually comes back empty.
+The photometric band is selected through :data:`BAND_COLUMNS` (default ``V``).
 
-NOTE (user AFK, docs/wiki/assumptions.md): the VizieR TAP endpoint, the
-``II/336/apass9`` table and column names, and the TAP ``sync`` form fields /
-JSON ``{"metadata": ..., "data": ...}`` body below are our contract,
-**unverified against the live service** (no network in the sandbox). VizieR
-serves ICRS, which coincides with J2000 at the precision we need — the same
-convention as :mod:`.simbad`.
+ENDPOINTS (verified live 2026-11-20, see docs/wiki/progress.md): **CDS
+Strasbourg is down** — a cybersecurity incident since ~2026-10-29;
+``tapvizier.cds.unistra.fr`` times out and ``vizier.cds.unistra.fr`` answers
+404, with no ETA for recovery, and no TAP mirrors exist. The official VizieR
+mirrors (Harvard CfA, IDIA) serve the classic ``viz-bin/asu-tsv`` interface,
+so :func:`fetch_standards_payload` — the single HTTP boundary — tries the
+endpoints in order (CDS TAP -> Harvard asu-tsv -> IDIA asu-tsv) and normalizes
+both response shapes into the same TAP-JSON payload
+(``{"metadata": ..., "data": ...}``) that :func:`parse_cone_response` consumes;
+the first success wins and cache keys stay endpoint-agnostic (keyed on the
+ADQL cone query). VizieR serves ICRS, which coincides with J2000 at the
+precision we need — the same convention as :mod:`.simbad`.
 
-The HTTP layer is a single function, :func:`fetch_vizier_tap_json`, mirroring
-:func:`~.simbad.fetch_tap_json` — tests mock exactly that one function (or
-:func:`urllib.request.urlopen` for the fetch itself), so no test ever touches
-the network.
+The HTTP layer is the single function :func:`fetch_standards_payload`, which
+composes the per-endpoint primitives :func:`fetch_vizier_tap_json` (CDS TAP)
+and :func:`fetch_vizier_asu_tsv` + :func:`parse_asu_tsv` (mirrors) — tests
+monkeypatch those functions (or :func:`urllib.request.urlopen` for the fetch
+itself), so no test ever touches the network.
 
 Filtering reuses :func:`~.coords.angular_distance` (never reimplemented here).
 An empty result — no standards nearby — is a **normal** outcome and returns
@@ -53,14 +62,26 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .cache import QueryCache
 from .coords import J2000Coord, angular_distance
 from .simbad import CatalogError
 
-#: VizieR's public TAP synchronous endpoint (POST form: REQUEST/LANG/QUERY/...).
+#: VizieR's public TAP synchronous endpoint at CDS Strasbourg (canonical; down
+#: since the 2026-10-29 security incident — kept first for when it returns).
 VIZIER_TAP_SYNC_URL = "https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync"
+
+#: Official VizieR mirror at the Center for Astrophysics | Harvard & Smithsonian
+#: (classic ``viz-bin/asu-tsv`` interface — no TAP mirrors exist).
+VIZIER_ASU_TSV_URL_CFA = "https://vizier.cfa.harvard.edu/viz-bin/asu-tsv"
+
+#: Official VizieR mirror at IDIA (South Africa), same ``asu-tsv`` interface.
+VIZIER_ASU_TSV_URL_IDIA = "https://vizier.idia.ac.za/viz-bin/asu-tsv"
+
+#: VizieR asu-tsv mirror endpoints tried after the CDS TAP endpoint (verified
+#: live 2026-11-20 during the CDS outage — see module docstring).
+VIZIER_ASU_TSV_URLS = (VIZIER_ASU_TSV_URL_CFA, VIZIER_ASU_TSV_URL_IDIA)
 
 #: The VizieR table queried for standard/comparison stars: APASS DR9.
 VIZIER_TABLE = "II/336/apass9"
@@ -363,6 +384,187 @@ def fetch_vizier_tap_json(
     return payload
 
 
+# --- the classic viz-bin asu-tsv mirror interface ---------------------------------
+
+
+def build_asu_tsv_url(
+    coord: Any,
+    radius_deg: float,
+    *,
+    band: str = DEFAULT_BAND,
+    maxrec: int = DEFAULT_MAX_STANDARDS,
+    url: str = VIZIER_ASU_TSV_URL_CFA,
+) -> str:
+    """Build one ``viz-bin/asu-tsv`` cone-search URL on a VizieR mirror.
+
+    Parameters (verified live 2026-11-20 on the Harvard and IDIA mirrors):
+    ``-source=<table>``, ``-c=<ra_deg>+<dec_deg>`` (center in degrees, the sign
+    of Dec included, ``+`` kept literal), ``-c.rm=<radius_arcmin>`` (radius in
+    **arcminutes** = ``radius_deg * 60``), ``-out.max=<n>`` (row cap) and
+    ``-out.all=`` (all columns).
+    """
+    target = _as_coord(coord)
+    radius = _validate_radius(radius_deg)
+    _validate_band(band)
+    if isinstance(maxrec, bool) or not isinstance(maxrec, int) or maxrec < 1:
+        raise ValueError(f"maxrec must be an int >= 1, got {maxrec!r}")
+    params = [
+        ("-source", VIZIER_TABLE),
+        ("-c", f"{target.ra_deg!r}+{target.dec_deg!r}"),
+        ("-c.rm", repr(radius * 60.0)),  # degrees -> arcminutes
+        ("-out.max", str(int(maxrec))),
+        ("-out.all", ""),
+    ]
+    # keep the '+' separator of -c literal (the mirrors parse it that way)
+    query = urllib.parse.urlencode(params, safe="+", quote_via=urllib.parse.quote)
+    return f"{url}?{query}"
+
+
+def fetch_vizier_asu_tsv(
+    coord: Any,
+    radius_deg: float,
+    *,
+    band: str = DEFAULT_BAND,
+    maxrec: int = DEFAULT_MAX_STANDARDS,
+    timeout: float = DEFAULT_TIMEOUT_S,
+    url: str = VIZIER_ASU_TSV_URL_CFA,
+) -> str:
+    """GET the classic ``viz-bin/asu-tsv`` cone search on one VizieR mirror.
+
+    Returns the raw ASU TSV text (``#``-prefixed metadata lines, then the
+    header / unit / dashes rows, then tab-separated data rows) — parsed by
+    :func:`parse_asu_tsv`. Raises :class:`StandardsUnavailableError` on
+    network/HTTP failure and :class:`StandardsResponseError` when the body is
+    not decodable text.
+    """
+    target_url = build_asu_tsv_url(coord, radius_deg, band=band, maxrec=maxrec, url=url)
+    request = urllib.request.Request(
+        target_url,
+        headers={
+            "Accept": "text/tab-separated-values",
+            "User-Agent": USER_AGENT,
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        raise StandardsUnavailableError(
+            f"VizieR mirror returned HTTP {exc.code} ({exc.reason}) at {url}"
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise StandardsUnavailableError(f"could not reach VizieR mirror at {url}: {exc}") from exc
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise StandardsResponseError(
+            f"VizieR asu-tsv response at {url} is not valid UTF-8: {exc}"
+        ) from exc
+
+
+def parse_asu_tsv(text: Any, *, band: str = DEFAULT_BAND) -> dict[str, Any]:
+    """Parse a ``viz-bin/asu-tsv`` response into the TAP-JSON payload shape.
+
+    Normalizes the ASU TSV (``#`` metadata lines, a header row of column
+    names, a unit row, a dashes separator row, then tab-separated data rows)
+    into ``{"metadata": [{"name": ...}, ...], "data": [[...], ...]}`` — the
+    exact shape :func:`parse_cone_response` consumes, so both endpoint kinds
+    flow through the same parser. Column names are normalized by stripping
+    apostrophes (the asu-tsv header spells the APASS bands ``g'mag`` /
+    ``r'mag`` / ``i'mag`` where TAP spells them ``gmag`` / ``rmag`` /
+    ``imag``). Raises :class:`StandardsResponseError` on a malformed response.
+    """
+    if not isinstance(text, str):
+        raise StandardsResponseError(
+            f"VizieR asu-tsv response is not text but {type(text).__name__}"
+        )
+    checked_band = _validate_band(band)
+    mag_column = BAND_COLUMNS[checked_band]
+    rows = [
+        line
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not rows:
+        raise StandardsResponseError("VizieR asu-tsv response has no header row")
+    header = [name.strip().replace("'", "") for name in rows[0].split("\t")]
+    rest = rows[1:]
+    separator = None
+    for i, line in enumerate(rest):
+        fields = line.split("\t")
+        if fields and all(field and set(field) <= {"-"} for field in fields):
+            separator = i  # the dashes row between the unit row and the data
+            break
+    if separator is not None:
+        data_lines = rest[separator + 1 :]
+    else:
+        data_lines = rest[1:] if len(rest) > 1 else []  # skip the unit row
+    missing = [c for c in (*(_REQUIRED_COLUMNS), mag_column) if c not in header]
+    if missing:
+        raise StandardsResponseError(
+            f"VizieR asu-tsv response is missing column(s) {missing}"
+        )
+    data = [[field.strip() for field in line.split("\t")] for line in data_lines]
+    return {"metadata": [{"name": name} for name in header], "data": data}
+
+
+def fetch_standards_payload(
+    coord: Any,
+    radius_deg: float,
+    *,
+    band: str = DEFAULT_BAND,
+    maxrec: int = DEFAULT_MAX_STANDARDS,
+    timeout: float = DEFAULT_TIMEOUT_S,
+) -> dict[str, Any]:
+    """Fetch one APASS cone search from VizieR — the single HTTP boundary.
+
+    Tries the endpoints in order — CDS TAPVizieR (:func:`fetch_vizier_tap_json`
+    with the ADQL cone query, for when Strasbourg is back), then each
+    asu-tsv mirror (:func:`fetch_vizier_asu_tsv` + :func:`parse_asu_tsv`) —
+    and normalizes both into the same TAP-JSON payload
+    :func:`parse_cone_response` consumes. The first success wins; each
+    endpoint gets its own ``timeout``. :class:`StandardsUnavailableError` is
+    raised only when **every** endpoint fails (network/HTTP failure); a
+    malformed body from an endpoint that did answer raises
+    :class:`StandardsResponseError` immediately. Cache keys stay
+    endpoint-agnostic (keyed on the ADQL cone query, as before).
+    """
+    target = _as_coord(coord)
+    radius = _validate_radius(radius_deg)
+    checked_band = _validate_band(band)
+    if isinstance(maxrec, bool) or not isinstance(maxrec, int) or maxrec < 1:
+        raise ValueError(f"maxrec must be an int >= 1, got {maxrec!r}")
+    adql = build_cone_query(target, radius, band=checked_band)
+    attempts: list[tuple[str, Callable[[], dict[str, Any]]]] = [
+        (
+            f"CDS TAP {VIZIER_TAP_SYNC_URL}",
+            lambda: fetch_vizier_tap_json(adql, maxrec=maxrec, timeout=timeout),
+        )
+    ]
+    for mirror in VIZIER_ASU_TSV_URLS:
+        attempts.append(
+            (
+                f"asu-tsv {mirror}",
+                lambda mirror=mirror: parse_asu_tsv(
+                    fetch_vizier_asu_tsv(
+                        target, radius, band=checked_band, maxrec=maxrec, timeout=timeout, url=mirror
+                    ),
+                    band=checked_band,
+                ),
+            )
+        )
+    failures: list[str] = []
+    for label, attempt in attempts:
+        try:
+            return attempt()
+        except StandardsUnavailableError as exc:
+            failures.append(f"{label}: {exc}")
+    raise StandardsUnavailableError(
+        "could not reach VizieR at any endpoint (" + "; ".join(failures) + ")"
+    )
+
+
 # --- response parsing ---------------------------------------------------------------
 
 
@@ -549,8 +751,9 @@ def find_standard_stars(
     ``coord`` is the target position — a :class:`~.coords.J2000Coord`, a
     ``(ra_deg, dec_deg)`` pair, or any object with ``ra_deg``/``dec_deg``
     (e.g. a SIMBAD candidate). The APASS DR9 cone search is queried via
-    VizieR TAP; rows are parsed to :class:`StandardStar` with ``distance_deg``
-    computed by :func:`~.coords.angular_distance`, filtered to
+    :func:`fetch_standards_payload` (CDS TAP first, then the asu-tsv mirrors);
+    rows are parsed to :class:`StandardStar` with ``distance_deg`` computed
+    by :func:`~.coords.angular_distance`, filtered to
     ``distance_deg <= radius_deg``, then:
 
     - ``mag_range`` (optional ``(lo, hi)``) keeps only stars with a known
@@ -570,8 +773,9 @@ def find_standard_stars(
     target, radius, checked_band, checked_mag, checked_range = _validate_args(
         coord, radius_deg, maxrec=maxrec, band=band, target_mag=target_mag, mag_range=mag_range
     )
-    adql = build_cone_query(target, radius, band=checked_band)
-    payload = fetch_vizier_tap_json(adql, maxrec=maxrec, timeout=timeout)
+    payload = fetch_standards_payload(
+        target, radius, band=checked_band, maxrec=maxrec, timeout=timeout
+    )
     stars = parse_cone_response(payload, target=target, radius_deg=radius, band=checked_band)
     return _finish(stars, target_mag=checked_mag, mag_range=checked_range)
 
@@ -615,7 +819,9 @@ def find_standard_stars_cached(
     query = _standards_query(adql, maxrec=maxrec)
 
     def fetch() -> list[dict[str, Any]]:
-        payload = fetch_vizier_tap_json(adql, maxrec=maxrec, timeout=timeout)
+        payload = fetch_standards_payload(
+            target, radius, band=checked_band, maxrec=maxrec, timeout=timeout
+        )
         # Parse BEFORE caching: a malformed response is never stored.
         stars = parse_cone_response(
             payload, target=target, radius_deg=radius, band=checked_band
