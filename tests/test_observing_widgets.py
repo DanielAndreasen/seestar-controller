@@ -120,7 +120,7 @@ def test_editor_renders_entries(gtk, controller, editor):
     assert editor.row_count() == 2
     assert editor.row_label(0) == controller[0].describe()
     assert editor.row_label(0).startswith("M 42 (unresolved) | no mosaic | 30 s | gain 80")
-    assert editor.row_label(1).startswith("RA 0.7120h Dec +41.2700° | mosaic 2°×1° | 10 s | gain 50")
+    assert editor.row_label(1).startswith("RA 10.6800h Dec +41.2700° | mosaic 2°×1° | 10 s | gain 50")
     # the list box itself holds the rows
     assert editor.list_box.get_row_at_index(0) is not None
     assert editor.list_box.get_row_at_index(2) is None
@@ -438,8 +438,8 @@ def test_observe_view_two_pane_layout(gtk, controller, observe_stub):
     assert subs["elapsed"] == "0 s"
     assert subs["queue"] == "0 / 0"
     assert subs["session"] == "—"
-    # start needs a project, park needs a connection
-    assert not widget.start_button.get_sensitive()
+    # connected + project set + idle: start and park enabled, pause not
+    assert widget.start_button.get_sensitive()
     assert widget.park_button.get_sensitive()
     assert not widget.pause_button.get_sensitive()
 
