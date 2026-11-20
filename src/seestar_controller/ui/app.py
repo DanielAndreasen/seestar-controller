@@ -44,6 +44,16 @@ what ticket 03's connect will use). The header bar carries a menu button
 whose **Settings** item activates the window-level ``win.settings`` action,
 which presents a :class:`~seestar_controller.ui.settings_dialog.SettingsDialog`
 bound to that controller.
+
+Connection (ticket 03): the application owns a
+:class:`~seestar_controller.ui.connection.ConnectionController` over the same
+settings, with its ``invoke_on_main`` bound to :func:`GLib.idle_add` (see
+:func:`_invoke_on_main`) so the worker-thread results and the device
+lifecycle events are applied on the GLib main loop. The header bar carries a
+:class:`~seestar_controller.ui.connection_panel.ConnectionPanel`
+(``pack_start``) — a Connect/Disconnect button + status label showing
+disconnected/connecting/connected/reconnecting/error, and the Scope's
+current state (mode, target) once connected.
 """
 
 from __future__ import annotations
@@ -55,8 +65,10 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
+from .connection import ConnectionController  # noqa: E402
+from .connection_panel import ConnectionPanel  # noqa: E402
 from .settings import SettingsController  # noqa: E402
 from .settings_dialog import SettingsDialog  # noqa: E402
 from .state import (  # noqa: E402
@@ -74,6 +86,17 @@ APP_NAME = "Seestar Controller"
 
 #: Sidebar minimum width (pixels).
 SIDEBAR_WIDTH = 180
+
+
+def _invoke_on_main(callback) -> int:
+    """Marshal a pure-layer callback onto the GLib main loop.
+
+    This is the ``invoke_on_main`` the app binds to the pure
+    :class:`~seestar_controller.ui.connection.ConnectionController`: the
+    blocking ``Device.connect`` runs on a worker thread and its result (and
+    the device lifecycle events) are applied here, on the main thread.
+    """
+    return GLib.idle_add(callback)
 
 
 def apply_dark_theme(dark: bool) -> None:
@@ -115,7 +138,8 @@ def _restore_geometry(window: Gtk.Window, geometry: dict) -> None:
 
 
 class SeestarWindow(Adw.ApplicationWindow):
-    """The main window: header bar + sidebar (ListBox) + view stack.
+    """The main window: header bar (connection panel + settings menu) +
+    sidebar (ListBox) + view stack.
 
     The pure-layer :class:`~seestar_controller.ui.state.AppState` is the
     single source of truth: the window renders it (initial view, geometry,
@@ -127,6 +151,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         app: Adw.Application,
         state: AppState,
         settings_controller: SettingsController | None = None,
+        connection_controller: ConnectionController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -138,10 +163,22 @@ class SeestarWindow(Adw.ApplicationWindow):
             else getattr(app, "settings_controller", None)
             or SettingsController(state)
         )
+        # Ticket 03: one shared connection controller; the header panel
+        # observes it (its invoke_on_main is GLib.idle_add, so worker-thread
+        # results land on the main loop).
+        self._connection_controller = (
+            connection_controller
+            if connection_controller is not None
+            else getattr(app, "connection_controller", None)
+            or ConnectionController(self._settings_controller, invoke_on_main=_invoke_on_main)
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         header.set_title_widget(Gtk.Label(label=APP_NAME))
+        # Connection panel (ticket 03): connect button + status, left side.
+        self._connection_panel = ConnectionPanel(self._connection_controller)
+        header.pack_start(self._connection_panel)
         # Settings menu button (ticket 02): one item activating win.settings.
         settings_action = Gio.SimpleAction.new("settings", None)
         settings_action.connect("activate", self._on_settings_action)
@@ -208,6 +245,17 @@ class SeestarWindow(Adw.ApplicationWindow):
         return self._settings_controller
 
     @property
+    def connection_controller(self) -> ConnectionController:
+        """The shared connection controller (ticket 03 — the header panel
+        observes it)."""
+        return self._connection_controller
+
+    @property
+    def connection_panel(self) -> ConnectionPanel:
+        """The header-bar connection panel (connect button + status label)."""
+        return self._connection_panel
+
+    @property
     def view_stack(self) -> Adw.ViewStack:
         """The view stack holding the five view pages."""
         return self._stack
@@ -271,6 +319,11 @@ class SeestarApplication(Adw.Application):
         # raises) and wrap it in the shared settings controller.
         self._state = load_state(settings_path, env=env)
         self.settings_controller = SettingsController(self._state)
+        # Ticket 03: the shared connection controller over the same settings;
+        # worker-thread results are marshalled onto the GLib main loop.
+        self.connection_controller = ConnectionController(
+            self.settings_controller, invoke_on_main=_invoke_on_main
+        )
 
     @property
     def state(self) -> AppState:

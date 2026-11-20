@@ -11,7 +11,9 @@ pages, sidebar selection switches the view and updates the pure-layer
 state, the dark-theme helper drives the Adw style manager, geometry
 capture/restore round-trips through the pure settings layer, and the
 settings dialog (ticket 02) live-validates and persists through the pure
-``SettingsController``.
+``SettingsController``, and the header-bar connection panel (ticket 03)
+reflects the pure ``ConnectionController`` states (connect/disconnect button
++ status label, error styling) and shares the app's controller.
 """
 
 import importlib.util
@@ -232,3 +234,110 @@ def test_python_m_ui_app_module_exists():
     )
     assert result.returncode == 0, result.stderr
     assert "found" in result.stdout
+
+
+# --- connection panel (ticket 03) ------------------------------------------------------
+
+
+class _FakeScopeState:
+    """Duck-typed stand-in for ``link.device.DeviceState``."""
+
+    def __init__(self, mode="idle", target=(5.5, 12.25)):
+        self.mode = mode
+        self.target = target
+
+
+class _FakeDevice:
+    """Minimal stand-in for the link facade — widget tests never touch the
+    network; the pure controller only needs state/handlers/disconnect."""
+
+    def __init__(self, scope_state=None):
+        self._scope_state = scope_state or _FakeScopeState()
+        self.handlers = {}
+        self.disconnected = False
+
+    def state(self):
+        return self._scope_state
+
+    def add_event_handler(self, name, handler):
+        self.handlers[name] = handler
+
+    def remove_event_handler(self, name):
+        self.handlers.pop(name, None)
+
+    def disconnect(self):
+        self.disconnected = True
+
+
+def _connection_controller(tmp_path, device_factory):
+    from seestar_controller.ui.connection import ConnectionController
+    from seestar_controller.ui.settings import SettingsController
+
+    state = ui_state.AppState(str(tmp_path / "settings.json"))
+    state.set_setting("scope_ip", "192.168.1.50")
+    state.set_setting("project_root", str(tmp_path))
+    # default invoke_on_main (direct call): no GLib loop needed in the test
+    return ConnectionController(SettingsController(state), device_factory=device_factory)
+
+
+def test_header_connection_panel_reflects_controller_states(app, gtk, tmp_path):
+    from seestar_controller.ui.connection import ConnectionStatus
+    from seestar_controller.ui.connection_panel import ConnectionPanel
+
+    device = _FakeDevice()
+    controller = _connection_controller(tmp_path, lambda ip, key_path: device)
+    panel = ConnectionPanel(controller)
+    assert panel.controller is controller
+
+    # disconnected: "Connect" button + "Disconnected" status
+    assert panel.button.get_child().get_label() == "Connect"
+    assert panel.status_label.get_label() == "Disconnected"
+    assert not panel.button.has_css_class("suggested-action")
+    assert panel.button.get_sensitive()
+
+    # click -> connect -> connected: "Disconnect" + suggested-action, and the
+    # status line shows the scope's current state (mode + target)
+    panel.button.emit("clicked")
+    assert controller.wait(5)
+    assert controller.status == ConnectionStatus.CONNECTED
+    assert panel.button.get_child().get_label() == "Disconnect"
+    assert panel.button.has_css_class("suggested-action")
+    label = panel.status_label.get_label()
+    assert "Connected to 192.168.1.50" in label
+    assert "mode idle" in label and "5.50" in label
+
+    # click again -> disconnect
+    panel.button.emit("clicked")
+    assert controller.status == ConnectionStatus.DISCONNECTED
+    assert panel.button.get_child().get_label() == "Connect"
+    assert not panel.button.has_css_class("suggested-action")
+    assert panel.status_label.get_label() == "Disconnected"
+    assert device.disconnected
+
+
+def test_header_connection_panel_error_state(app, gtk, tmp_path):
+    from seestar_controller.ui.connection import ConnectionStatus
+    from seestar_controller.ui.connection_panel import ConnectionPanel
+
+    def failing_factory(ip, key_path):
+        raise OSError("connection refused")
+
+    controller = _connection_controller(tmp_path, failing_factory)
+    panel = ConnectionPanel(controller)
+    panel.button.emit("clicked")
+    assert controller.wait(5)
+    assert controller.status == ConnectionStatus.ERROR
+    assert panel.button.get_child().get_label() == "Retry"
+    assert panel.button.has_css_class("error")
+    assert panel.status_label.has_css_class("error")
+    assert "connection refused" in panel.status_label.get_label()
+
+
+def test_window_header_has_connection_panel_and_shared_controller(app, gtk):
+    from seestar_controller.ui.app import SeestarWindow
+
+    window = SeestarWindow(app, app.state)
+    assert window.connection_controller is app.connection_controller
+    assert window.connection_panel.controller is app.connection_controller
+    # the panel is packed into the header bar (left side)
+    assert isinstance(window.connection_panel.get_parent(), Adw.HeaderBar)

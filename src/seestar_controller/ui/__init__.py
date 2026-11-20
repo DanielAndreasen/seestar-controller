@@ -6,13 +6,18 @@ docs/wiki/assumptions.md):
 - **Pure layer** — :mod:`.state`: app state + navigation controller
   (:class:`~.state.AppState`, the five :class:`~.state.View`\\ s, window
   geometry, dark-theme flag, the settings dict, JSON persistence under the
-  app config dir) and :mod:`.settings`: the settings-dialog controller
+  app config dir), :mod:`.settings`: the settings-dialog controller
   (:class:`~.settings.SettingsController`, :func:`~.settings.validate_settings`
-  / :func:`~.settings.flag_settings`, :class:`~.settings.SettingsFieldError`).
-  Both import **nothing** from ``gi`` — stdlib only, fully unit-testable
-  headless; a subprocess test enforces the boundary.
+  / :func:`~.settings.flag_settings`, :class:`~.settings.SettingsFieldError`),
+  and :mod:`.connection`: the connection state machine
+  (:class:`~.connection.ConnectionController`, :class:`~.connection.ConnectionStatus`,
+  :class:`~.connection.ConnectionSnapshot`, :class:`~.connection.ConnectionStateError`,
+  :func:`~.connection.describe_scope_state`). All import **nothing** from
+  ``gi`` — stdlib only, fully unit-testable headless; a subprocess test
+  enforces the boundary.
 - **Widget layer** — :mod:`.views` (the five placeholder view widgets),
-  :mod:`.settings_dialog` (the settings dialog) and :mod:`.app`
+  :mod:`.settings_dialog` (the settings dialog), :mod:`.connection_panel`
+  (the header-bar connection panel, ticket 03) and :mod:`.app`
   (:class:`~.app.SeestarApplication` / :class:`~.app.SeestarWindow`,
   header bar + sidebar navigation, dark theme, geometry save/restore).
   These import ``gi`` at module top and are re-exported here **lazily** (PEP
@@ -25,6 +30,21 @@ packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` and launch with
 (see the README).
 """
 
+from .connection import (
+    CONNECTION_LOST_EVENT,
+    LIFECYCLE_EVENTS,
+    RECONNECTED_EVENT,
+    RECONNECTING_EVENT,
+    ConnectionController,
+    ConnectionListener,
+    ConnectionSnapshot,
+    ConnectionStateError,
+    ConnectionStatus,
+    DeviceFactory,
+    InvokeOnMain,
+    default_device_factory,
+    describe_scope_state,
+)
 from .settings import (
     SettingsController,
     SettingsFieldError,
@@ -62,8 +82,8 @@ from .state import (
 )
 
 #: Widget-layer names re-exported lazily from :mod:`.app` / :mod:`.views` /
-#: :mod:`.settings_dialog` (importing them pulls in ``gi`` — only the ``gui``
-#: entry point does).
+#: :mod:`.settings_dialog` / :mod:`.connection_panel` (importing them pulls
+#: in ``gi`` — only the ``gui`` entry point does).
 _WIDGET_EXPORTS = {
     "SeestarApplication": "app",
     "SeestarWindow": "app",
@@ -71,6 +91,7 @@ _WIDGET_EXPORTS = {
     "run": "app",
     "main": "app",
     "SettingsDialog": "settings_dialog",
+    "ConnectionPanel": "connection_panel",
     "ObserveView": "views",
     "EnhanceView": "views",
     "PhotometryView": "views",
@@ -122,6 +143,19 @@ __all__ = [
     "SettingsListener",
     "validate_settings",
     "flag_settings",
+    "ConnectionController",
+    "ConnectionStatus",
+    "ConnectionSnapshot",
+    "ConnectionStateError",
+    "ConnectionListener",
+    "DeviceFactory",
+    "InvokeOnMain",
+    "default_device_factory",
+    "describe_scope_state",
+    "CONNECTION_LOST_EVENT",
+    "RECONNECTING_EVENT",
+    "RECONNECTED_EVENT",
+    "LIFECYCLE_EVENTS",
     # widget layer (lazy, imports gi):
     "SeestarApplication",
     "SeestarWindow",
@@ -129,6 +163,7 @@ __all__ = [
     "run",
     "main",
     "SettingsDialog",
+    "ConnectionPanel",
     "ObserveView",
     "EnhanceView",
     "PhotometryView",
