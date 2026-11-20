@@ -242,6 +242,10 @@ def test_update_valid_persists_and_reloads(settings_file, controller, root_dir, 
         "project_root": str(root_dir),
         "photometry_comp_search_radius_deg": "1.5",
         "last_project": "",
+        "site_latitude": "",
+        "site_longitude": "",
+        "site_elevation_m": "",
+        "site_timezone": "UTC",
     }
     assert controller.values == new_values
     # persisted atomically to the settings file
@@ -263,6 +267,10 @@ def test_update_partial_keeps_other_fields(controller, root_dir):
         "project_root": str(root_dir),
         "photometry_comp_search_radius_deg": "1.5",
         "last_project": "",
+        "site_latitude": "",
+        "site_longitude": "",
+        "site_elevation_m": "",
+        "site_timezone": "UTC",
     }
 
 
@@ -400,6 +408,10 @@ def test_defaults_when_no_config_file(settings_file, controller):
         "project_root",
         "photometry_comp_search_radius_deg",
         "last_project",
+        "site_latitude",
+        "site_longitude",
+        "site_elevation_m",
+        "site_timezone",
     }
 
 

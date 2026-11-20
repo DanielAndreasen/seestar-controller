@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -41,6 +42,10 @@ from seestar_controller.ui.state import (
     default_settings_path,
     load_state,
     resolve_settings_path,
+    validate_site_elevation_m,
+    validate_site_latitude,
+    validate_site_longitude,
+    validate_site_timezone,
     view_by_id,
 )
 
@@ -49,6 +54,20 @@ from seestar_controller.ui.state import (
 def settings_file(tmp_path):
     """A settings file path inside tmp_path."""
     return tmp_path / "config" / "settings.json"
+
+
+def _tzdata_available() -> bool:
+    """Whether the system tzdata is present (IANA names resolve)."""
+    try:
+        ZoneInfo("Europe/Berlin")
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+#: Whether IANA timezone names resolve on this machine (the sandbox and the
+#: desktop target have tzdata; a bare venv without it only gets "UTC").
+HAS_TZDATA = _tzdata_available()
 
 
 @pytest.fixture()
@@ -129,12 +148,21 @@ def test_defaults(state):
     assert state.get_setting("project_root") == ""
     assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"
     assert state.get_setting("last_project") == ""
+    # observing site (visibility planner 01): unset on a fresh state, UTC tz
+    assert state.get_setting("site_latitude") == ""
+    assert state.get_setting("site_longitude") == ""
+    assert state.get_setting("site_elevation_m") == ""
+    assert state.get_setting("site_timezone") == "UTC"
     assert set(state.settings) == set(SETTINGS_KEYS) == {
         "scope_ip",
         "key_path",
         "project_root",
         "photometry_comp_search_radius_deg",
         "last_project",
+        "site_latitude",
+        "site_longitude",
+        "site_elevation_m",
+        "site_timezone",
     }
 
 
@@ -473,6 +501,167 @@ def test_comp_search_radius_round_trip(settings_file, state):
     loaded = AppState(settings_file).load()
     assert loaded.get_setting("photometry_comp_search_radius_deg") == "1.5"
     assert loaded.get_setting("scope_ip") == "seestar.local"
+
+
+# --- observing site settings (visibility planner ticket 01) -----------------------------
+
+
+def test_site_settings_defaults(state):
+    assert state.get_setting("site_latitude") == ""
+    assert state.get_setting("site_longitude") == ""
+    assert state.get_setting("site_elevation_m") == ""
+    assert state.get_setting("site_timezone") == "UTC"
+    assert DEFAULT_SETTINGS["site_timezone"] == "UTC"
+
+
+@pytest.mark.parametrize(
+    "key,value,expected",
+    [
+        ("site_latitude", "48.1373", "48.1373"),
+        ("site_latitude", 48.1373, "48.1373"),
+        ("site_latitude", "-33.8688", "-33.8688"),
+        ("site_latitude", "90", "90"),
+        ("site_latitude", "-90", "-90"),
+        ("site_latitude", " 48.5 ", "48.5"),
+        ("site_latitude", "", ""),
+        ("site_latitude", "   ", ""),
+        ("site_longitude", "11.5755", "11.5755"),
+        ("site_longitude", -74.006, "-74.006"),
+        ("site_longitude", "180", "180"),
+        ("site_longitude", "-180", "-180"),
+        ("site_longitude", "", ""),
+        ("site_elevation_m", "520", "520"),
+        ("site_elevation_m", -430.5, "-430.5"),
+        ("site_elevation_m", 8848.86, "8848.86"),
+        ("site_elevation_m", "", ""),
+    ],
+)
+def test_site_numeric_settings_valid(state, key, value, expected):
+    assert state.set_setting(key, value) == expected
+    assert state.get_setting(key) == expected
+
+
+@pytest.mark.parametrize(
+    "key,bad",
+    [
+        ("site_latitude", "90.0001"),
+        ("site_latitude", "-91"),
+        ("site_latitude", "abc"),
+        ("site_latitude", float("nan")),
+        ("site_latitude", float("inf")),
+        ("site_latitude", True),
+        ("site_latitude", None),
+        ("site_latitude", ["48"]),
+        ("site_longitude", "180.5"),
+        ("site_longitude", "-181"),
+        ("site_longitude", "east"),
+        ("site_elevation_m", "9001"),
+        ("site_elevation_m", "-501"),
+        ("site_elevation_m", "high"),
+        ("site_elevation_m", False),
+    ],
+)
+def test_site_numeric_settings_invalid(state, key, bad):
+    with pytest.raises(SettingsValidationError):
+        state.set_setting(key, bad)
+    assert state.get_setting(key) == ""  # unchanged (unset default)
+
+
+@pytest.mark.parametrize(
+    "good",
+    [
+        "UTC",
+        "",
+        pytest.param(
+            "Europe/Berlin",
+            marks=pytest.mark.skipif(not HAS_TZDATA, reason="no system tzdata"),
+        ),
+        pytest.param(
+            "America/New_York",
+            marks=pytest.mark.skipif(not HAS_TZDATA, reason="no system tzdata"),
+        ),
+        pytest.param(
+            "Asia/Kolkata",
+            marks=pytest.mark.skipif(not HAS_TZDATA, reason="no system tzdata"),
+        ),
+    ],
+)
+def test_site_timezone_valid(state, good):
+    assert state.set_setting("site_timezone", good) == good.strip()
+    assert state.get_setting("site_timezone") == good.strip()
+
+
+@pytest.mark.parametrize("bad", ["Not/AZone", "Europe", "Mars/Olympus", 42, None, True, ["UTC"]])
+def test_site_timezone_invalid(state, bad):
+    with pytest.raises(SettingsValidationError):
+        state.set_setting("site_timezone", bad)
+    assert state.get_setting("site_timezone") == "UTC"  # unchanged
+
+
+def test_site_validators_are_public_and_consistent():
+    assert validate_site_latitude("48.1373") == "48.1373"
+    assert validate_site_longitude("11.5755") == "11.5755"
+    assert validate_site_elevation_m("520") == "520"
+    assert validate_site_timezone("UTC") == "UTC"
+    if HAS_TZDATA:
+        assert validate_site_timezone("Europe/Berlin") == "Europe/Berlin"
+    for func, bad in (
+        (validate_site_latitude, "91"),
+        (validate_site_longitude, "-181"),
+        (validate_site_elevation_m, "9001"),
+        (validate_site_timezone, "Not/AZone"),
+    ):
+        with pytest.raises(SettingsValidationError):
+            func(bad)
+
+
+@pytest.mark.skipif(not HAS_TZDATA, reason="no system tzdata")
+def test_site_settings_round_trip(settings_file, state):
+    state.set_setting("site_latitude", "48.1373")
+    state.set_setting("site_longitude", "11.5755")
+    state.set_setting("site_elevation_m", "520")
+    state.set_setting("site_timezone", "Europe/Berlin")
+    assert set(state.to_dict()["settings"]) == set(SETTINGS_KEYS)
+    state.save()
+    loaded = AppState(settings_file).load()
+    assert loaded.get_setting("site_latitude") == "48.1373"
+    assert loaded.get_setting("site_longitude") == "11.5755"
+    assert loaded.get_setting("site_elevation_m") == "520"
+    assert loaded.get_setting("site_timezone") == "Europe/Berlin"
+    # an old settings file without the site keys keeps the defaults
+    settings_file.write_text(
+        json.dumps({"schema_version": 1, "settings": {"scope_ip": "seestar.local"}}),
+        encoding="utf-8",
+    )
+    loaded = AppState(settings_file).load()
+    assert loaded.get_setting("site_latitude") == ""
+    assert loaded.get_setting("site_longitude") == ""
+    assert loaded.get_setting("site_elevation_m") == ""
+    assert loaded.get_setting("site_timezone") == "UTC"
+    assert loaded.get_setting("scope_ip") == "seestar.local"
+
+
+def test_site_settings_invalid_values_dropped_on_load(settings_file, state):
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    settings_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "settings": {
+                    "site_latitude": "91",  # out of range -> dropped
+                    "site_longitude": "11.5755",
+                    "site_elevation_m": "high",  # not a number -> dropped
+                    "site_timezone": "Not/AZone",  # invalid -> dropped
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = AppState(settings_file).load()
+    assert loaded.get_setting("site_latitude") == ""  # default kept
+    assert loaded.get_setting("site_longitude") == "11.5755"
+    assert loaded.get_setting("site_elevation_m") == ""
+    assert loaded.get_setting("site_timezone") == "UTC"
 
 
 def test_unknown_setting_key_raises(state):
