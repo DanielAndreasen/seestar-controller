@@ -316,7 +316,7 @@ def test_save_button_persists_picks_into_project(gtk, picker, viewer_controller,
     picker.controller.pick_at(16, 16, "comp", label="Comp A")
     picker.controller.pick_at(50, 12, "comp", label="Comp B")
     assert load_star_picks(project) == []
-    picker.save_button.clicked()
+    picker.save_button.emit("clicked")
     pump_main()
     stored = load_star_picks(project)
     assert [p.role for p in stored] == ["target", "comp", "comp"]
@@ -370,7 +370,9 @@ def test_app_owns_shared_suggest_controller_and_window_passes_it_down(gtk, tmp_p
     photometry_page = window.view_stack.get_child_by_name("photometry")
     assert photometry_page.suggest_controller is app.suggest_controller
     assert photometry_page.picker_widget.suggestions_panel.controller is app.suggest_controller
-    # a settings change updates the shared controller's radius live (listener)
+    # a settings change updates the shared controller's radius live (listener);
+    # point project_root at an existing dir first (validation requires it)
+    app.settings_controller.update(project_root=str(tmp_path))
     app.settings_controller.update(photometry_comp_search_radius_deg="0.5")
     assert app.suggest_controller.radius_deg == pytest.approx(0.5)
 
@@ -382,7 +384,7 @@ def test_suggestions_panel_lists_suggestions_and_add_button_adds_comp(
     assert panel.controller is suggest_controller
     # the panel registered its worker-thread search as the controller's runner,
     # so automatic searches never block the GLib main loop
-    assert suggest_controller.search_runner is panel.search
+    assert suggest_controller.search_runner == panel.search  # bound methods: == not is
     viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
     pump_main()
     # mock the catalog BEFORE picking the target, so the automatic search
@@ -401,7 +403,7 @@ def test_suggestions_panel_lists_suggestions_and_add_button_adds_comp(
     assert "2 standard(s)" in panel.status_label.get_label()
     # clicking Add converts the star's sky position to a pixel via the frame
     # WCS and adds it as a comp pick (comps accumulate, one target)
-    rows[0].add_button.clicked()
+    rows[0].add_button.emit("clicked")
     pump_main()
     comps = picker.controller.comps
     assert len(comps) == 1
@@ -467,7 +469,7 @@ def _save_widget_picks(project) -> None:
             StarPick(role="comp", label="Comp A", x=16.0, y=16.0, ra_deg=None,
                      dec_deg=None, aperture_radius=4.0, sky_annulus_inner=8.0,
                      sky_annulus_outer=12.0),
-            StarPick(role="comp", label="Comp B", x=50.0, y=12.0, ra_deg=None,
+            StarPick(role="comp", label="Comp B", x=12.0, y=50.0, ra_deg=None,
                      dec_deg=None, aperture_radius=4.0, sky_annulus_inner=8.0,
                      sky_annulus_outer=12.0),
         ],
@@ -622,7 +624,7 @@ def test_results_panel_shows_clean_error_when_run_fails(gtk, project):
     assert panel.measurement_rows() == []
     assert panel.plot_points() == ()
     assert lightcurve(project) == []
-    assert status.has_css_class("error")
+    assert panel.status_label.has_css_class("error")
 
 
 def test_search_button_runs_lookup_on_worker_thread(picker, viewer_controller, suggest_controller):
@@ -634,7 +636,7 @@ def test_search_button_runs_lookup_on_worker_thread(picker, viewer_controller, s
     pump_main()
     assert panel.suggestion_rows() == []
     suggest_controller._lookup = _mock_lookup([WIDGET_STAR_A, WIDGET_STAR_B])
-    panel.search_button.clicked()
+    panel.search_button.emit("clicked")
     thread = panel._search_thread
     assert thread is not None and thread is not threading.current_thread()
     thread.join(timeout=10.0)
