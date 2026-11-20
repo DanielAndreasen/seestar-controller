@@ -4,7 +4,7 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** implemented in 8f30b22
+**Status:** implemented in 4544182
 
 - [x] RA/Dec parsing accepts sexagesimal and decimal forms, rejects invalid input
 - [x] All coordinates normalized to J2000 in one place
