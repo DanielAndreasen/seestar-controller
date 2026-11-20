@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** implemented in 5a8c3be
+**Status:** implemented in 0845c13
 
 - [x] Settings dialog edits scope IP, key path, project root
 - [x] Settings persisted to config JSON and loaded on startup
