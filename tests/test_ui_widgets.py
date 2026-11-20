@@ -923,3 +923,184 @@ def test_observe_view_start_button_enables_when_a_project_opens(gtk, project_sta
     # and Start passes the current project to start_night
     widget.start_button.emit("clicked")
     assert stub.started_with is project
+
+
+# --- projects-view ticket 02: create end-to-end in the running app -----------------------
+
+
+def test_fresh_settings_create_project_end_to_end_and_restart_restores(gtk, tmp_path, monkeypatch):
+    """Ticket 02 end-to-end: with fresh settings (no project_root, no
+    last_project) the project root falls back to the store default
+    (SEESTAR_PROJECT_ROOT here, a not-yet-existing dir), the Projects view
+    shows the "not set — using the default" hint, creating a project creates
+    the root on demand, makes the project current on ALL shared controllers,
+    persists it as last_project, and a restart restores it everywhere."""
+    from seestar_controller.store import PROJECT_ROOT_ENV_VAR
+    from seestar_controller.ui.app import SeestarApplication, SeestarWindow
+
+    missing_root = tmp_path / "SeestarProjects"  # does not exist yet
+    monkeypatch.setenv(PROJECT_ROOT_ENV_VAR, str(missing_root))
+    settings_path = tmp_path / "settings.json"
+    app = SeestarApplication(settings_path=str(settings_path))
+    # fresh settings: project_root unset -> the store default (env var) is used
+    assert app.state.get_setting("project_root") == ""
+    assert app.state.get_setting("last_project") == ""
+    assert app.project_controller.root == missing_root
+    assert app.project_controller.root_error is None  # missing is not an error
+
+    window = SeestarWindow(app, app.state)
+    projects_page = window.view_stack.get_child_by_name("projects")
+    # the root line shows the "not set — using the default" hint (Settings)
+    root_text = projects_page.root_label.get_label()
+    assert "not set" in root_text
+    assert str(missing_root) in root_text
+    assert "Settings" in root_text
+    assert not projects_page.root_label.has_css_class("error")
+    assert projects_page.row_count() == 0
+
+    # create a project through the GUI (name entry + Create button)
+    projects_page.name_entry.set_text("Test Night")
+    projects_page.create_button.emit("clicked")
+    assert projects_page.row_count() == 1
+    assert projects_page.row_label(0) == "Test Night"
+    assert projects_page.is_current_row(0)  # the new project is current
+    assert "Test Night" in projects_page.current_label.get_label()
+    assert projects_page.status_label.has_css_class("success")
+    assert missing_root.is_dir()  # the root was created on demand
+    project = app.project_controller.current
+    assert project is not None
+    assert project.path == missing_root / "test-night"
+    assert app.state.get_setting("last_project") == str(project.path)
+    assert settings_path.is_file()  # persisted
+    # pushed to ALL six shared controllers
+    for controller in (
+        app.observe_controller,
+        app.viewer_controller,
+        app.picker_controller,
+        app.run_controller,
+        app.lightcurve_controller,
+        app.period_controller,
+    ):
+        assert controller.project is project
+
+    # "restart": a new application over the same settings file restores the
+    # project as current and pushes it to all of its controllers
+    app2 = SeestarApplication(settings_path=str(settings_path))
+    assert app2.project_controller.current is not None
+    assert app2.project_controller.current.path == project.path
+    for controller in (
+        app2.observe_controller,
+        app2.viewer_controller,
+        app2.picker_controller,
+        app2.run_controller,
+        app2.lightcurve_controller,
+        app2.period_controller,
+    ):
+        assert controller.project is app2.project_controller.current
+
+
+def test_projects_view_inline_root_error_with_settings_hint_when_root_unwritable(gtk, tmp_path):
+    """Ticket 02: an existing but unwritable project root shows a red root
+    line with the Settings hint, and creating a project fails inline with the
+    same hint — nothing is created, no current project, no last_project."""
+    from seestar_controller.ui.project_controller import ProjectController
+    from seestar_controller.ui.state import AppState
+    from seestar_controller.ui.views import build_view
+
+    root = tmp_path / "projects"
+    root.mkdir()
+    root.chmod(0o500)  # r-x: not writable (the tests do not run as root)
+    try:
+        state = AppState(tmp_path / "settings.json")
+        state.set_setting("project_root", str(root))
+        controller = ProjectController(state)
+        view = build_view("projects", project_controller=controller)
+        # the root line shows the error in red, with the Settings hint
+        assert view.root_label.has_css_class("error")
+        assert "Settings" in view.root_label.get_label()
+        # creating fails inline with the same hint
+        view.name_entry.set_text("M 42")
+        view.create_button.emit("clicked")
+        assert view.status_label.has_css_class("error")
+        assert "Settings" in view.status_label.get_label()
+        assert view.row_count() == 0
+        assert controller.current is None
+        assert state.get_setting("last_project") == ""
+        assert not (root / "m-42").exists()
+    finally:
+        root.chmod(0o700)  # let tmp_path cleanup succeed
+
+
+def test_app_relists_projects_when_the_project_root_setting_changes(gtk, app, tmp_path):
+    """Ticket 02: changing project_root through the settings controller
+    (e.g. fixing an unwritable root in the Settings dialog) re-lists the
+    projects under the new root."""
+    from seestar_controller.store import create_project
+
+    root_a = tmp_path / "root-a"
+    root_b = tmp_path / "root-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    create_project("In A", root=root_a)
+    app.state.set_setting("project_root", str(root_a))
+    app.state.save()
+    app.project_controller.refresh()
+    assert [s.name for s in app.project_controller.projects] == ["In A"]
+    # the settings controller notifies the app, which re-lists under the new root
+    app.settings_controller.update(project_root=str(root_b))
+    assert [s.name for s in app.project_controller.projects] == []
+    app.settings_controller.update(project_root=str(root_a))
+    assert [s.name for s in app.project_controller.projects] == ["In A"]
+
+
+def test_start_night_enables_when_connected_and_a_project_is_open(gtk, tmp_path):
+    """Ticket 02 end-to-end: in the running window, Observe's "Start night"
+    is disabled while disconnected / without a project, and enables once the
+    (fake) scope is connected AND a project is created in the Projects view."""
+    from seestar_controller.observing import ObserveController, PlanQueueController
+    from seestar_controller.ui.app import SeestarApplication, SeestarWindow
+    from seestar_controller.ui.connection import ConnectionController, ConnectionStatus
+    from seestar_controller.ui.project_controller import ProjectController
+
+    settings_path = tmp_path / "settings.json"
+    app = SeestarApplication(settings_path=str(settings_path))
+    app.state.set_setting("scope_ip", "192.168.1.50")
+    root = tmp_path / "projects"
+    root.mkdir()
+    app.state.set_setting("project_root", str(root))
+    app.state.save()
+
+    device = _FakeDevice()
+    conn = ConnectionController(
+        app.settings_controller, device_factory=lambda ip, key_path: device
+    )
+    queue = PlanQueueController()
+    observe = ObserveController(conn, queue)
+    window = SeestarWindow(
+        app,
+        app.state,
+        connection_controller=conn,
+        queue_controller=queue,
+        observe_controller=observe,
+        project_controller=ProjectController(app.state),
+    )
+    observe_page = window.view_stack.get_child_by_name("observe")
+    projects_page = window.view_stack.get_child_by_name("projects")
+    start = observe_page.observe_widget.start_button
+    # disconnected + no project -> Start disabled
+    assert not start.get_sensitive()
+
+    # connect the fake scope (no network — the factory returns the fake)
+    conn.connect()
+    assert conn.wait(5)
+    assert conn.status == ConnectionStatus.CONNECTED
+    # connected but still no project -> Start stays disabled
+    window.project_controller.refresh()  # fires a project event -> re-render
+    assert not start.get_sensitive()
+
+    # create a project through the Projects page -> current everywhere -> Start enables
+    projects_page.name_entry.set_text("M 42")
+    projects_page.create_button.emit("clicked")
+    assert projects_page.row_count() == 1
+    assert observe.project is window.project_controller.current
+    assert start.get_sensitive()

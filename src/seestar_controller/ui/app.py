@@ -154,14 +154,20 @@ periodogram (clickable top-N peaks), the manual period entry, and the
 phase-folded lightcurve; every selection is persisted into the project's
 ``project.json`` by the controller.
 
-Projects (projects-view ticket 01): the application owns a shared
+Projects (projects-view tickets 01 + 02): the application owns a shared
 :class:`~seestar_controller.ui.project_controller.ProjectController` over the
 same :class:`~seestar_controller.ui.state.AppState` (project root from the
-settings, ``last_project`` persisted and restored on startup). The window
-passes it to the Projects view (list/create/open) and to the Observe view,
-and attaches it to the observe / viewer / picker / run / lightcurve /
+settings — unset falls back to the store default ``~/SeestarProjects``,
+created on demand; ``last_project`` persisted and restored on startup). The
+window passes it to the Projects view (list/create/open) and to the Observe
+view, and attaches it to the observe / viewer / picker / run / lightcurve /
 period controllers, so every current-project change is pushed to all of
-them via their ``set_project``.
+them via their ``set_project``. Creating a project in the Projects view
+therefore makes it current everywhere (unblocking Observe's "Start night"
+once the scope is connected) and persists it as ``last_project``; an
+unusable (e.g. unwritable) project root surfaces as an inline error with a
+hint pointing to Settings, and a changed ``project_root`` re-lists the
+projects under the new root.
 """
 
 from __future__ import annotations
@@ -863,6 +869,10 @@ class SeestarApplication(Adw.Application):
         # last_project otherwise; attach_controllers() then pushes the current
         # project (restored or not) to every shared controller with a
         # set_project(), and keeps pushing it on every later change.
+        # Ticket 02: an unset project_root falls back to the store default
+        # (~/SeestarProjects, created on demand at create time); a changed
+        # project_root re-lists the projects under the new root (see
+        # _on_settings_changed).
         self.project_controller = ProjectController(self._state)
         self.project_controller.restore()
         self.project_controller.attach_controllers(
@@ -874,11 +884,18 @@ class SeestarApplication(Adw.Application):
             period=self.period_controller,
         )
         self.settings_controller.add_listener(self._on_settings_changed)
+        self._last_project_root = self._state.get_setting("project_root")
 
     def _on_settings_changed(self, values: dict[str, str]) -> None:
         """Settings observer: keep the photometry comp-search radius (ticket
-        02) in sync with the configured value."""
+        02) in sync with the configured value, and re-list the projects when
+        the project root changed (projects-view ticket 02 — e.g. the user
+        fixed an unwritable root in the Settings dialog)."""
         self.suggest_controller.set_radius(comp_search_radius_deg(values))
+        project_root = values.get("project_root", "")
+        if project_root != self._last_project_root:
+            self._last_project_root = project_root
+            self.project_controller.refresh()
 
     @property
     def state(self) -> AppState:

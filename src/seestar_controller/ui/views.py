@@ -684,15 +684,19 @@ class ProjectsView(_PlaceholderView):
 
     - a **current-project banner** on top (name + path, or a hint that no
       project is open) and a dim **project-root** line (pointing to Settings
-      when the root is not configured and the default is in use);
+      when the root is not configured and the default is in use, and shown in
+      red with the Settings hint when the root exists but is unusable — e.g.
+      not writable, projects-view ticket 02);
     - a :class:`Gtk.ListBox` of the projects (name, path, created-at from the
       :class:`~seestar_controller.store.ProjectSummary`), one row each with
       an **Open** button; the current project's row carries a "current"
       badge;
     - a **New project** area: a name :class:`Adw.EntryRow` + a **Create
       project** button (creates via the controller and opens the new project
-      — it becomes current) + an inline status label for errors (duplicate /
-      invalid name / unwritable root), the same pattern as
+      — it becomes current; a missing project root is created on demand) +
+      an inline status label for errors (duplicate / invalid name /
+      unwritable root — the root errors carry a hint pointing to Settings),
+      the same pattern as
       :class:`~seestar_controller.observing.queue_editor.QueueEditor`.
 
     The view re-renders on every controller event (it registers as a
@@ -858,14 +862,29 @@ class ProjectsView(_PlaceholderView):
                 "new data is saved into the current project."
             )
             self._current_label.add_css_class("dim-label")
+        self._render_root_label()
+
+    def _render_root_label(self) -> None:
+        """Render the project-root line: the root in use, the "not set —
+        using the default" hint (pointing to Settings) when the setting is
+        unset, or a red error line (with the Settings hint) when the root
+        exists but is unusable (projects-view ticket 02)."""
         root = self._project_controller.root
-        if self._project_controller.state.get_setting("project_root").strip():
+        root_error = self._project_controller.root_error
+        for css_class in ("error", "dim-label"):
+            self._root_label.remove_css_class(css_class)
+        if root_error is not None:
+            self._root_label.set_label(f"Project root problem: {root_error}")
+            self._root_label.add_css_class("error")
+        elif self._project_controller.state.get_setting("project_root").strip():
             self._root_label.set_label(f"Project root: {root}")
+            self._root_label.add_css_class("dim-label")
         else:
             self._root_label.set_label(
                 f"Project root not set — using the default {root} "
-                "(set a project root in Settings)"
+                "(created on demand; set a project root in Settings)"
             )
+            self._root_label.add_css_class("dim-label")
 
     def _make_row(self, summary, current: Any) -> Gtk.ListBoxRow:
         box = Gtk.Box(
@@ -924,11 +943,14 @@ class ProjectsView(_PlaceholderView):
 
     def _on_create_clicked(self, *_args) -> None:
         """Create button: create + open through the controller; inline error
-        on failure (duplicate/invalid name, unwritable root)."""
+        on failure (duplicate/invalid name, unwritable root — the root errors
+        carry the Settings hint)."""
         name = self._name_entry.get_text().strip()
         try:
             project = self._project_controller.create_project(name)
         except (ProjectError, ValueError, OSError) as exc:
+            # re-render the root line too: an unusable root shows there as well
+            self._render_root_label()
             self._set_status(str(exc), error=True)
             return
         self._name_entry.set_text("")
