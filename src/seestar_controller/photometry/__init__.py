@@ -37,6 +37,22 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   The pure layer is settings-agnostic: the app injects the configured radius
   (see :func:`seestar_controller.ui.settings.comp_search_radius_deg`). Also
   imports **nothing** from ``gi``.
+- **Pure layer** — :mod:`.measure` (ticket 03, the aperture-photometry core):
+  :func:`~.measure.measure_frame_data` (raw array + header + picks →
+  :class:`~.measure.FrameMeasurement`: photutils circular aperture + sky
+  annulus per pick, comp-ensemble mean, differential mag = target − ensemble,
+  error = ``sqrt(target_err² + mean(comp_err²))``, JD from the FITS
+  ``DATE-OBS``), :func:`~.measure.measure_frame` (one stored frame →
+  :class:`~seestar_controller.store.measurements.Measurement` via the store)
+  and :func:`~.measure.measure_project` (all sub-frames of a project →
+  :class:`~.measure.MeasureReport` with per-frame skips). The pure math
+  (:func:`~.measure.flux_to_mag`, :func:`~.measure.ensemble_mag`,
+  :func:`~.measure.differential_mag_err`, ...) is unit-tested on its own;
+  errors are :class:`~.measure.MeasurementError` /
+  :class:`~.measure.FrameSkippedError` (subclasses of
+  :class:`~.picking.PhotometryError`, distinct from the store's
+  ``MeasurementError``). Also imports **nothing** from ``gi`` (photutils and
+  astropy are lazy inside the functions).
 - **Widget layer** — :mod:`.star_picker` (:class:`~.star_picker.StarPickerView`,
   the Photometry view's image + click-to-pick + aperture overlay + role
   selector + aperture spins + picks list + Save picks button) and
@@ -50,8 +66,8 @@ On the desktop, PyGObject is not a pip dependency — install the system
 packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` (see the README).
 
 Ticket 01 covers star picking + persistence; ticket 02 catalog assist for
-comps; later tickets add the aperture-photometry core (03) and the
-run/results (04).
+comps; ticket 03 the aperture-photometry core; ticket 04 the run/results
+view.
 """
 
 from seestar_controller.store.stars import ROLE_COMP, ROLE_TARGET, ROLES
@@ -70,6 +86,25 @@ from .picking import (
     StarPickSpec,
     pixel_to_sky,
     sky_to_pixel,
+)
+from .measure import (
+    MAG_ERR_COEFF,
+    FrameMeasurement,
+    FrameSkippedError,
+    MeasureReport,
+    MeasurementError,
+    SkippedFrame,
+    StarMeasurement,
+    differential_mag,
+    differential_mag_err,
+    ensemble_mag,
+    ensemble_mag_err,
+    flux_err_to_mag_err,
+    flux_to_mag,
+    measure_frame,
+    measure_frame_data,
+    measure_project,
+    measure_star,
 )
 from .suggest import (
     DEFAULT_COMP_SEARCH_RADIUS_DEG,
@@ -106,6 +141,7 @@ __all__ = [
     "DEFAULT_COMP_SEARCH_RADIUS_DEG",
     "DEFAULT_SKY_IN_PX",
     "DEFAULT_SKY_OUT_PX",
+    "MAG_ERR_COEFF",
     "MAX_COMP_SEARCH_RADIUS_DEG",
     "ROLE_COMP",
     "ROLE_TARGET",
@@ -113,19 +149,35 @@ __all__ = [
     "SNAP_WINDOW_PX",
     "ApertureParams",
     "CompSuggestion",
+    "FrameMeasurement",
+    "FrameSkippedError",
     "LookupFn",
+    "MeasureReport",
+    "MeasurementError",
     "PhotometryError",
     "PickController",
     "PickListener",
     "PickSession",
     "PickingError",
     "SearchRunner",
+    "SkippedFrame",
+    "StarMeasurement",
     "StarPickSpec",
     "SuggestListener",
     "SuggestionController",
     "SuggestionError",
     "SuggestionSnapshot",
     "default_standards_lookup",
+    "differential_mag",
+    "differential_mag_err",
+    "ensemble_mag",
+    "ensemble_mag_err",
+    "flux_err_to_mag_err",
+    "flux_to_mag",
+    "measure_frame",
+    "measure_frame_data",
+    "measure_project",
+    "measure_star",
     "pixel_to_sky",
     "sky_to_pixel",
     # widget layer (lazy, imports gi):

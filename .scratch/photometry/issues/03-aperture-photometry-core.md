@@ -4,10 +4,10 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** ready-for-agent
+**Status:** implemented in 7ca0be2
 
-- [ ] Circular aperture + sky annulus photometry per picked star
-- [ ] Comp ensemble = mean comp mag per frame; differential mag = target − ensemble
-- [ ] Error = sqrt(target_err² + mean(comp_err²))
-- [ ] JD taken from FITS header DATE-OBS
-- [ ] Tests: synthetic FITS, known fluxes → recovered differential mags within tolerance; ensemble math unit tests
+- [x] Circular aperture + sky annulus photometry per picked star
+- [x] Comp ensemble = mean comp mag per frame; differential mag = target − ensemble
+- [x] Error = sqrt(target_err² + mean(comp_err²))
+- [x] JD taken from FITS header DATE-OBS
+- [x] Tests: synthetic FITS, known fluxes → recovered differential mags within tolerance; ensemble math unit tests

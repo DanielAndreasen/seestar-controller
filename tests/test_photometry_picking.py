@@ -55,7 +55,7 @@ from seestar_controller.store import (
 PHOTOMETRY_PACKAGE_DIR = Path(photometry.__file__).resolve().parent
 
 #: The pure photometry modules — no ``gi`` import allowed (subprocess-enforced).
-PURE_PHOTOMETRY_MODULES = ("__init__", "picking", "suggest")
+PURE_PHOTOMETRY_MODULES = ("__init__", "picking", "suggest", "measure")
 
 #: The widget photometry modules — ``gi`` at module top, lazy-exported via PEP 562.
 WIDGET_PHOTOMETRY_MODULES = ("star_picker", "suggestions_panel")
@@ -571,6 +571,7 @@ def test_pure_photometry_modules_import_no_gi_no_link_no_ui_no_enhance_and_widge
         "import seestar_controller.photometry;"
         "import seestar_controller.photometry.picking;"
         "import seestar_controller.photometry.suggest;"
+        "import seestar_controller.photometry.measure;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
