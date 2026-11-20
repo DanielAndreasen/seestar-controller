@@ -48,13 +48,15 @@ try:
 except ValueError as exc:  # typelibs missing
     pytest.skip(f"GTK 4.0 / libadwaita typelibs missing: {exc}", allow_module_level=True)
 
-from gi.repository import Gtk  # noqa: E402
+from datetime import UTC
 
-from seestar_controller.catalog.coords import J2000Coord  # noqa: E402
-from seestar_controller.catalog.simbad import NameNotFoundError  # noqa: E402
-from seestar_controller.link.image import Frame  # noqa: E402
-from seestar_controller.link.preview import PreviewFrame, decode_payload  # noqa: E402
-from seestar_controller.observing import (  # noqa: E402
+from gi.repository import Gtk
+
+from seestar_controller.catalog.coords import J2000Coord
+from seestar_controller.catalog.simbad import NameNotFoundError
+from seestar_controller.link.image import Frame
+from seestar_controller.link.preview import PreviewFrame, decode_payload
+from seestar_controller.observing import (
     EVENT_ADDED,
     ExecutorState,
     ObserveStateError,
@@ -62,7 +64,7 @@ from seestar_controller.observing import (  # noqa: E402
     PlanQueueController,
     QueueEntry,
 )
-from seestar_controller.ui.connection import ConnectionStatus  # noqa: E402
+from seestar_controller.ui.connection import ConnectionStatus
 
 COORD_A = J2000Coord(ra_deg=83.8215, dec_deg=-5.39114)  # ~ M 42
 COORD_B = J2000Coord(ra_deg=10.68, dec_deg=41.27)  # ~ M 31
@@ -84,7 +86,7 @@ def gtk():
     """GTK initialized, or skip when no display is available (headless)."""
     try:
         ok = Gtk.init_check()
-    except Exception as exc:  # pragma: no cover - backend errors
+    except Exception as exc:  # pragma: no cover - backend errors  # noqa: BLE001
         pytest.skip(f"Gtk.init_check failed: {exc}")
     if not ok:
         pytest.skip("no display available (headless environment)")
@@ -653,7 +655,7 @@ def test_session_log_dialog_lists_events_and_refreshes(gtk, tmp_path):
 
 
 def test_session_log_dialog_summary_counts_stored_frames(gtk, tmp_path):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from seestar_controller.link.mock_scope import make_fits_bytes
     from seestar_controller.observing import SessionLogDialog
@@ -666,13 +668,13 @@ def test_session_log_dialog_summary_counts_stored_frames(gtk, tmp_path):
         project,
         session,
         "sub",
-        make_fits_bytes(when=datetime.now(timezone.utc), exposure=10.0, gain=50),
+        make_fits_bytes(when=datetime.now(UTC), exposure=10.0, gain=50),
     )
     store_frame(
         project,
         session,
         "stack",
-        make_fits_bytes(when=datetime.now(timezone.utc), exposure=10.0, gain=80),
+        make_fits_bytes(when=datetime.now(UTC), exposure=10.0, gain=80),
     )
     dialog.refresh()
     assert "2 frame(s) stored (1 sub, 1 stack)" in dialog.summary_label.get_label()

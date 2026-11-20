@@ -31,7 +31,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -39,14 +39,13 @@ import pytest
 from astropy.io import fits as pyfits
 from astropy.time import Time
 
-import seestar_controller.photometry as photometry
-from seestar_controller.photometry import run as run_module
+from seestar_controller import photometry
 from seestar_controller.photometry import (
     ApertureParams,
-    PhotometryError,
     PickController,
     StarPickSpec,
 )
+from seestar_controller.photometry import run as run_module
 from seestar_controller.photometry.run import (
     DB_CALL_TIMEOUT_S,
     RunController,
@@ -67,9 +66,11 @@ from seestar_controller.store import (
     load_star_picks,
     measurements_for_frame,
     save_star_picks,
-    set_excluded as store_set_excluded,
     start_session,
     store_frame,
+)
+from seestar_controller.store import (
+    set_excluded as store_set_excluded,
 )
 from seestar_controller.store.errors import (
     MeasurementError as StoreMeasurementError,
@@ -79,7 +80,7 @@ from seestar_controller.store.measurements import Measurement
 #: Directory of the photometry package (source-scan audit).
 PHOTOMETRY_PACKAGE_DIR = Path(photometry.__file__).resolve().parent
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 
 # --- synthetic frames with known injected fluxes (same as test_photometry_measure.py) -------------
 
@@ -430,9 +431,9 @@ def test_run_session_validates_arguments(project):
     ctrl = RunController(project=project)
     for bad in ("", None, 123, True):
         with pytest.raises(RunError, match="session_id"):
-            ctrl.run_session(bad)  # type: ignore[arg-type]
+            ctrl.run_session(bad)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     with pytest.raises(RunError, match="on_progress"):
-        ctrl.run_session("x", on_progress="nope")  # type: ignore[arg-type]
+        ctrl.run_session("x", on_progress="nope")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 def test_run_session_no_target_pick_raises_before_measuring(project):
@@ -546,7 +547,7 @@ def test_run_session_from_a_worker_thread_marshals_store_calls(project):
     thread — every store call is marshalled through invoke_on_main (pumped by
     the main thread here, GLib.idle_add in the app) and the FITS measuring
     stays on the worker."""
-    session, frames, injected = make_session(project, n=4)
+    session, _frames, injected = make_session(project, n=4)
     store_picks(project)
     queued = QueuedInvoke()
     ctrl = RunController(project=project, invoke_on_main=queued)
@@ -668,9 +669,9 @@ def test_set_excluded_error_paths(project):
     with pytest.raises(RunError, match="no measurement"):
         ctrl.set_excluded(9999, True)
     with pytest.raises(RunError, match="excluded must be a bool"):
-        ctrl.set_excluded(mid, "yes")  # type: ignore[arg-type]
+        ctrl.set_excluded(mid, "yes")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     with pytest.raises(RunError, match="measurement_id must be an int"):
-        ctrl.set_excluded("1", True)  # type: ignore[arg-type]
+        ctrl.set_excluded("1", True)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     # the flag is unchanged after the failed calls
     assert lightcurve(project)[0].excluded is False
 
@@ -694,7 +695,7 @@ def test_run_module_imports_no_gi_no_link_no_ui_no_enhance_and_widget_stays_lazy
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
@@ -747,5 +748,5 @@ def test_run_public_api_is_exported_from_package():
     # the frozen dataclasses
     prog = RunProgress(done=1, total=2, frame_id=7)
     assert (prog.done, prog.total, prog.frame_id) == (1, 2, 7)
-    with pytest.raises(Exception):
-        prog.done = 5  # type: ignore[misc]
+    with pytest.raises(Exception):  # noqa: B017
+        prog.done = 5  # type: ignore[misc]  # ty: ignore[invalid-assignment]

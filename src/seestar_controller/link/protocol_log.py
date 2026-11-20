@@ -46,10 +46,11 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Self
 
 #: Config dir of the app (same dir as the PEM key).
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "seestar-controller"
@@ -192,7 +193,7 @@ class ProtocolLog:
         if not self.enabled:
             return
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "dir": direction,
             "kind": kind,
             "msg": redact(message),
@@ -233,10 +234,10 @@ class ProtocolLog:
                 self._handler.close()
                 self._handler = None
 
-    def __enter__(self) -> "ProtocolLog":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
 

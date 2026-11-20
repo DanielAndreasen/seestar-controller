@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import seestar_controller.ui as ui
+from seestar_controller import ui
 
 #: Directory of the ui package (source-scan audit).
 UI_PACKAGE_DIR = Path(ui.__file__).resolve().parent
@@ -76,7 +76,7 @@ def test_every_pure_ui_module_imports_no_gi_in_a_subprocess():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
@@ -112,7 +112,10 @@ def test_every_ui_module_is_pure_or_widget_and_widgets_are_lazy_exported():
 
 def test_harness_builds_the_app_level_controllers_headless(ui_harness):
     from seestar_controller.ui.connection import ConnectionController, ConnectionStatus
-    from seestar_controller.ui.notifications import NotificationBus, NotificationController
+    from seestar_controller.ui.notifications import (
+        NotificationBus,
+        NotificationController,
+    )
     from seestar_controller.ui.settings import SettingsController
     from seestar_controller.ui.state import AppState
 

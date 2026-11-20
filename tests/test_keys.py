@@ -20,7 +20,6 @@ from seestar_controller.link.keys import (
 )
 from seestar_controller.link.transport import LinkTransport
 
-
 # -- helpers -----------------------------------------------------------------
 
 
@@ -176,7 +175,7 @@ def test_save_key_rejects_invalid_pem_and_writes_nothing(tmp_path):
 def test_extract_pem_from_apk(tmp_path, keypair):
     private_pem, public_pem = keypair
     apk = write_fake_apk(tmp_path / "Seestar.apk", private_pem)
-    extracted = keys.extract_pem_from_package(apk)
+    extracted = keys.extract_pem_from_package(apk)  # ty: ignore[invalid-argument-type]
     key = auth.load_private_key(extracted)
     signature = auth.sign_challenge(key, "challenge")
     assert auth.verify_challenge(auth.load_public_key(public_pem), "challenge", signature)
@@ -185,7 +184,7 @@ def test_extract_pem_from_apk(tmp_path, keypair):
 def test_extract_pem_from_xapk_scans_nested_base_apk(tmp_path, keypair):
     private_pem, _public_pem = keypair
     xapk = write_fake_xapk(tmp_path / "Seestar.xapk", private_pem)
-    extracted = keys.extract_pem_from_package(xapk)
+    extracted = keys.extract_pem_from_package(xapk)  # ty: ignore[invalid-argument-type]
     assert auth.load_private_key(extracted) is not None
 
 
@@ -195,9 +194,9 @@ def test_extract_pem_fallback_scans_other_entries(tmp_path, keypair):
     apk = write_fake_apk(
         tmp_path / "Seestar.apk", private_pem, so_name="lib/arm64-v8a/other.so"
     )
-    with zipfile.ZipFile(apk, "a") as zf:
+    with zipfile.ZipFile(apk, "a") as zf:  # ty: ignore[no-matching-overload]
         zf.writestr("assets/interop.txt", b"prefix " + private_pem + b" suffix")
-    extracted = keys.extract_pem_from_package(apk)
+    extracted = keys.extract_pem_from_package(apk)  # ty: ignore[invalid-argument-type]
     assert auth.load_private_key(extracted) is not None
 
 
@@ -218,7 +217,7 @@ def test_extract_pem_skips_invalid_blocks(tmp_path, keypair):
 def test_extract_pem_no_key_in_package_raises_actionable(tmp_path):
     apk = write_fake_apk(tmp_path / "Seestar.apk", b"", with_key=False)
     with pytest.raises(KeyExtractionError) as excinfo:
-        keys.extract_pem_from_package(apk)
+        keys.extract_pem_from_package(apk)  # ty: ignore[invalid-argument-type]
     message = str(excinfo.value)
     assert "no PEM private key" in message
     assert "seestarpy" in message and "extract_pem" in message

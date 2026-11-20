@@ -38,7 +38,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import seestar_controller.observing as observing
+from seestar_controller import observing
 from seestar_controller.catalog.coords import J2000Coord
 from seestar_controller.link.device import Device, StackingProgress
 from seestar_controller.link.image import Frame
@@ -707,7 +707,7 @@ def test_observe_controller_module_imports_no_gi_and_the_package_stays_lazy():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

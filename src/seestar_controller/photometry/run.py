@@ -97,8 +97,9 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from seestar_controller.store.errors import (
     MeasurementError as StoreMeasurementError,
@@ -109,6 +110,8 @@ from seestar_controller.store.measurements import (
     Measurement,
     add_measurement,
     lightcurve,
+)
+from seestar_controller.store.measurements import (
     set_excluded as store_set_excluded,
 )
 from seestar_controller.store.sessions import Session, list_sessions
@@ -216,7 +219,6 @@ InvokeOnMain = Callable[[Callable[[], None]], Any]
 def _direct_invoke(callback: Callable[[], None]) -> None:
     """The default ``invoke_on_main``: run the callback directly (tests)."""
     callback()
-    return None
 
 
 class RunController:
@@ -459,7 +461,7 @@ class RunController:
         def wrapper() -> None:
             try:
                 box["result"] = fn()
-            except BaseException as exc:  # re-raised on the calling thread
+            except BaseException as exc:  # re-raised on the calling thread  # noqa: BLE001
                 box["error"] = exc
             finally:
                 done.set()

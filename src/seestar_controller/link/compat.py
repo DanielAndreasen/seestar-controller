@@ -36,7 +36,8 @@ version differences.
 from __future__ import annotations
 
 import weakref
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from .transport import LinkTransport, RpcError
 
@@ -80,7 +81,7 @@ OUT_OF_LIMIT_CODE = 204
 
 #: Per-transport cache: {methods tuple -> winning method name}.
 #: Weak keys so a disconnected transport can be garbage collected.
-_cache: "weakref.WeakKeyDictionary[Any, dict[tuple[str, ...], str]]" = (
+_cache: weakref.WeakKeyDictionary[Any, dict[tuple[str, ...], str]] = (
     weakref.WeakKeyDictionary()
 )
 

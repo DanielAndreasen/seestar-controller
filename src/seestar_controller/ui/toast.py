@@ -38,9 +38,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw  # noqa: E402
+from gi.repository import Adw
 
-from .notifications import (  # noqa: E402
+from .notifications import (
     Notification,
     NotificationBus,
     NotificationSeverity,
@@ -67,7 +67,6 @@ def toast_title(notification: Notification) -> str:
 
 def _direct_invoke(callback) -> None:
     callback()
-    return None
 
 
 class NotificationToasts:
@@ -126,8 +125,9 @@ class NotificationToasts:
             title=toast_title(notification),
             timeout=TOAST_TIMEOUTS.get(notification.severity, DEFAULT_TOAST_TIMEOUT),
         )
-        if self._on_open_log is not None:
+        on_open_log = self._on_open_log
+        if on_open_log is not None:
             toast.set_button_label("View")
-            toast.connect("button-clicked", lambda *_args: self._on_open_log())
+            toast.connect("button-clicked", lambda *_args: on_open_log())
         self.toasts.append(toast)
         self._overlay.add_toast(toast)

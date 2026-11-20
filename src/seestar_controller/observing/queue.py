@@ -43,8 +43,9 @@ per the ticket).
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any
 
 from seestar_controller.catalog.coords import (
     CoordinateError,
@@ -537,7 +538,7 @@ def resolve_names(
             continue  # coord-only entry, or already resolved
         try:
             coord = _as_coord(resolver(entry.name))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             errors.append((index, f"{entry.name!r}: {type(exc).__name__}: {exc}"))
             continue
         new_entry = QueueEntry.resolved(

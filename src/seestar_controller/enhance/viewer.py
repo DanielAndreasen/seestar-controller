@@ -44,19 +44,17 @@ because the preview is downscaled before tone mapping.
 from __future__ import annotations
 
 import io
-from typing import Any
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, GLib, Gtk
+from PIL import Image
 
-from PIL import Image  # noqa: E402
-
-from .fits_io import EnhanceError, StackInfo  # noqa: E402
-from .viewer_controller import ViewerController, ViewerSnapshot  # noqa: E402
+from .fits_io import EnhanceError, StackInfo
+from .viewer_controller import ViewerController, ViewerSnapshot
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
 LEFT_PANE_POSITION = 360
@@ -266,7 +264,7 @@ class ImageViewer(Gtk.Box):
                 self._info_label.set_label(
                     f"{snapshot.current.label()} · {snapshot.current.subtitle()} · {size}"
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 # a bad preview must never break the view
                 self._placeholder.set_label("preview could not be rendered")
                 self._placeholder.set_visible(True)

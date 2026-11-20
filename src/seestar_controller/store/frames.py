@@ -70,10 +70,11 @@ import math
 import os
 import sqlite3
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
+from typing import Any
 
 from .errors import FrameStoreError, SessionNotFoundError
 from .project import STACKS_DIR, SUBS_DIR, Project
@@ -190,7 +191,7 @@ def _utc_iso(instant: datetime) -> str:
     """Format ``instant`` as a UTC ISO-8601 string with explicit ``+00:00``
     offset and millisecond precision (same format as
     :func:`.project.utc_now_iso`)."""
-    return instant.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+    return instant.astimezone(UTC).isoformat(timespec="milliseconds")
 
 
 def _date_obs_jd_utc(raw: Any) -> tuple[float, str] | None:
@@ -210,18 +211,18 @@ def _date_obs_jd_utc(raw: Any) -> tuple[float, str] | None:
     for fmt in ("isot", "fits"):
         try:
             t = Time(text, format=fmt, scale="utc")
-        except Exception:
+        except Exception:  # noqa: BLE001, S112
             continue
         jd = float(t.jd)
         if math.isfinite(jd):
-            return jd, _utc_iso(t.to_datetime(timezone.utc))
+            return jd, _utc_iso(t.to_datetime(UTC))
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)  # naive -> UTC
-    instant = parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)  # naive -> UTC
+    instant = parsed.astimezone(UTC)
     return _instant_to_jd(instant), _utc_iso(instant)
 
 
@@ -231,7 +232,7 @@ def _optional_float(value: Any, *, what: str) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        raise ValueError(f"{what} must be a number, got {value!r}")
+        raise ValueError(f"{what} must be a number, got {value!r}")  # noqa: TRY004
     try:
         result = float(value)
     except (TypeError, ValueError):
@@ -386,7 +387,7 @@ def store_frame(
         if jd_utc is None:
             # no/invalid DATE-OBS -> the file's mtime (UTC); os.replace
             # preserves the temp file's mtime, so it IS the final file's mtime
-            instant = datetime.fromtimestamp(os.stat(tmp).st_mtime, timezone.utc)
+            instant = datetime.fromtimestamp(os.stat(tmp).st_mtime, UTC)
             jd_utc = (_instant_to_jd(instant), _utc_iso(instant))
         jd, utc = jd_utc
         if not math.isfinite(jd):
@@ -414,7 +415,7 @@ def store_frame(
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (session_id, kind, rel_path, jd, utc, exposure, gain, target),
             )
-            frame_id = int(cur.lastrowid)
+            frame_id = int(cur.lastrowid)  # ty: ignore[invalid-argument-type]
     except (KeyboardInterrupt, SystemExit):
         _remove_quietly(dest)
         raise

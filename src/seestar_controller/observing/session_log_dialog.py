@@ -24,19 +24,19 @@ refreshes itself while open (it registers as a log listener).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gtk, Pango
 
-from seestar_controller.link.frames import KIND_STACK, KIND_SUB  # noqa: E402
-from seestar_controller.store.frames import list_frames  # noqa: E402
+from seestar_controller.link.frames import KIND_STACK, KIND_SUB
+from seestar_controller.store.frames import list_frames
 
-from .capture import KIND_ERROR, LogEvent, SessionCapture  # noqa: E402
+from .capture import KIND_ERROR, LogEvent, SessionCapture
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +165,7 @@ class SessionLogDialog(Adw.Dialog):
     def _build_row(self, event: LogEvent) -> tuple[Gtk.ListBoxRow, str]:
         """One log row: a dim caption line (time · kind · source) over the
         detail (``error`` css class for error events)."""
-        when = datetime.fromtimestamp(event.ts, timezone.utc).astimezone()
+        when = datetime.fromtimestamp(event.ts, UTC).astimezone()
         head = Gtk.Label(
             label=f"{when.strftime('%Y-%m-%d %H:%M:%S')}  ·  {event.kind}  ·  {event.source}",
             xalign=0.0,

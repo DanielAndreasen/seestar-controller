@@ -34,7 +34,6 @@ the window's program-specified minimum size stays well under 1600x900, so the
 WM can actually apply the maximize request on laptop screens.
 """
 
-import importlib.util
 import subprocess
 import sys
 
@@ -48,9 +47,9 @@ try:
 except ValueError as exc:  # typelibs missing
     pytest.skip(f"GTK 4.0 / libadwaita typelibs missing: {exc}", allow_module_level=True)
 
-from gi.repository import Adw, Gtk  # noqa: E402
+from gi.repository import Adw, Gtk
 
-from seestar_controller.ui import state as ui_state  # noqa: E402
+from seestar_controller.ui import state as ui_state
 
 
 def _has_ancestor(widget, cls) -> bool:
@@ -70,7 +69,7 @@ def gtk():
     """GTK initialized, or skip when no display is available (headless)."""
     try:
         ok = Gtk.init_check()
-    except Exception as exc:  # pragma: no cover - backend errors
+    except Exception as exc:  # pragma: no cover - backend errors  # noqa: BLE001
         pytest.skip(f"Gtk.init_check failed: {exc}")
     if not ok:
         pytest.skip("no display available (headless environment)")
@@ -147,7 +146,11 @@ def test_dark_theme_drives_the_style_manager(app, gtk):
 
 
 def test_geometry_capture_and_restore_round_trip(app, gtk, tmp_path):
-    from seestar_controller.ui.app import SeestarWindow, _capture_geometry, _restore_geometry
+    from seestar_controller.ui.app import (
+        SeestarWindow,
+        _capture_geometry,
+        _restore_geometry,
+    )
 
     window = SeestarWindow(app, app.state)
     window.set_default_size(1024, 700)
@@ -254,7 +257,7 @@ def test_close_request_persists_state(app, gtk, tmp_path):
 
 
 def test_widget_layer_is_reachable_lazily_from_the_package(gtk):
-    import seestar_controller.ui as ui
+    from seestar_controller import ui
 
     assert "gi" in sys.modules  # the widget layer really imported gi here
     assert ui.SeestarApplication is not None
@@ -359,7 +362,7 @@ def test_python_m_ui_app_module_exists():
         "print('found')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "found" in result.stdout
@@ -514,7 +517,10 @@ def test_window_wraps_content_in_toast_overlay_and_shares_the_bus(app, gtk):
 
 
 def test_toast_presenter_adds_non_modal_toast_per_bus_push(gtk):
-    from seestar_controller.ui.notifications import NotificationBus, NotificationSeverity
+    from seestar_controller.ui.notifications import (
+        NotificationBus,
+        NotificationSeverity,
+    )
     from seestar_controller.ui.toast import TOAST_TIMEOUTS, NotificationToasts
 
     bus = NotificationBus()
@@ -546,13 +552,16 @@ def test_toast_presenter_adds_non_modal_toast_per_bus_push(gtk):
 
 
 def test_toast_presenter_marshals_worker_thread_callbacks_via_invoke_on_main(gtk):
-    from seestar_controller.ui.notifications import NotificationBus, NotificationSeverity
+    from seestar_controller.ui.notifications import (
+        NotificationBus,
+        NotificationSeverity,
+    )
     from seestar_controller.ui.toast import NotificationToasts
 
     bus = NotificationBus()
     overlay = _FakeToastOverlay()
     queue = []
-    presenter = NotificationToasts(bus, overlay, invoke_on_main=queue.append)
+    NotificationToasts(bus, overlay, invoke_on_main=queue.append)
 
     # bus callbacks may come from worker threads: nothing is shown until the
     # main loop drains the queued callback
@@ -567,7 +576,10 @@ def test_toast_presenter_marshals_worker_thread_callbacks_via_invoke_on_main(gtk
 
 def test_notification_log_dialog_lists_bus_log_newest_first_with_clear(gtk):
     from seestar_controller.ui.notification_log import NotificationLogDialog
-    from seestar_controller.ui.notifications import NotificationBus, NotificationSeverity
+    from seestar_controller.ui.notifications import (
+        NotificationBus,
+        NotificationSeverity,
+    )
 
     bus = NotificationBus()
     bus.push(_notification(NotificationSeverity.INFO, "Reconnected", "link is back"))
@@ -611,7 +623,7 @@ def test_window_notifications_action_presents_log_dialog_on_shared_bus(app, gtk)
 
 
 def test_notification_widgets_are_reachable_lazily_from_the_package(gtk):
-    import seestar_controller.ui as ui
+    from seestar_controller import ui
 
     assert ui.NotificationToasts is not None
     assert ui.NotificationLogDialog is not None
@@ -708,7 +720,7 @@ def test_projects_view_inline_error_when_open_fails(gtk, project_state):
     view.create_button.emit("clicked")
     assert view.row_count() == 1
     # the project becomes invalid after it was listed (project.json removed)
-    (controller.current.path / "project.json").unlink()
+    (controller.current.path / "project.json").unlink()  # ty: ignore[missing-union-attribute]
     view.click_open(0)
     assert view.status_label.has_css_class("error")
     assert controller.current is not None  # unchanged

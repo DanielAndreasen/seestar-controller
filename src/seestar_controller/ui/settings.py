@@ -49,8 +49,9 @@ dialog-level semantics on top of an :class:`~.state.AppState`):
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from .state import (
     DEFAULT_COMP_SEARCH_RADIUS_DEG,

@@ -61,8 +61,9 @@ import math
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from .cache import QueryCache
 from .coords import J2000Coord, angular_distance

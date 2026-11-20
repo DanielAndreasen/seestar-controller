@@ -42,7 +42,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -51,7 +51,7 @@ from astropy.io import fits as pyfits
 from astropy.time import Time
 from PIL import Image
 
-import seestar_controller.enhance as enhance
+from seestar_controller import enhance
 from seestar_controller.enhance import (
     EnhanceError,
     FitsImage,
@@ -59,13 +59,15 @@ from seestar_controller.enhance import (
     ViewerController,
     ViewerSnapshot,
     downscale,
+    fits_io,
     list_project_stacks,
     load_fits,
+    render,
     render_preview,
     to_pil_image,
     tonemap,
+    viewer_controller,
 )
-from seestar_controller.enhance import fits_io, render, viewer_controller
 from seestar_controller.store import (
     KIND_STACK,
     KIND_SUB,
@@ -94,7 +96,7 @@ PURE_ENHANCE_MODULES = (
 WIDGET_ENHANCE_MODULES = ("viewer", "enhance_view")
 
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 DATE1 = "2026-11-20T22:00:00.000"
 DATE2 = "2026-11-20T22:00:10.000"
 DATE3 = "2026-11-20T22:00:20.500"
@@ -339,7 +341,7 @@ def test_load_fits_unsupported_shape_raises(tmp_path):
 
 
 def test_list_project_stacks(project, session, stored_stacks):
-    stack_frames, sub = stored_stacks
+    stack_frames, _sub = stored_stacks
     infos = list_project_stacks(project)
     assert len(infos) == 2  # the sub-frame is NOT listed
     assert all(isinstance(i, StackInfo) for i in infos)
@@ -667,7 +669,7 @@ def test_controller_snapshot_is_frozen(project, stored_stacks):
     vc = ViewerController(project)
     snap = vc.snapshot
     with pytest.raises(dataclasses.FrozenInstanceError):
-        snap.error = "x"  # type: ignore[misc]
+        snap.error = "x"  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_controller_listeners_idempotent_decorator_and_isolated(project, stored_stacks):
@@ -686,12 +688,12 @@ def test_controller_listeners_idempotent_decorator_and_isolated(project, stored_
 
     @vc.add_listener
     def on_change(snapshot):
-        on_change.seen = snapshot
+        on_change.seen = snapshot  # ty: ignore[missing-attribute]
 
     assert on_change in vc.listeners
     vc.open_stack(stack_frames[0].id)  # the raising listener must not break the others
     assert len(calls_a) == 1 and len(calls_b) == 1
-    assert on_change.seen.current is not None
+    assert on_change.seen.current is not None  # ty: ignore[missing-attribute]
     vc.remove_listener(calls_a.append)
     vc.remove_listener(calls_a.append)  # no-op when absent
     assert len(vc.listeners) == 3
@@ -704,7 +706,7 @@ def test_controller_preview_max_size(project, stored_stacks):
     stack_frames, _sub = stored_stacks
     vc = ViewerController(project, preview_max_size=16)
     vc.open_stack(stack_frames[0].id)
-    assert max(vc.preview.size) <= 16
+    assert max(vc.preview.size) <= 16  # ty: ignore[missing-union-attribute]
 
 
 # --- package boundary (subprocess + source scan) ----------------------------------------------
@@ -728,7 +730,7 @@ def test_pure_enhance_modules_import_no_gi_no_link_no_ui_and_widget_stays_lazy()
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

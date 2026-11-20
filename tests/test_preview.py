@@ -26,16 +26,16 @@ from seestar_controller.link.preview import (
 def _jpeg_scope(keypair, **kwargs):
     """A running mock Scope streaming JPEG gradient Preview frames."""
     _private_pem, public_pem = keypair
-    params = dict(
-        public_pem=public_pem,
-        frame_format="jpeg",
-        frame_count=8,
-        frame_interval=0.01,
-        tele_resolution=(64, 48),
-        wide_resolution=(32, 24),
-    )
+    params = {
+        "public_pem": public_pem,
+        "frame_format": "jpeg",
+        "frame_count": 8,
+        "frame_interval": 0.01,
+        "tele_resolution": (64, 48),
+        "wide_resolution": (32, 24),
+    }
     params.update(kwargs)
-    scope = MockScope("127.0.0.1", 0, 0, 0, **params)
+    scope = MockScope("127.0.0.1", 0, 0, 0, **params)  # ty: ignore[invalid-argument-type]
     scope.start()
     return scope
 
@@ -68,10 +68,10 @@ class Collector:
 
 
 def _stream(scope, **kwargs) -> PreviewStream:
-    params = dict(max_fps=None, queue_size=64)
+    params = {"max_fps": None, "queue_size": 64}
     params.update(kwargs)
     return PreviewStream(
-        "127.0.0.1", tele_port=scope.tele_port, wide_port=scope.wide_port, **params
+        "127.0.0.1", tele_port=scope.tele_port, wide_port=scope.wide_port, **params  # ty: ignore[invalid-argument-type]
     )
 
 

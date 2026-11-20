@@ -11,7 +11,7 @@ import io
 import json
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -20,12 +20,12 @@ from astropy.io import fits as pyfits
 from seestar_controller.link import frames
 from seestar_controller.link.device import Device
 from seestar_controller.link.frames import (
-    DownloadedFrame,
-    FrameMeta,
     GET_FRAME_METHOD,
     KIND_STACK,
     KIND_SUB,
     LIST_FRAMES_METHOD,
+    DownloadedFrame,
+    FrameMeta,
 )
 from seestar_controller.link.mock_scope import make_fits_bytes
 from seestar_controller.link.transport import RpcError
@@ -160,7 +160,7 @@ def test_download_stacks_writes_fits_and_sidecars(device, mock_scope, tmp_path):
 
 
 def test_download_since_filters_by_time(device, mock_scope, tmp_path):
-    base = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
     mock_scope.add_frame(KIND_SUB, when=base)
     mock_scope.add_frame(KIND_SUB, when=base + timedelta(minutes=10))
     mock_scope.add_frame(KIND_STACK, when=base + timedelta(minutes=20))
@@ -295,9 +295,9 @@ def test_atomic_write_json(tmp_path, monkeypatch):
 
 def test_normalize_since_variants():
     assert frames.normalize_since(None) is None
-    dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     assert frames.normalize_since(dt) == dt.timestamp()
-    assert frames.normalize_since(datetime(2026, 1, 1, 12, 0, 0)) == dt.timestamp()
+    assert frames.normalize_since(datetime(2026, 1, 1, 12, 0, 0)) == dt.timestamp()  # noqa: DTZ001
     assert frames.normalize_since("2026-01-01T12:00:00+00:00") == dt.timestamp()
     assert frames.normalize_since("2026-01-01T12:00:00Z") == dt.timestamp()
     assert frames.normalize_since(dt.timestamp()) == dt.timestamp()
@@ -372,7 +372,7 @@ def test_parse_frame_meta_and_sidecar():
 
 
 def test_make_fits_bytes_is_valid_fits_with_date_obs():
-    when = datetime(2026, 5, 19, 22, 30, 15, 123000, tzinfo=timezone.utc)
+    when = datetime(2026, 5, 19, 22, 30, 15, 123000, tzinfo=UTC)
     blob = make_fits_bytes(
         when=when,
         exposure=10.0,

@@ -12,12 +12,10 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-import seestar_controller.ui as ui
-from seestar_controller.ui import state as ui_state
+from seestar_controller import ui
 from seestar_controller.ui.state import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_DARK_THEME,
@@ -34,12 +32,12 @@ from seestar_controller.ui.state import (
     SETTINGS_KEYS,
     SETTINGS_PATH_ENV_VAR,
     SETTINGS_SCHEMA_VERSION,
-    UIStateError,
-    AppState,
-    UnknownViewError,
-    SettingsValidationError,
-    VIEWS,
     VIEW_IDS,
+    VIEWS,
+    AppState,
+    SettingsValidationError,
+    UIStateError,
+    UnknownViewError,
     View,
     default_settings_path,
     load_state,
@@ -567,7 +565,7 @@ def test_ui_package_imports_no_gi_and_widget_layer_stays_lazy():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

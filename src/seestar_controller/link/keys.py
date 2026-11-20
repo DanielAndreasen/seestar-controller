@@ -31,8 +31,9 @@ import io
 import os
 import re
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -181,7 +182,7 @@ def _find_pem_blocks(data: bytes) -> list[bytes]:
 def _is_valid_private_key_pem(block: bytes) -> bool:
     try:
         key = load_private_key(block)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
     return isinstance(key, rsa.RSAPrivateKey)
 

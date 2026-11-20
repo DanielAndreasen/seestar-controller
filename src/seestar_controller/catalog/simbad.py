@@ -36,8 +36,9 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from .coords import J2000Coord
 
@@ -406,7 +407,7 @@ def resolve_name(
         SimbadResponseError: malformed SIMBAD response.
     """
     if not isinstance(name, str):
-        raise ValueError(f"name must be a string, got {name!r}")
+        raise ValueError(f"name must be a string, got {name!r}")  # noqa: TRY004
     query_name = name.strip()
     if not query_name:
         raise ValueError("name must not be empty")

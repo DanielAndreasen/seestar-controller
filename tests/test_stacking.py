@@ -25,7 +25,7 @@ def stacking_device(transport, mock_scope):
     try:
         if d.connected and d.state().mode == "stacking":
             d.stop_stack()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110
         pass
     d.disconnect()
 
@@ -241,7 +241,7 @@ def test_on_stacking_progress_decorator_receives_typed_progress(stacking_device,
 
 def test_remove_stacking_progress_handler_stops_delivery(stacking_device, mock_scope):
     received: list[StackingProgress] = []
-    handler = lambda p: received.append(p)  # noqa: E731
+    handler = lambda p: received.append(p)
     stacking_device.add_stacking_progress_handler(handler)
     stacking_device.remove_stacking_progress_handler(handler)
     stacking_device.start_stack(10.0, 80)

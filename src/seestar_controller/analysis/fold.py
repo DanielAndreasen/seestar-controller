@@ -91,10 +91,9 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
-
-from seestar_controller.store.measurements import lightcurve as _store_lightcurve
+from typing import Any
 
 from .lightcurve import (
     DB_CALL_TIMEOUT_S,
@@ -686,7 +685,7 @@ class PeriodController:
         self._loaded_project = project
         try:
             raw = self._call_store(lambda: project.config.get(PERIOD_CONFIG_KEY))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("cannot read the persisted period of %r: %s", project, exc)
             return
         if raw is None:
@@ -776,7 +775,7 @@ class PeriodController:
         def wrapper() -> None:
             try:
                 box["result"] = fn()
-            except BaseException as exc:  # re-raised on the calling thread
+            except BaseException as exc:  # re-raised on the calling thread  # noqa: BLE001
                 box["error"] = exc
             finally:
                 done.set()

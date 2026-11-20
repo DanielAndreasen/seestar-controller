@@ -38,12 +38,12 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
-import seestar_controller.ui as ui
+from seestar_controller import ui
 from seestar_controller.ui.connection import (
     CONNECTION_LOST_EVENT,
     RECONNECTED_EVENT,
@@ -58,7 +58,6 @@ from seestar_controller.ui.notifications import (
     SCOPE_ERROR_EVENT,
     STACK_EVENT,
     STACK_FINISHED_EVENT,
-    EventSubscribe,
     Notification,
     NotificationBus,
     NotificationController,
@@ -67,7 +66,6 @@ from seestar_controller.ui.notifications import (
 )
 from seestar_controller.ui.settings import SettingsController
 from seestar_controller.ui.state import AppState
-
 
 # --- fakes ---------------------------------------------------------------------
 
@@ -169,30 +167,30 @@ def test_severity_enum_values():
 
 
 def test_notification_defaults_and_coercion():
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     n = Notification(NotificationSeverity.INFO, "Title", "msg", "src")
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
     assert n.timestamp.tzinfo is not None
     assert before <= n.timestamp <= after
     # a plain string severity is coerced
-    n2 = Notification("error", "T", "", "src")
+    n2 = Notification("error", "T", "", "src")  # ty: ignore[invalid-argument-type]
     assert n2.severity is NotificationSeverity.ERROR
     # a naive timestamp is assumed UTC
-    naive = Notification("info", "T", "", "src", datetime(2026, 1, 1, 12, 0, 0))
-    assert naive.timestamp.tzinfo == timezone.utc
+    naive = Notification("info", "T", "", "src", datetime(2026, 1, 1, 12, 0, 0))  # ty: ignore[invalid-argument-type]  # noqa: DTZ001
+    assert naive.timestamp.tzinfo == UTC
     # invalid severity / fields rejected
     with pytest.raises(ValueError):
-        Notification("bogus", "T", "", "src")
+        Notification("bogus", "T", "", "src")  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError):
-        Notification(NotificationSeverity.INFO, 42, "", "src")
+        Notification(NotificationSeverity.INFO, 42, "", "src")  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError):
-        Notification(NotificationSeverity.INFO, "T", "", "src", "not-a-datetime")
+        Notification(NotificationSeverity.INFO, "T", "", "src", "not-a-datetime")  # ty: ignore[invalid-argument-type]
 
 
 def test_notification_is_frozen():
     n = Notification(NotificationSeverity.INFO, "T", "m", "s")
-    with pytest.raises(Exception):
-        n.title = "other"  # type: ignore[misc]
+    with pytest.raises(Exception):  # noqa: B017
+        n.title = "other"  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 # --- NotificationBus: push / log / capacity / clear ---------------------------------
@@ -515,7 +513,7 @@ def test_injectable_subscribe_is_used_and_unsubscribed(bus, settings):
 def test_default_subscribe_uses_the_facade_registry(bus, settings):
     device = FakeDevice()
     c = ConnectionController(settings, device_factory=make_factory(device))
-    nc = NotificationController(bus, c)  # default subscribe
+    NotificationController(bus, c)  # default subscribe
     c.connect()
     assert c.wait(5)
     for name in DEVICE_EVENTS:
@@ -535,14 +533,14 @@ def test_device_events_are_marshalled_via_invoke_on_main(bus, settings):
     nc = NotificationController(bus, c, invoke_on_main=queue.append)
     c.connect()
     assert c.wait(5)
-    for callback in list(queue):  # drain the connection-controller queue
+    for callback in queue:  # drain the connection-controller queue
         callback()
     assert nc.device is device
 
     device.fire(STACK_EVENT, {"state": "working", "frames": 1, "lapse_ms": 10000})
     assert bus.log() == ()  # marshalled, not applied yet
     assert queue
-    for callback in list(queue):
+    for callback in queue:
         callback()
     assert len(bus.log()) == 1 and bus.log()[0].title == "Stacking"
 
@@ -637,7 +635,7 @@ def test_pure_notifications_module_imports_no_gi_no_link_and_widget_layer_stays_
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
@@ -711,7 +709,7 @@ def test_real_device_against_mock_scope_drop_reconnect_and_events(
     assert "Link lost" in titles and "Reconnected" in titles
 
     # --- a scope error reply -> ERROR notification
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         c.device.transport.request("mock_fail")  # non-zero reply -> RpcError
     assert wait_until(
         lambda: any(n.title == "Scope error" for n in bus.log()), timeout=5

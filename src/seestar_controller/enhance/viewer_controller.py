@@ -33,10 +33,13 @@ controller only loads + renders the original stack.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import NoReturn
 
 from PIL import Image
+
+from seestar_controller.store.project import Project
 
 from .fits_io import (
     EnhanceError,
@@ -92,7 +95,7 @@ class ViewerController:
 
     def __init__(
         self,
-        project: Any | None = None,
+        project: Project | None = None,
         *,
         preview_max_size: int = DEFAULT_MAX_PREVIEW_SIZE,
     ) -> None:
@@ -115,11 +118,11 @@ class ViewerController:
     # -- project + stacks ---------------------------------------------------------
 
     @property
-    def project(self) -> Any | None:
+    def project(self) -> Project | None:
         """The current store project (None when not set yet)."""
         return self._project
 
-    def set_project(self, project: Any | None) -> None:
+    def set_project(self, project: Project | None) -> None:
         """Set/replace the current project (None clears it): the stack list
         is re-listed, the open stack is closed, and the listeners are
         notified. A listing failure is recorded as the snapshot's ``error``
@@ -235,7 +238,7 @@ class ViewerController:
         self._notify()
         return image
 
-    def _fail(self, exc: EnhanceError) -> None:
+    def _fail(self, exc: EnhanceError) -> NoReturn:
         """Record ``exc`` in the snapshot, notify, and raise it."""
         self._error = str(exc)
         self._notify()

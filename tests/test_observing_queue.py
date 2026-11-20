@@ -34,11 +34,10 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-import seestar_controller.observing as observing
+from seestar_controller import observing
 from seestar_controller.catalog.coords import (
     CoordinateError,
     J2000Coord,
@@ -140,7 +139,7 @@ def test_entry_bad_name_raises(bad):
 
 def test_entry_wrong_coord_type_raises():
     with pytest.raises(QueueError) as excinfo:
-        QueueEntry(coord=(83.8, -5.4))
+        QueueEntry(coord=(83.8, -5.4))  # ty: ignore[invalid-argument-type]
     assert "J2000Coord" in str(excinfo.value)
 
 
@@ -222,12 +221,12 @@ def test_resolved_entry_carries_name_and_coord():
     with pytest.raises(QueueError):
         QueueEntry.resolved("", COORD_A)
     with pytest.raises(QueueError):
-        QueueEntry.resolved("M 42", (1, 2))
+        QueueEntry.resolved("M 42", (1, 2))  # ty: ignore[invalid-argument-type]
 
 
 def test_entry_is_frozen():
     e = entry_by_name("M 42")
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         e.name = "other"  # type: ignore[misc]
 
 
@@ -254,13 +253,13 @@ def test_queue_constructor_accepts_entries():
     q = PlanQueue([entry_by_name("A"), entry_by_coord(COORD_B)])
     assert len(q) == 2
     with pytest.raises(QueueError):
-        PlanQueue(["not an entry"])
+        PlanQueue(["not an entry"])  # ty: ignore[invalid-argument-type]
 
 
 def test_queue_add_rejects_non_entry():
     q = PlanQueue()
     with pytest.raises(QueueError):
-        q.add("M 42")
+        q.add("M 42")  # ty: ignore[invalid-argument-type]
 
 
 @pytest.mark.parametrize("bad", [5, -3, 1.5, "0", True, None])
@@ -347,7 +346,7 @@ def test_queue_listener_add_remove_idempotent_decorator():
 
     @q.add_listener
     def on_change(event):
-        on_change.seen = event
+        on_change.seen = event  # ty: ignore[missing-attribute]
 
     assert on_change in q.listeners
     q.remove_listener(calls_a.append)
@@ -355,7 +354,7 @@ def test_queue_listener_add_remove_idempotent_decorator():
     assert len(q.listeners) == 2
     q.add(entry_by_name("A"))
     assert len(calls_b) == 1 and calls_b[0].kind == EVENT_ADDED
-    assert on_change.seen.kind == EVENT_ADDED
+    assert on_change.seen.kind == EVENT_ADDED  # ty: ignore[missing-attribute]
 
 
 def test_queue_event_kinds_cover_all_ops():
@@ -464,13 +463,13 @@ def test_resolve_names_bad_resolver_result_collected():
 
 def test_resolve_names_rejects_non_queue():
     with pytest.raises(QueueError):
-        resolve_names([entry_by_name("A")])
+        resolve_names([entry_by_name("A")])  # ty: ignore[invalid-argument-type]
 
 
 def test_resolve_names_default_resolver_uses_catalog_lookup_name(monkeypatch):
     """The default resolver is the lazy catalog facade wrapper: monkeypatch
     ``catalog.facade.lookup_name`` and resolve without injecting a resolver."""
-    import seestar_controller.catalog.facade as facade
+    from seestar_controller.catalog import facade
 
     calls = []
 
@@ -496,7 +495,7 @@ def test_resolve_names_default_resolver_uses_catalog_lookup_name(monkeypatch):
 
 
 def test_default_name_resolver_brightest_first(monkeypatch):
-    import seestar_controller.catalog.facade as facade
+    from seestar_controller.catalog import facade
 
     monkeypatch.setattr(
         facade,
@@ -692,7 +691,7 @@ def test_pure_observing_modules_import_no_gi_no_link_and_widget_stays_lazy():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

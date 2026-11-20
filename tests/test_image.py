@@ -81,8 +81,8 @@ def test_read_frame_multiple_frames_in_stream():
         for i in range(3):
             a.sendall(encode_frame(f"frame-{i}".encode(), id=i, width=4, height=4))
         frames = [read_frame(b) for _ in range(3)]
-        assert [f.id for f in frames] == [0, 1, 2]
-        assert [f.payload for f in frames] == [b"frame-0", b"frame-1", b"frame-2"]
+        assert [f.id for f in frames] == [0, 1, 2]  # ty: ignore[missing-union-attribute]
+        assert [f.payload for f in frames] == [b"frame-0", b"frame-1", b"frame-2"]  # ty: ignore[missing-union-attribute]
     finally:
         a.close()
         b.close()

@@ -178,7 +178,7 @@ def downscale(data: np.ndarray, max_size: int = DEFAULT_MAX_PREVIEW_SIZE) -> np.
     height, width = int(arr.shape[0]), int(arr.shape[1])
     if max(height, width) <= max_size:
         return arr
-    factor = int(math.ceil(max(height, width) / max_size))
+    factor = math.ceil(max(height, width) / max_size)
     h2 = (height // factor) * factor
     w2 = (width // factor) * factor
     if h2 == 0 or w2 == 0:

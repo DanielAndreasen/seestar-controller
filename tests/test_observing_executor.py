@@ -26,15 +26,15 @@ from types import SimpleNamespace
 
 import pytest
 
-import seestar_controller.observing as observing
+from seestar_controller import observing
 from seestar_controller.catalog.coords import J2000Coord
 from seestar_controller.link.device import Device, StackingProgress
 from seestar_controller.link.transport import RpcError
 from seestar_controller.observing import (
-    EXECUTOR_STATES,
     ERROR_POLICIES,
     ERROR_POLICY_ABORT,
     ERROR_POLICY_SKIP,
+    EXECUTOR_STATES,
     ExecutorEvent,
     ExecutorSnapshot,
     ExecutorState,
@@ -42,7 +42,6 @@ from seestar_controller.observing import (
     NightExecutor,
 )
 from seestar_controller.observing.queue import PlanQueue, QueueEntry
-from seestar_controller.store.errors import SessionOpenError
 from seestar_controller.store.project import create_project
 from seestar_controller.store.sessions import (
     close_session,
@@ -663,7 +662,7 @@ def test_executor_module_imports_no_gi_and_package_stays_link_free():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

@@ -12,7 +12,7 @@ import json
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -40,9 +40,9 @@ from seestar_controller.store import (
     open_project,
     read_frame_bytes,
     save_star_picks,
+    schema,
     start_session,
 )
-from seestar_controller.store import schema
 
 
 @pytest.fixture()
@@ -56,7 +56,7 @@ def frozen(dt: datetime):
     return lambda: dt
 
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 JD1 = 2461365.416668
 UTC1 = "2026-11-20T22:00:00.000+00:00"
 
@@ -214,7 +214,7 @@ def test_open_migrates_v0_empty_db_to_current_version(root):
         assert p.config["schema_version"] == SCHEMA_VERSION
         # the migrated project is fully usable
         sid = start_session(p, clock=frozen(T0))
-        assert get_open_session(p).id == sid
+        assert get_open_session(p).id == sid  # ty: ignore[missing-union-attribute]
     # the version bump is mirrored into project.json on disk
     on_disk = json.loads((project_dir / PROJECT_FILE).read_text(encoding="utf-8"))
     assert on_disk["schema_version"] == SCHEMA_VERSION
@@ -400,7 +400,7 @@ def test_keyboard_interrupt_mid_migration_rolls_back_and_reopen_recovers(root):
     conn = sqlite3.connect(project_dir / DB_FILE)
     # kill during the 0 -> 1 migration, on the first CREATE TABLE
     with pytest.raises(KeyboardInterrupt):
-        migrate_db(KillSwitch(conn, dies_on("CREATE TABLE")))
+        migrate_db(KillSwitch(conn, dies_on("CREATE TABLE")))  # ty: ignore[invalid-argument-type]
     # the migration rolled back completely: still v0, no tables (DDL included)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
     assert conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == []
@@ -418,7 +418,7 @@ def test_keyboard_interrupt_mid_alter_rolls_back_then_completes(root):
     conn = sqlite3.connect(project_dir / DB_FILE)
     # kill during the 1 -> 2 migration, on the first ALTER TABLE
     with pytest.raises(KeyboardInterrupt):
-        migrate_db(KillSwitch(conn, dies_on("ALTER TABLE")))
+        migrate_db(KillSwitch(conn, dies_on("ALTER TABLE")))  # ty: ignore[invalid-argument-type]
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
     cols = {row[1] for row in conn.execute("PRAGMA table_info(stars)")}
     assert "aperture_radius" not in cols
@@ -476,7 +476,7 @@ def test_migrate_db_is_noop_on_current_version(root):
     p.close()
     conn = sqlite3.connect(root / "m-42" / DB_FILE)
     spy = KillSwitch(conn, lambda sql: False)  # counts, never dies
-    assert migrate_db(spy) == SCHEMA_VERSION
+    assert migrate_db(spy) == SCHEMA_VERSION  # ty: ignore[invalid-argument-type]
     assert spy.calls == ["PRAGMA user_version"]  # only the version read, no steps
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
     conn.close()
@@ -537,7 +537,7 @@ def test_open_bumps_config_mirror_when_db_already_migrated(root):
 
 
 def test_public_api_exports_migration_runner():
-    import seestar_controller.store as store
+    from seestar_controller import store
 
     assert callable(store.migrate_db)
     assert isinstance(store.MIGRATIONS, dict)
@@ -558,7 +558,7 @@ def test_store_package_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

@@ -10,8 +10,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pytest
@@ -22,7 +21,6 @@ from seestar_controller.store import (
     FITS_SUFFIX,
     KIND_STACK,
     KIND_SUB,
-    KINDS,
     Frame,
     FrameStoreError,
     ProjectError,
@@ -57,7 +55,7 @@ def frozen(dt: datetime):
     return lambda: dt
 
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 T1 = T0 + timedelta(hours=1, minutes=30)
 T2 = T0 + timedelta(hours=3)
 
@@ -111,7 +109,7 @@ def test_store_sub_writes_file_and_db_row(project, session):
     # jd from the header DATE-OBS, utc = ISO of the same instant
     assert frame.jd == jd_of(DATE1)
     assert frame.utc == "2026-11-20T22:00:00.000+00:00"
-    assert datetime.fromisoformat(frame.utc).utcoffset() == timezone.utc.utcoffset(None)
+    assert datetime.fromisoformat(frame.utc).utcoffset() == UTC.utcoffset(None)
     # metadata from meta
     assert frame.exposure == 10.0
     assert frame.gain == 50.0
@@ -199,7 +197,7 @@ def test_meta_target_mapping_uses_name(project, session):
 def test_meta_target_mapping_without_name_is_json(project, session):
     fits = make_fits(date_obs=DATE1)
     frame = store_frame(project, session, "sub", fits, meta={"target": {"ra": 5.59, "dec": -5.39}})
-    assert json.loads(frame.target) == {"ra": 5.59, "dec": -5.39}
+    assert json.loads(frame.target) == {"ra": 5.59, "dec": -5.39}  # ty: ignore[invalid-argument-type]
 
 
 def test_missing_metadata_is_none(project, session):
@@ -227,7 +225,7 @@ def test_jd_from_date_obs_matches_astropy(project, session):
     for date_obs in (DATE1, DATE2, DATE3, "2026-11-21T05:30:00.123456"):
         frame = store_frame(project, session, "sub", make_fits(date_obs=date_obs))
         assert frame.jd == jd_of(date_obs)
-        expected_utc = Time(date_obs, format="isot", scale="utc").to_datetime(timezone.utc)
+        expected_utc = Time(date_obs, format="isot", scale="utc").to_datetime(UTC)
         assert frame.utc == expected_utc.isoformat(timespec="milliseconds")
 
 
@@ -235,9 +233,9 @@ def test_jd_falls_back_to_file_mtime_without_date_obs(project, session):
     frame = store_frame(project, session, "sub", make_fits(exptime=10.0))
     path = get_frame_path(project, frame)
     mtime = path.stat().st_mtime
-    expected_jd = float(Time(datetime.fromtimestamp(mtime, timezone.utc), scale="utc").jd)
+    expected_jd = float(Time(datetime.fromtimestamp(mtime, UTC), scale="utc").jd)
     assert frame.jd == pytest.approx(expected_jd, abs=1e-9)
-    expected_utc = datetime.fromtimestamp(mtime, timezone.utc).isoformat(timespec="milliseconds")
+    expected_utc = datetime.fromtimestamp(mtime, UTC).isoformat(timespec="milliseconds")
     assert frame.utc == expected_utc
     # the file name is derived from that jd too
     assert frame.path == f"subs/{session}/{frame.jd:.6f}{FITS_SUFFIX}"
@@ -248,7 +246,7 @@ def test_jd_falls_back_to_mtime_on_invalid_date_obs(project, session, bad_date_o
     frame = store_frame(project, session, "sub", make_fits(date_obs=bad_date_obs))
     path = get_frame_path(project, frame)
     mtime = path.stat().st_mtime
-    expected_jd = float(Time(datetime.fromtimestamp(mtime, timezone.utc), scale="utc").jd)
+    expected_jd = float(Time(datetime.fromtimestamp(mtime, UTC), scale="utc").jd)
     assert frame.jd == pytest.approx(expected_jd, abs=1e-9)
 
 
@@ -408,7 +406,7 @@ def test_non_fits_bytes_raise_frame_store_error(project, session):
     ],
 )
 def test_bad_argument_types_raise(project, session, kwargs):
-    args = dict(session_id=session, kind="sub", fits_bytes=make_fits(date_obs=DATE1), meta=None)
+    args = {"session_id": session, "kind": "sub", "fits_bytes": make_fits(date_obs=DATE1), "meta": None}
     args.update(kwargs)
     with pytest.raises(TypeError):
         store_frame(project, **args)
@@ -416,7 +414,7 @@ def test_bad_argument_types_raise(project, session, kwargs):
 
 
 def test_bytearray_fits_bytes_accepted(project, session):
-    frame = store_frame(project, session, "sub", bytearray(make_fits(date_obs=DATE1)))
+    frame = store_frame(project, session, "sub", bytearray(make_fits(date_obs=DATE1)))  # ty: ignore[invalid-argument-type]
     assert read_frame_bytes(project, frame) == make_fits(date_obs=DATE1)
 
 
@@ -476,7 +474,7 @@ def test_frames_persist_across_reopen(root, project, session):
 
 
 def test_frame_api_is_exported_from_package():
-    import seestar_controller.store as store
+    from seestar_controller import store
 
     for name in (
         "Frame",
@@ -515,7 +513,7 @@ def test_frames_module_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

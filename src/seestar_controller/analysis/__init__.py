@@ -90,6 +90,30 @@ periodogram core; ticket 03 adds period selection + phase fold; ticket 04
 adds CSV export + outlier marking.
 """
 
+from .export import (
+    FOLDED_CSV_FILE,
+    FOLDED_CSV_HEADER,
+    ExportError,
+    export_folded_csv,
+    export_lightcurve_csv,
+)
+from .fold import (
+    PERIOD_CONFIG_KEY,
+    SOURCE_MANUAL,
+    SOURCE_PEAK,
+    SOURCES,
+    FoldedPoint,
+    FoldError,
+    PeriodController,
+    PeriodError,
+    PeriodListener,
+    PeriodSnapshot,
+    fold_points,
+    folded_window,
+    periodogram_window,
+    phase_of,
+    validate_period,
+)
 from .lightcurve import (
     AXIS_COLOR,
     DB_CALL_TIMEOUT_S,
@@ -119,30 +143,6 @@ from .lightcurve import (
     session_color,
     session_color_index,
     zoom_window_at,
-)
-from .export import (
-    FOLDED_CSV_FILE,
-    FOLDED_CSV_HEADER,
-    ExportError,
-    export_folded_csv,
-    export_lightcurve_csv,
-)
-from .fold import (
-    PERIOD_CONFIG_KEY,
-    SOURCE_MANUAL,
-    SOURCE_PEAK,
-    SOURCES,
-    FoldedPoint,
-    FoldError,
-    PeriodController,
-    PeriodError,
-    PeriodListener,
-    PeriodSnapshot,
-    folded_window,
-    fold_points,
-    periodogram_window,
-    phase_of,
-    validate_period,
 )
 from .periodogram import (
     ALLOWED_NORMALIZATIONS,
@@ -189,7 +189,6 @@ __all__ = [
     "DEFAULT_TOP_N",
     "DEFAULT_WINDOW",
     "EXCLUDED_COLOR",
-    "ExportError",
     "FOLDED_CSV_FILE",
     "FOLDED_CSV_HEADER",
     "MAX_GRID_POINTS",
@@ -201,24 +200,28 @@ __all__ = [
     "PLOT_MARGIN_RIGHT",
     "PLOT_MARGIN_TOP",
     "SESSION_PALETTE",
+    "SOURCES",
     "SOURCE_MANUAL",
     "SOURCE_PEAK",
-    "SOURCES",
     "ZOOM_FACTOR",
     "AnalysisError",
-    "FoldedPoint",
+    "ExportError",
     "FoldError",
+    "FoldedPoint",
     "InvokeOnMain",
     "LightcurveController",
     "LightcurveError",
     "LightcurveListener",
     "LightcurvePoint",
     "LightcurveSnapshot",
+    # widget layer (lazy, imports gi):
+    "LightcurveView",
     "Peak",
     "PeriodController",
     "PeriodError",
     "PeriodListener",
     "PeriodSnapshot",
+    "PeriodView",
     "PeriodogramError",
     "PeriodogramResult",
     "PlotGeometry",
@@ -227,8 +230,8 @@ __all__ = [
     "data_to_screen",
     "export_folded_csv",
     "export_lightcurve_csv",
-    "folded_window",
     "fold_points",
+    "folded_window",
     "frequency_grid",
     "full_window",
     "pan_window",
@@ -241,7 +244,4 @@ __all__ = [
     "session_color_index",
     "validate_period",
     "zoom_window_at",
-    # widget layer (lazy, imports gi):
-    "LightcurveView",
-    "PeriodView",
 ]

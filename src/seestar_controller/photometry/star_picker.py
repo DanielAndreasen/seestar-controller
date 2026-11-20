@@ -60,13 +60,13 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk  # noqa: E402
+from gi.repository import Adw, Gtk
 
-from ..enhance.fits_io import EnhanceError, StackInfo  # noqa: E402
-from ..enhance.render import render_preview  # noqa: E402
-from ..enhance.viewer import texture_from_pil  # noqa: E402
-from ..enhance.viewer_controller import ViewerController, ViewerSnapshot  # noqa: E402
-from .picking import (  # noqa: E402
+from ..enhance.fits_io import EnhanceError, StackInfo
+from ..enhance.render import render_preview
+from ..enhance.viewer import texture_from_pil
+from ..enhance.viewer_controller import ViewerController, ViewerSnapshot
+from .picking import (
     ROLE_COMP,
     ROLE_TARGET,
     PickController,
@@ -74,8 +74,8 @@ from .picking import (  # noqa: E402
     PickSession,
     StarPickSpec,
 )
-from .suggest import SuggestionController  # noqa: E402
-from .suggestions_panel import SuggestionsPanel  # noqa: E402
+from .suggest import SuggestionController
+from .suggestions_panel import SuggestionsPanel
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
 LEFT_PANE_POSITION = 320

@@ -72,10 +72,11 @@ import logging
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Self
 
 from . import compat, frames, stacking
 from .protocol import Event
@@ -85,10 +86,10 @@ from .resilience import (
     ReconnectPolicy,
 )
 from .stacking import (
-    START_STACK_METHOD,
     STACK_EVENT,
     STACK_STATE_IDLE,
-    STOP_STACK_METHOD,
+    START_STACK_METHOD,  # noqa: F401 - re-exported (tests import it from here)
+    STOP_STACK_METHOD,  # noqa: F401 - re-exported (tests import it from here)
 )
 from .transport import COMMAND_PORT, EventHandler, LinkTransport
 
@@ -210,7 +211,8 @@ def _parse_app_state(result: Mapping[str, Any]) -> DeviceState:
     view = view if isinstance(view, Mapping) else {}
     stack_node = view.get("Stack")
     if not isinstance(stack_node, Mapping):
-        stack_node = result.get("Stack") if isinstance(result.get("Stack"), Mapping) else {}
+        fallback = result.get("Stack")
+        stack_node = fallback if isinstance(fallback, Mapping) else {}
     goto_node = view.get("AutoGoto")
     if not isinstance(goto_node, Mapping):
         goto_node = {}
@@ -277,7 +279,7 @@ class Device:
         transport: LinkTransport | None = None,
         goto_timeout: float = 30.0,
         **transport_kwargs: Any,
-    ) -> "Device":
+    ) -> Device:
         """Connect to the Scope at ``ip`` and return a facade with live state.
 
         Either pass an existing (connected or not) ``transport``, or the
@@ -314,10 +316,10 @@ class Device:
         """Close the Link to the Scope."""
         self._transport.disconnect()
 
-    def __enter__(self) -> "Device":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.disconnect()
 
     @property

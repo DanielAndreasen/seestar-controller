@@ -59,10 +59,11 @@ import os
 import re
 import sqlite3
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Self
 
 from . import schema
 from .errors import (
@@ -124,7 +125,7 @@ def utc_now_iso() -> str:
     """The current time as a UTC ISO-8601 string with explicit offset,
     e.g. ``2026-11-20T01:23:45.678+00:00`` (parseable by
     :meth:`datetime.datetime.fromisoformat`)."""
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 def slugify(name: Any) -> str:
@@ -140,7 +141,7 @@ def slugify(name: Any) -> str:
     characters (``""``, ``"!!!"``).
     """
     if not isinstance(name, str):
-        raise ValueError(f"project name must be a string, got {name!r}")
+        raise ValueError(f"project name must be a string, got {name!r}")  # noqa: TRY004
     slug = _NON_ALNUM_RUN.sub("-", name.strip().lower()).strip("-")
     if len(slug) > MAX_SLUG_LENGTH:
         slug = slug[:MAX_SLUG_LENGTH].strip("-")
@@ -247,10 +248,10 @@ class Project:
         """Close the db connection. Idempotent."""
         self.db.close()
 
-    def __enter__(self) -> Project:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
     def __repr__(self) -> str:
@@ -274,7 +275,7 @@ def create_project(name: str, root: str | Path | None = None) -> Project:
     (slug collision — documented choice, see :func:`slugify`).
     """
     if not isinstance(name, str):
-        raise ValueError(f"project name must be a string, got {name!r}")
+        raise ValueError(f"project name must be a string, got {name!r}")  # noqa: TRY004
     name = name.strip()
     if not name:
         raise ValueError("project name must not be empty")

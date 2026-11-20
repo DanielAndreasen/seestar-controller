@@ -33,14 +33,14 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import pytest
 from astropy.io import fits as pyfits
 
-import seestar_controller.analysis as analysis
+from seestar_controller import analysis
 from seestar_controller.analysis import lightcurve as lightcurve_module
 from seestar_controller.analysis.lightcurve import (
     AXIS_COLOR,
@@ -85,7 +85,7 @@ PURE_ANALYSIS_MODULES = ("lightcurve", "periodogram", "fold", "export")
 #: The widget analysis modules — ``import gi`` at module top, lazy export.
 WIDGET_ANALYSIS_MODULES = ("lightcurve_view", "period_view")
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 JD0 = 2460000.5
 
 
@@ -273,14 +273,14 @@ def test_snapshot_two_sessions_ordered_by_jd_first_seen_excluded_flagged(project
     assert excluded_points[0].mag == 12.40
     assert excluded_points[0].mag_err is None
     # points are frozen
-    with pytest.raises(Exception):
-        snap.points[0].mag = 99.0  # type: ignore[misc]
+    with pytest.raises(Exception):  # noqa: B017
+        snap.points[0].mag = 99.0  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_snapshot_includes_excluded_points(project):
     """The controller reads with ``include_excluded=True`` (unlike the store
     default) — excluded points are in the snapshot, flagged."""
-    session_a, _ = two_session_project(project)
+    _session_a, _ = two_session_project(project)
     ctrl = LightcurveController(project)
     snap = ctrl.snapshot
     assert any(p.excluded for p in snap.points)
@@ -355,7 +355,7 @@ def test_queued_invoke_marshals_listener_notifications(project):
 
 
 def test_set_project_switches_and_notifies(project, root):
-    session_a, _ = two_session_project(project)
+    _session_a, _ = two_session_project(project)
     other = create_project("M 31 night", root=root)
     try:
         ctrl = LightcurveController(project)
@@ -375,7 +375,7 @@ def test_set_project_switches_and_notifies(project, root):
 
 
 def test_attach_viewer_follows_the_viewers_project(project):
-    session_a, _ = two_session_project(project)
+    _session_a, _ = two_session_project(project)
     viewer = FakeViewerController(project)
     ctrl = LightcurveController(viewer_controller=viewer)
     assert ctrl.viewer_controller is viewer
@@ -653,7 +653,7 @@ def test_pan_shifts_the_window_so_the_content_follows_the_cursor():
     with pytest.raises(LightcurveError):
         pan_window(WINDOW, geom, float("nan"), 0.0)
     with pytest.raises(LightcurveError):
-        pan_window(WINDOW, geom, 0.0, "x")  # type: ignore[arg-type]
+        pan_window(WINDOW, geom, 0.0, "x")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 def test_reset_view_is_full_window_of_the_points():
@@ -692,7 +692,7 @@ def test_pure_analysis_modules_import_no_gi_no_link_no_ui_no_photometry_and_widg
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

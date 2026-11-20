@@ -24,22 +24,22 @@ import io
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 import pytest
 from astropy.io import fits as pyfits
 
-import seestar_controller.photometry as photometry
+from seestar_controller import photometry
 from seestar_controller.catalog.coords import J2000Coord
-from seestar_controller.photometry import picking
 from seestar_controller.photometry import (
     ApertureParams,
     PickController,
-    PickSession,
     PickingError,
+    PickSession,
     StarPickSpec,
+    picking,
     pixel_to_sky,
     sky_to_pixel,
 )
@@ -60,7 +60,7 @@ PURE_PHOTOMETRY_MODULES = ("__init__", "picking", "suggest", "measure", "run")
 #: The widget photometry modules — ``gi`` at module top, lazy-exported via PEP 562.
 WIDGET_PHOTOMETRY_MODULES = ("star_picker", "suggestions_panel", "results_view")
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 DATE1 = "2026-11-20T22:00:00.000"
 
 
@@ -231,7 +231,7 @@ def test_sky_to_pixel_accepts_pair_and_duck_typed_coord():
 def test_pixel_to_sky_missing_wcs_raises():
     for bad in ({}, None, {"NAXIS": 2}, {"CTYPE1": "", "CTYPE2": ""}, "nope", 42):
         with pytest.raises(PickingError):
-            pixel_to_sky(bad, 0, 0)
+            pixel_to_sky(bad, 0, 0)  # ty: ignore[invalid-argument-type]
     with pytest.raises(PickingError):
         sky_to_pixel({}, J2000Coord(ra_deg=83.0, dec_deg=22.0))
 
@@ -240,9 +240,9 @@ def test_pixel_to_sky_bad_xy_raises():
     header = wcs_header()
     for bad in (float("nan"), float("inf"), "x", None, True):
         with pytest.raises(PickingError):
-            pixel_to_sky(header, bad, 0)
+            pixel_to_sky(header, bad, 0)  # ty: ignore[invalid-argument-type]
         with pytest.raises(PickingError):
-            pixel_to_sky(header, 0, bad)
+            pixel_to_sky(header, 0, bad)  # ty: ignore[invalid-argument-type]
 
 
 # --- ApertureParams + StarPickSpec --------------------------------------------------------
@@ -253,19 +253,19 @@ def test_aperture_params_defaults_validation_and_frozen():
     assert (ap.radius_px, ap.sky_in_px, ap.sky_out_px) == (4.0, 8.0, 12.0)
     assert ApertureParams(radius_px=5, sky_in_px=10, sky_out_px=20).radius_px == 5.0
     for bad in (
-        dict(radius_px=0.0),
-        dict(radius_px=-1.0),
-        dict(radius_px=float("nan")),
-        dict(radius_px=True),
-        dict(sky_in_px=0.0),
-        dict(sky_out_px=-2.0),
-        dict(sky_in_px=12.0, sky_out_px=8.0),  # inner must be < outer
-        dict(sky_in_px=8.0, sky_out_px=8.0),
+        {"radius_px": 0.0},
+        {"radius_px": -1.0},
+        {"radius_px": float("nan")},
+        {"radius_px": True},
+        {"sky_in_px": 0.0},
+        {"sky_out_px": -2.0},
+        {"sky_in_px": 12.0, "sky_out_px": 8.0},  # inner must be < outer
+        {"sky_in_px": 8.0, "sky_out_px": 8.0},
     ):
         with pytest.raises(PickingError):
             ApertureParams(**bad)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        ap.radius_px = 9.0  # type: ignore[misc]
+        ap.radius_px = 9.0  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_star_pick_spec_validation_describe_and_frozen():
@@ -277,16 +277,16 @@ def test_star_pick_spec_validation_describe_and_frozen():
     pixel_only = StarPickSpec(role="comp", x=1, y=2)
     assert pixel_only.coord is None and "RA" not in pixel_only.describe()
     for bad in (
-        dict(role="check", x=0, y=0),
-        dict(role="target", x=float("nan"), y=0),
-        dict(role="target", x=0, y=float("inf")),
-        dict(role="target", x=0, y=0, coord="83,22"),
-        dict(role="target", x=0, y=0, label=42),
+        {"role": "check", "x": 0, "y": 0},
+        {"role": "target", "x": float("nan"), "y": 0},
+        {"role": "target", "x": 0, "y": float("inf")},
+        {"role": "target", "x": 0, "y": 0, "coord": "83,22"},
+        {"role": "target", "x": 0, "y": 0, "label": 42},
     ):
         with pytest.raises(PickingError):
-            StarPickSpec(**bad)
+            StarPickSpec(**bad)  # ty: ignore[invalid-argument-type]
     with pytest.raises(dataclasses.FrozenInstanceError):
-        spec.x = 1.0  # type: ignore[misc]
+        spec.x = 1.0  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 # --- PickController: picking ---------------------------------------------------------------
@@ -381,7 +381,7 @@ def test_remove_pick_set_role_clear():
     with pytest.raises(PickingError):
         ctrl.remove_pick(5)
     with pytest.raises(PickingError):
-        ctrl.remove_pick("0")
+        ctrl.remove_pick("0")  # ty: ignore[invalid-argument-type]
     ctrl.clear()
     assert ctrl.picks == () and ctrl.target is None
     assert t is not None and c1 is not None  # silence linters
@@ -396,7 +396,7 @@ def test_aperture_setters():
         ctrl.set_aperture_params(sky_in_px=30.0)  # 30 > sky_out 20
     assert ctrl.aperture.sky_in_px == 8.0  # unchanged on error
     with pytest.raises(PickingError):
-        ctrl.set_aperture("nope")
+        ctrl.set_aperture("nope")  # ty: ignore[invalid-argument-type]
     assert ctrl.set_aperture(ApertureParams(radius_px=2.0)).radius_px == 2.0
 
 
@@ -428,7 +428,7 @@ def test_listeners_idempotent_decorator_isolated_and_frozen_snapshot():
     assert snapshot.picks == ctrl.picks
     assert snapshot.aperture == ctrl.aperture
     with pytest.raises(dataclasses.FrozenInstanceError):
-        snapshot.picks = ()  # type: ignore[misc]
+        snapshot.picks = ()  # type: ignore[misc]  # ty: ignore[invalid-assignment]
     ctrl.remove_listener(on_session)
     ctrl.remove_listener(on_session)  # no-op
     ctrl.clear()
@@ -460,8 +460,8 @@ def test_save_load_round_trip_on_tmp_project(wcs_stack_project):
     stored = load_star_picks(project)
     assert [p.role for p in stored] == ["target", "comp", "comp"]  # target first
     assert stored[0].label == "Target"
-    assert stored[0].ra_deg == pytest.approx(target.coord.ra_deg)
-    assert stored[0].dec_deg == pytest.approx(target.coord.dec_deg)
+    assert stored[0].ra_deg == pytest.approx(target.coord.ra_deg)  # ty: ignore[missing-union-attribute]
+    assert stored[0].dec_deg == pytest.approx(target.coord.dec_deg)  # ty: ignore[missing-union-attribute]
     assert (stored[0].aperture_radius, stored[0].sky_annulus_inner, stored[0].sky_annulus_outer) == (
         6.0,
         10.0,
@@ -479,10 +479,10 @@ def test_save_load_round_trip_on_tmp_project(wcs_stack_project):
     assert [p.role for p in picks] == ["target", "comp", "comp"]
     assert [p.label for p in picks] == ["Target", "Comp A", "Comp B"]
     assert picks[0].coord is not None
-    assert picks[0].coord.ra_deg == pytest.approx(target.coord.ra_deg)
+    assert picks[0].coord.ra_deg == pytest.approx(target.coord.ra_deg)  # ty: ignore[missing-union-attribute]
     assert picks[0].x == pytest.approx(target.x) and picks[0].y == pytest.approx(target.y)
-    assert (picks[1].coord.ra_deg, picks[1].coord.dec_deg) == pytest.approx(
-        (comp_a.coord.ra_deg, comp_a.coord.dec_deg)
+    assert (picks[1].coord.ra_deg, picks[1].coord.dec_deg) == pytest.approx(  # ty: ignore[missing-union-attribute]
+        (comp_a.coord.ra_deg, comp_a.coord.dec_deg)  # ty: ignore[missing-union-attribute]
     )
     assert comp_b.coord is not None
     assert (reloaded.aperture.radius_px, reloaded.aperture.sky_in_px, reloaded.aperture.sky_out_px) == (
@@ -586,7 +586,7 @@ def test_pure_photometry_modules_import_no_gi_no_link_no_ui_no_enhance_and_widge
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
@@ -657,4 +657,4 @@ def test_public_api_is_exported_from_package():
     assert issubclass(photometry.PickingError, photometry.PhotometryError)
     assert issubclass(photometry.SuggestionError, photometry.PhotometryError)
     with pytest.raises(AttributeError):
-        photometry.no_such_thing  # type: ignore[attr-defined]
+        photometry.no_such_thing  # type: ignore[attr-defined]  # noqa: B018

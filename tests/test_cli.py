@@ -7,8 +7,6 @@ Synthetic APK fixtures only — no real app package available (user AFK).
 import stat
 import zipfile
 
-import pytest
-
 from seestar_controller import cli
 from seestar_controller.link import keys
 

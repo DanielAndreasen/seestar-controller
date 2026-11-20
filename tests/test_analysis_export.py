@@ -41,7 +41,25 @@ from pathlib import Path
 
 import pytest
 
-import seestar_controller.analysis as analysis
+# helpers reused from the sibling ticket test modules (tests/ is on sys.path)
+from test_analysis_lightcurve import (
+    ANALYSIS_PACKAGE_DIR,
+    JD0,
+    QueuedInvoke,
+)
+from test_analysis_lightcurve import (
+    two_session_project as _two_session_project_fn,
+)
+from test_analysis_periodogram import (
+    P_TRUE,
+    SIGMA,
+    _project_with_sinusoid,
+    gapped_sampling,
+    make_points,
+    sinusoid_mags,
+)
+
+from seestar_controller import analysis
 from seestar_controller.analysis import (
     FOLDED_CSV_FILE,
     FOLDED_CSV_HEADER,
@@ -57,22 +75,6 @@ from seestar_controller.analysis import (
 from seestar_controller.analysis.periodogram import project_periodogram
 from seestar_controller.store import CSV_FILE, CSV_HEADER, lightcurve, set_excluded
 from seestar_controller.store.csv_export import export_csv as store_export_csv
-
-# helpers reused from the sibling ticket test modules (tests/ is on sys.path)
-from test_analysis_lightcurve import (  # noqa: E402
-    ANALYSIS_PACKAGE_DIR,
-    JD0,
-    QueuedInvoke,
-    two_session_project as _two_session_project_fn,
-)
-from test_analysis_periodogram import (  # noqa: E402
-    P_TRUE,
-    SIGMA,
-    _project_with_sinusoid,
-    gapped_sampling,
-    make_points,
-    sinusoid_mags,
-)
 
 
 @pytest.fixture()
@@ -169,9 +171,9 @@ def test_export_lightcurve_csv_custom_path_str_and_path(project, two_session_pro
 
 def test_export_lightcurve_csv_error_paths(project, two_session_project):
     with pytest.raises(TypeError):
-        export_lightcurve_csv(project, path=123)
+        export_lightcurve_csv(project, path=123)  # ty: ignore[invalid-argument-type]
     with pytest.raises(TypeError):
-        export_lightcurve_csv(project, include_excluded=1)
+        export_lightcurve_csv(project, include_excluded=1)  # ty: ignore[invalid-argument-type]
     with pytest.raises(ExportError):  # no project -> the store call fails -> wrapped
         export_lightcurve_csv(None)
     assert issubclass(ExportError, AnalysisError) and issubclass(ExportError, ValueError)
@@ -271,11 +273,11 @@ def test_folded_csv_error_paths(project, two_session_project, tmp_path):
     assert read_csv(out) == [list(FOLDED_CSV_HEADER)]
     # bad argument types -> TypeError
     with pytest.raises(TypeError):
-        export_folded_csv(project, P_TRUE, path=123)
+        export_folded_csv(project, P_TRUE, path=123)  # ty: ignore[invalid-argument-type]
     with pytest.raises(TypeError):
-        export_folded_csv(project, P_TRUE, path=tmp_path / "x.csv", include_excluded="yes")
+        export_folded_csv(project, P_TRUE, path=tmp_path / "x.csv", include_excluded="yes")  # ty: ignore[invalid-argument-type]
     with pytest.raises(TypeError):
-        export_folded_csv(project, P_TRUE, path=tmp_path / "x.csv", target=42)
+        export_folded_csv(project, P_TRUE, path=tmp_path / "x.csv", target=42)  # ty: ignore[invalid-argument-type]
     # points missing attributes -> ExportError
     with pytest.raises(ExportError):
         export_folded_csv([object()], P_TRUE, path=tmp_path / "x.csv", jd0=0.0)
@@ -342,9 +344,9 @@ def test_set_excluded_and_toggle_excluded_flip_the_store_flag_and_notify(project
     assert lc.toggle_excluded(target_point.id) is False
     # error paths
     with pytest.raises(LightcurveError):
-        lc.set_excluded("not-an-int", True)
+        lc.set_excluded("not-an-int", True)  # ty: ignore[invalid-argument-type]
     with pytest.raises(LightcurveError):
-        lc.set_excluded(target_point.id, 1)
+        lc.set_excluded(target_point.id, 1)  # ty: ignore[invalid-argument-type]
     with pytest.raises(LightcurveError):
         lc.toggle_excluded(10**9)  # unknown id
     with pytest.raises(LightcurveError):
@@ -434,7 +436,7 @@ def test_export_module_imports_no_gi_no_link_no_ui_no_photometry_no_enhance():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

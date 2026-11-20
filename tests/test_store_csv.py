@@ -12,7 +12,7 @@ import csv
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -50,7 +50,7 @@ def frozen(dt: datetime):
     return lambda: dt
 
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 T1 = T0 + timedelta(hours=1, minutes=30)
 T2 = T0 + timedelta(hours=3)
 
@@ -158,9 +158,9 @@ def test_export_leaves_no_tmp_files(project, three_measurements):
 
 
 def test_export_roundtrip_reparse_matches_db_exactly(project, two_sessions, three_frames, three_measurements, target):
-    s1, s2 = two_sessions
-    f1, f2, f3 = three_frames
-    m1, m2, m3 = three_measurements
+    s1, _s2 = two_sessions
+    _f1, _f2, _f3 = three_frames
+    m1, _m2, m3 = three_measurements
     out = export_csv(project)
     rows = read_csv(out)
     assert rows[0] == list(CSV_HEADER)
@@ -197,8 +197,8 @@ def test_export_roundtrip_reparse_matches_db_exactly(project, two_sessions, thre
 
 
 def test_export_roundtrip_with_include_excluded_matches_db(project, three_frames, three_measurements, target):
-    f1, f2, f3 = three_frames
-    m1, m2, m3 = three_measurements
+    _f1, _f2, _f3 = three_frames
+    _m1, m2, _m3 = three_measurements
     out = export_csv(project, include_excluded=True)
     body = read_csv(out)[1:]
     assert len(body) == 3  # m1, m3, m2 in jd order
@@ -246,7 +246,7 @@ def test_export_reflects_exclusion_flags_set_afterwards(project, three_measureme
 
 def test_export_include_excluded_must_be_bool(project):
     with pytest.raises(TypeError):
-        export_csv(project, include_excluded="yes")
+        export_csv(project, include_excluded="yes")  # ty: ignore[invalid-argument-type]
 
 
 # --- export: empty lightcurve ------------------------------------------------------------
@@ -308,7 +308,7 @@ def test_export_custom_path(project, three_measurements, target, tmp_path):
 
 def test_export_path_bad_type_raises_type_error(project):
     with pytest.raises(TypeError):
-        export_csv(project, path=123)
+        export_csv(project, path=123)  # ty: ignore[invalid-argument-type]
 
 
 def test_export_target_empty_when_unset(project, three_measurements):
@@ -345,7 +345,7 @@ def test_export_after_reopen_matches(root, project, three_measurements, target):
 
 
 def test_csv_api_is_exported_from_package():
-    import seestar_controller.store as store
+    from seestar_controller import store
 
     for name in ("CSV_FILE", "CSV_HEADER", "export_csv"):
         assert name in store.__all__, name
@@ -365,7 +365,7 @@ def test_csv_export_module_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

@@ -91,27 +91,12 @@ view.
 
 from seestar_controller.store.stars import ROLE_COMP, ROLE_TARGET, ROLES
 
-from .picking import (
-    DEFAULT_APERTURE_RADIUS_PX,
-    DEFAULT_SKY_IN_PX,
-    DEFAULT_SKY_OUT_PX,
-    SNAP_WINDOW_PX,
-    ApertureParams,
-    PhotometryError,
-    PickController,
-    PickListener,
-    PickSession,
-    PickingError,
-    StarPickSpec,
-    pixel_to_sky,
-    sky_to_pixel,
-)
 from .measure import (
     MAG_ERR_COEFF,
     FrameMeasurement,
     FrameSkippedError,
-    MeasureReport,
     MeasurementError,
+    MeasureReport,
     SkippedFrame,
     StarMeasurement,
     differential_mag,
@@ -124,6 +109,21 @@ from .measure import (
     measure_frame_data,
     measure_project,
     measure_star,
+)
+from .picking import (
+    DEFAULT_APERTURE_RADIUS_PX,
+    DEFAULT_SKY_IN_PX,
+    DEFAULT_SKY_OUT_PX,
+    SNAP_WINDOW_PX,
+    ApertureParams,
+    PhotometryError,
+    PickController,
+    PickingError,
+    PickListener,
+    PickSession,
+    StarPickSpec,
+    pixel_to_sky,
+    sky_to_pixel,
 )
 from .run import (
     DB_CALL_TIMEOUT_S,
@@ -141,10 +141,10 @@ from .suggest import (
     CompSuggestion,
     LookupFn,
     SearchRunner,
-    SuggestListener,
     SuggestionController,
     SuggestionError,
     SuggestionSnapshot,
+    SuggestListener,
     default_standards_lookup,
 )
 
@@ -174,9 +174,9 @@ __all__ = [
     "DEFAULT_SKY_OUT_PX",
     "MAG_ERR_COEFF",
     "MAX_COMP_SEARCH_RADIUS_DEG",
+    "ROLES",
     "ROLE_COMP",
     "ROLE_TARGET",
-    "ROLES",
     "SNAP_WINDOW_PX",
     "ApertureParams",
     "CompSuggestion",
@@ -191,6 +191,8 @@ __all__ = [
     "PickSession",
     "PickingError",
     "ProgressCallback",
+    # widget layer (lazy, imports gi):
+    "ResultsPanel",
     "RunController",
     "RunError",
     "RunListener",
@@ -201,10 +203,12 @@ __all__ = [
     "SkippedFrame",
     "StarMeasurement",
     "StarPickSpec",
+    "StarPickerView",
     "SuggestListener",
     "SuggestionController",
     "SuggestionError",
     "SuggestionSnapshot",
+    "SuggestionsPanel",
     "default_standards_lookup",
     "differential_mag",
     "differential_mag_err",
@@ -218,8 +222,4 @@ __all__ = [
     "measure_star",
     "pixel_to_sky",
     "sky_to_pixel",
-    # widget layer (lazy, imports gi):
-    "ResultsPanel",
-    "StarPickerView",
-    "SuggestionsPanel",
 ]

@@ -35,13 +35,13 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-import seestar_controller.observing as observing
+from seestar_controller import observing
 from seestar_controller.catalog.coords import J2000Coord
 from seestar_controller.link.device import Device, StackingProgress
 from seestar_controller.link.frames import (
@@ -61,7 +61,6 @@ from seestar_controller.observing import (
     KIND_SESSION,
     KIND_STACK,
     LOG_KINDS,
-    LOG_SOURCE_CAPTURE,
     LOG_SOURCE_EXECUTOR,
     SESSION_LOG_FILE,
     ExecutorState,
@@ -73,10 +72,13 @@ from seestar_controller.observing import (
     classify_executor_event,
     session_log_path,
 )
-from seestar_controller.observing.observe_controller import OBSERVE_SOURCE, default_capture_factory
+from seestar_controller.observing.observe_controller import (
+    OBSERVE_SOURCE,
+    default_capture_factory,
+)
 from seestar_controller.observing.queue import PlanQueue, QueueEntry
 from seestar_controller.observing.queue_controller import PlanQueueController
-from seestar_controller.store.frames import get_frame_path, list_frames, store_frame
+from seestar_controller.store.frames import get_frame_path, list_frames
 from seestar_controller.store.project import create_project
 from seestar_controller.store.sessions import close_session, start_session
 from seestar_controller.ui.connection import ConnectionController
@@ -239,7 +241,7 @@ class FakeDevice:
             self._seq += 1
             seq = self._seq
             frame_id = f"{kind}-{seq:04d}"
-            when = when or datetime.now(timezone.utc)
+            when = when or datetime.now(UTC)
             fits = make_fits_bytes(
                 when=when, exposure=exposure, gain=gain, target=target, seed=seq
             )
@@ -719,7 +721,7 @@ def test_capture_module_imports_no_gi_and_package_stays_lazy():
         "assert 'gi' not in sys.modules;"
         "print('clean')"
     )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
 

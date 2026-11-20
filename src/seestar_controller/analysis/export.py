@@ -84,9 +84,9 @@ from __future__ import annotations
 import csv
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from seestar_controller.store.csv_export import export_csv as _store_export_csv
 from seestar_controller.store.measurements import lightcurve as _store_lightcurve

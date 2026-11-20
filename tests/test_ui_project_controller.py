@@ -160,9 +160,9 @@ def test_events_are_fired_on_refresh_create_open(controller):
 def test_event_is_frozen(controller):
     event = ProjectEvent(root="/r", projects=(), current=None)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        event.root = "/other"  # type: ignore[misc]
+        event.root = "/other"  # type: ignore[misc]  # ty: ignore[invalid-assignment]
     with pytest.raises(dataclasses.FrozenInstanceError):
-        event.current = None  # type: ignore[misc]
+        event.current = None  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_remove_listener_stops_events(controller):
@@ -368,7 +368,7 @@ def test_importing_the_controller_in_a_subprocess_pulls_no_gi_or_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

@@ -53,9 +53,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import GLib, Gtk  # noqa: E402
+from gi.repository import GLib, Gtk
 
-from .run import RunController, RunError, RunSnapshot  # noqa: E402
+from .run import RunController, RunError, RunSnapshot
 
 #: Plot margins (pixels): left (jd axis labels), right, top, bottom (jd ticks).
 PLOT_MARGIN_LEFT = 64
@@ -318,7 +318,7 @@ class ResultsPanel(Gtk.Box):
                 # synchronous + GTK-free: safe on this worker thread; the store
                 # writes are marshalled to the db-owning thread by the controller
                 self._controller.run_session(session_id, on_progress=self._on_progress)
-            except Exception as exc:  # surfaced as a clean status, never a crash
+            except Exception as exc:  # surfaced as a clean status, never a crash  # noqa: BLE001
                 GLib.idle_add(self._on_run_failed, f"{type(exc).__name__}: {exc}")
 
         self._run_thread = threading.Thread(

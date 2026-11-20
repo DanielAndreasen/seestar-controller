@@ -4,8 +4,7 @@ Every test runs against a ``tmp_path`` project root. Clock injection uses a
 frozen ``clock=`` callable for deterministic session ids and timestamps.
 """
 
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -43,7 +42,7 @@ def frozen(dt: datetime):
     return lambda: dt
 
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 T1 = T0 + timedelta(hours=1, minutes=30)
 
 
@@ -82,8 +81,8 @@ def test_start_default_clock_is_utc_now(project):
     s = list_sessions(project)[0]
     parsed = datetime.fromisoformat(s.started_at)
     assert parsed.tzinfo is not None
-    assert parsed.utcoffset() == timezone.utc.utcoffset(None)
-    assert parsed <= datetime.now(timezone.utc) + timedelta(seconds=5)
+    assert parsed.utcoffset() == UTC.utcoffset(None)
+    assert parsed <= datetime.now(UTC) + timedelta(seconds=5)
     # the id slug matches the stored start
     assert session_id == s.id
     assert session_id.endswith("Z") and "T" in session_id
@@ -98,7 +97,7 @@ def test_start_while_open_is_rejected(project):
     # nothing was written: still exactly one (open) session
     sessions = list_sessions(project)
     assert [s.id for s in sessions] == [first]
-    assert get_open_session(project).id == first
+    assert get_open_session(project).id == first  # ty: ignore[missing-union-attribute]
 
 
 def test_start_after_close_is_allowed(project):
@@ -107,7 +106,7 @@ def test_start_after_close_is_allowed(project):
     second = start_session(project, clock=frozen(T1 + timedelta(hours=2)))
     assert second != first
     assert [s.id for s in list_sessions(project)] == [first, second]
-    assert get_open_session(project).id == second
+    assert get_open_session(project).id == second  # ty: ignore[missing-union-attribute]
 
 
 def test_start_id_collision_gets_suffix(project):
@@ -163,9 +162,9 @@ def test_close_twice_raises(project):
 def test_close_default_clock_is_utc_now(project):
     session_id = start_session(project)
     closed = close_session(project, session_id)
-    parsed = datetime.fromisoformat(closed.ended_at)
-    assert parsed.utcoffset() == timezone.utc.utcoffset(None)
-    assert parsed <= datetime.now(timezone.utc) + timedelta(seconds=5)
+    parsed = datetime.fromisoformat(closed.ended_at)  # ty: ignore[invalid-argument-type]
+    assert parsed.utcoffset() == UTC.utcoffset(None)
+    assert parsed <= datetime.now(UTC) + timedelta(seconds=5)
 
 
 # --- list_sessions / get_open_session ----------------------------------------------
@@ -173,9 +172,9 @@ def test_close_default_clock_is_utc_now(project):
 
 def test_list_sessions_ordered_by_started_at(project):
     # create out of chronological order via explicit started_at
-    late = start_session(project, started_at=datetime(2026, 11, 22, 21, 0, tzinfo=timezone.utc))
+    late = start_session(project, started_at=datetime(2026, 11, 22, 21, 0, tzinfo=UTC))
     close_session(project, late, ended_at="2026-11-22T23:00:00+00:00")
-    early = start_session(project, started_at=datetime(2026, 11, 20, 22, 0, tzinfo=timezone.utc))
+    early = start_session(project, started_at=datetime(2026, 11, 20, 22, 0, tzinfo=UTC))
     close_session(project, early, ended_at="2026-11-20T23:00:00+00:00")
     mid = start_session(project, started_at="2026-11-21T22:30:00+00:00")
     close_session(project, mid, ended_at="2026-11-21T23:45:00Z")
@@ -217,7 +216,7 @@ def test_start_accepts_aware_datetime_in_other_timezone(project):
 
 def test_start_accepts_naive_datetime_as_utc(project):
     """Documented choice: a naive datetime is treated as UTC."""
-    session_id = start_session(project, started_at=datetime(2026, 11, 20, 22, 0, 0))
+    session_id = start_session(project, started_at=datetime(2026, 11, 20, 22, 0, 0))  # noqa: DTZ001
     assert list_sessions(project)[0].started_at == "2026-11-20T22:00:00.000+00:00"
     assert session_id == "20261120T220000000000Z"
 
@@ -264,7 +263,7 @@ def test_close_rejects_unparseable_iso_string(project):
     with pytest.raises(ValueError, match="ISO-8601"):
         close_session(project, session_id, ended_at="nope")
     # the session is still open (transaction rolled back)
-    assert get_open_session(project).id == session_id
+    assert get_open_session(project).id == session_id  # ty: ignore[missing-union-attribute]
 
 
 # --- persistence across reopen --------------------------------------------------------
@@ -294,7 +293,7 @@ def test_sessions_persist_across_reopen(root, project):
 
 
 def test_session_api_is_exported_from_package():
-    import seestar_controller.store as store
+    from seestar_controller import store
 
     for name in (
         "Session",
@@ -331,7 +330,7 @@ def test_sessions_module_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

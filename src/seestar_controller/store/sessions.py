@@ -47,7 +47,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .errors import (
@@ -81,19 +81,19 @@ class Session:
 
 
 def _default_clock() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _utc_iso(dt: datetime) -> str:
     """Format ``dt`` as a UTC ISO-8601 string with explicit ``+00:00`` offset
     and millisecond precision (same format as :func:`.project.utc_now_iso`)."""
-    return dt.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+    return dt.astimezone(UTC).isoformat(timespec="milliseconds")
 
 
 def _session_id_slug(dt: datetime) -> str:
     """The session id for a start time ``dt``: UTC ISO-8601 basic format with
     microsecond precision, e.g. ``20261120T220000123456Z``."""
-    utc = dt.astimezone(timezone.utc)
+    utc = dt.astimezone(UTC)
     return utc.strftime("%Y%m%dT%H%M%S") + f"{utc.microsecond:06d}Z"
 
 
@@ -117,8 +117,8 @@ def _coerce_utc(value: datetime | str | None, clock: Clock) -> datetime:
             f"timestamp must be a datetime, an ISO-8601 string, or None, got {value!r}"
         )
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)  # naive -> UTC
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)  # naive -> UTC
+    return value.astimezone(UTC)
 
 
 def _row_to_session(row: sqlite3.Row | tuple[Any, ...]) -> Session:

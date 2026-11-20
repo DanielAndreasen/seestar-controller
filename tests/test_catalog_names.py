@@ -23,8 +23,8 @@ from seestar_controller.catalog import (
     SimbadResponseError,
     SimbadUnavailableError,
     resolve_name,
+    simbad,
 )
-from seestar_controller.catalog import simbad
 
 #: Column order of the mocked TAP JSON payloads (mirrors build_lookup_query).
 COLUMNS = ["oid", "main_id", "ra", "dec", "otype", "id", "filter", "flux"]
@@ -212,7 +212,7 @@ def test_resolve_blank_name_rejected(fake_simbad, bad):
 
 def test_resolve_non_string_name_rejected(fake_simbad):
     with pytest.raises(ValueError, match="string"):
-        resolve_name(None)
+        resolve_name(None)  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError, match=">= 1"):
         resolve_name("M 42", maxrec=0)
 
@@ -309,7 +309,7 @@ def test_fetch_posts_tap_form_and_parses_json(monkeypatch):
 def test_fetch_http_error_raises_unavailable(monkeypatch):
     def fake_urlopen(request, timeout):
         raise urllib.error.HTTPError(
-            SIMBAD_TAP_SYNC_URL, 503, "Service Unavailable", None, None
+            SIMBAD_TAP_SYNC_URL, 503, "Service Unavailable", None, None  # ty: ignore[invalid-argument-type]
         )
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -391,7 +391,7 @@ def test_fetch_http_error_on_first_endpoint_falls_back_to_mirror(monkeypatch):
         requested.append(request.full_url)
         if request.full_url == SIMBAD_TAP_SYNC_URL:
             raise urllib.error.HTTPError(
-                SIMBAD_TAP_SYNC_URL, 404, "Page unavailable", None, None
+                SIMBAD_TAP_SYNC_URL, 404, "Page unavailable", None, None  # ty: ignore[invalid-argument-type]
             )  # the CDS outage answers 404
         return _FakeResponse(json.dumps(tap_payload([M42_ROW])).encode())
 
@@ -442,14 +442,14 @@ def test_catalog_package_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
 
 
 def test_public_api_is_exported_from_package():
-    import seestar_controller.catalog as catalog
+    from seestar_controller import catalog
 
     for name in catalog.__all__:
         assert hasattr(catalog, name), name

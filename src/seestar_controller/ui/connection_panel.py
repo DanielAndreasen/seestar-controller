@@ -50,9 +50,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gtk, Pango
 
-from .connection import (  # noqa: E402
+from .connection import (
     ConnectionController,
     ConnectionSnapshot,
     ConnectionStateError,

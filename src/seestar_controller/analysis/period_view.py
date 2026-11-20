@@ -72,9 +72,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import GLib, Gtk  # noqa: E402
+from gi.repository import GLib, Gtk
 
-from .fold import (  # noqa: E402
+from .fold import (
     SOURCE_PEAK,
     FoldedPoint,
     FoldError,
@@ -84,7 +84,7 @@ from .fold import (  # noqa: E402
     folded_window,
     periodogram_window,
 )
-from .lightcurve import (  # noqa: E402
+from .lightcurve import (
     AXIS_COLOR,
     EXCLUDED_COLOR,
     ZOOM_FACTOR,
@@ -96,7 +96,7 @@ from .lightcurve import (  # noqa: E402
     session_color,
     zoom_window_at,
 )
-from .periodogram import Peak  # noqa: E402
+from .periodogram import Peak
 
 #: Initial drawing-area content size (pixels) — the geometry used by the
 #: zoom/pan handlers until the first draw reports the real size. Kept small
@@ -517,9 +517,12 @@ class PeriodView(Gtk.Box):
         self._source = snapshot.source
         # keep the manual entry in sync with the selected period (without
         # fighting the user while they edit)
-        if snapshot.period is not None and not self._period_spin.has_focus():
-            if abs(self._period_spin.get_value() - snapshot.period) > 1e-12:
-                self._period_spin.set_value(snapshot.period)
+        if (
+            snapshot.period is not None
+            and not self._period_spin.has_focus()
+            and abs(self._period_spin.get_value() - snapshot.period) > 1e-12
+        ):
+            self._period_spin.set_value(snapshot.period)
         self._periodogram_plot.queue_draw()
         self._folded_plot.queue_draw()
         if snapshot.error is not None:

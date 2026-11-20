@@ -87,9 +87,10 @@ import logging
 import queue as queue_module
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from seestar_controller.link.device import StackingProgress
 from seestar_controller.link.resilience import (
@@ -209,7 +210,6 @@ InvokeOnMain = Callable[[Callable[[], None]], Any]
 def _direct_invoke(callback: Callable[[], None]) -> None:
     """The default ``invoke_on_main``: run the callback directly (tests)."""
     callback()
-    return None
 
 
 #: Sentinel for "leave the field unchanged" in :meth:`NightExecutor._transition`.
@@ -544,7 +544,7 @@ class NightExecutor:
                 break
         try:
             session_id = start_session(self._project)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             message = f"{type(exc).__name__}: {exc}"
             self._log_event(ExecutorState.ABORTED, f"session open failed: {message}")
             self._transition(
@@ -604,7 +604,7 @@ class NightExecutor:
         try:
             close_session(self._project, session_id)
             self._log_event(self.state, f"session {session_id} closed")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("close_session(%s) failed: %s", session_id, exc)
             self._log_event(self.state, f"session {session_id} close failed: {exc}")
 
@@ -621,7 +621,7 @@ class NightExecutor:
         """Remove the device subscriptions (best-effort)."""
         try:
             self._device.remove_stacking_progress_handler(self._on_stacking_progress)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
         for name, handler in (
             (SCOPE_ERROR_EVENT, self._on_scope_error),
@@ -630,7 +630,7 @@ class NightExecutor:
         ):
             try:
                 self._device.remove_event_handler(name, handler)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     def _on_stacking_progress(self, progress: StackingProgress) -> None:
@@ -711,7 +711,7 @@ class NightExecutor:
             try:
                 self._device.park()
                 self._log_event(ExecutorState.DONE, "parked at end of run")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 message = f"{type(exc).__name__}: {exc}"
                 logger.warning("park at end failed: %s", message)
                 self._log_event(ExecutorState.DONE, f"park failed: {message}")
@@ -750,15 +750,15 @@ class NightExecutor:
             if pending is not None:
                 return self._handle_error(index, entry, pending)
             try:
-                coord = _as_coord(self._resolver(entry.name))
+                coord = _as_coord(self._resolver(entry.name))  # ty: ignore[invalid-argument-type]
                 resolved = QueueEntry.resolved(
-                    entry.name,
+                    entry.name,  # ty: ignore[invalid-argument-type]
                     coord,
                     mosaic=entry.mosaic,
                     exposure_s=entry.exposure_s,
                     gain=entry.gain,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 return self._handle_error(index, entry, exc)
             if isinstance(self._queue, PlanQueue):
                 try:
@@ -789,7 +789,7 @@ class NightExecutor:
         )
         try:
             self._device.goto(entry.coord.ra_hours, entry.coord.dec_deg)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return self._handle_error(index, entry, exc)
         cmd = self._drain_command()
         if cmd is not None:
@@ -877,7 +877,7 @@ class NightExecutor:
             self._stack_finished = False
         try:
             self._device.start_stack(entry.exposure_s, entry.gain, entry.mosaic)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return self._handle_error(index, entry, exc)
         while True:
             try:
@@ -901,7 +901,7 @@ class NightExecutor:
                     self._stack_finished = False
                 try:
                     self._device.start_stack(entry.exposure_s, entry.gain, entry.mosaic)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     return self._handle_error(index, entry, exc)
                 continue
             pending = self._consume_pending_error()
@@ -941,7 +941,7 @@ class NightExecutor:
         outcome — e.g. the link is already down)."""
         try:
             self._device.stop_stack()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("stop_stack failed (ignored): %s", exc)
 
     def _handle_error(self, index: int, entry: QueueEntry, error: Any) -> str:

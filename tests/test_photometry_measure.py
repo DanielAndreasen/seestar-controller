@@ -25,7 +25,7 @@ import math
 import re
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -33,8 +33,7 @@ import pytest
 from astropy.io import fits as pyfits
 from astropy.time import Time
 
-import seestar_controller.photometry as photometry
-from seestar_controller.photometry import measure
+from seestar_controller import photometry
 from seestar_controller.photometry import (
     ApertureParams,
     FrameSkippedError,
@@ -46,6 +45,7 @@ from seestar_controller.photometry import (
     ensemble_mag_err,
     flux_err_to_mag_err,
     flux_to_mag,
+    measure,
     measure_frame,
     measure_frame_data,
     measure_project,
@@ -54,8 +54,8 @@ from seestar_controller.photometry import (
 from seestar_controller.photometry.measure import (
     MAG_ERR_COEFF,
     FrameMeasurement,
-    MeasureReport,
     MeasurementError,
+    MeasureReport,
     SkippedFrame,
     StarMeasurement,
 )
@@ -65,7 +65,6 @@ from seestar_controller.store import (
     StarPick,
     create_project,
     lightcurve,
-    list_frames,
     load_star_picks,
     measurements_for_frame,
     save_star_picks,
@@ -80,7 +79,7 @@ from seestar_controller.store.measurements import Measurement
 #: Directory of the photometry package (source-scan audit).
 PHOTOMETRY_PACKAGE_DIR = Path(photometry.__file__).resolve().parent
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 
 # --- synthetic frames with known injected fluxes -------------------------------------------
 
@@ -171,7 +170,7 @@ def test_flux_to_mag_and_flux_err_to_mag_err():
     assert MAG_ERR_COEFF == pytest.approx(1.0857, abs=1e-4)  # 2.5/ln(10)
     for bad in (0.0, -1.0, float("nan"), float("inf"), "x", None, True):
         with pytest.raises(MeasurementError):
-            flux_to_mag(bad)
+            flux_to_mag(bad)  # ty: ignore[invalid-argument-type]
     assert flux_err_to_mag_err(100.0, 10.0) == pytest.approx(MAG_ERR_COEFF * 0.1)
     assert flux_err_to_mag_err(100.0, 0.0) == 0.0
     for bad_flux, bad_err in (
@@ -183,7 +182,7 @@ def test_flux_to_mag_and_flux_err_to_mag_err():
         (100.0, "x"),
     ):
         with pytest.raises(MeasurementError):
-            flux_err_to_mag_err(bad_flux, bad_err)
+            flux_err_to_mag_err(bad_flux, bad_err)  # ty: ignore[invalid-argument-type]
 
 
 def test_ensemble_and_differential_math():
@@ -241,7 +240,7 @@ def test_measure_star_aperture_photometry_values():
     with pytest.raises(FrameSkippedError, match="outside"):
         measure_star(data, 0.0, float(SIZE), APERTURE)
     with pytest.raises(MeasurementError, match="ApertureParams"):
-        measure_star(data, 1.0, 1.0, "nope")  # type: ignore[arg-type]
+        measure_star(data, 1.0, 1.0, "nope")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 def test_measure_star_non_positive_flux_skipped():
@@ -329,7 +328,7 @@ def test_measure_frame_data_out_of_image_and_bad_ensemble():
         measure_frame_data(data, header, [StarPickSpec(role="target", x=40.0, y=30.0)], APERTURE)
     # bad aperture / bad picks
     with pytest.raises(MeasurementError, match="aperture"):
-        measure_frame_data(data, header, make_picks(), "nope")  # type: ignore[arg-type]
+        measure_frame_data(data, header, make_picks(), "nope")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     with pytest.raises(MeasurementError):
         measure_frame_data(data, header, [42], APERTURE)
     with pytest.raises(MeasurementError):
@@ -387,7 +386,7 @@ def test_measure_frame_unknown_frame_and_skip(project):
     assert isinstance(excinfo.value, ValueError)
     assert not isinstance(excinfo.value, StoreMeasurementError)
     with pytest.raises(MeasurementError):
-        measure_frame(project, "1", make_picks(), APERTURE)  # type: ignore[arg-type]
+        measure_frame(project, "1", make_picks(), APERTURE)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     # out-of-frame pick -> FrameSkippedError (a MeasurementError subclass)
     with pytest.raises(FrameSkippedError):
         measure_frame(project, frame.id, make_picks(target_xy=(999.0, 0.0)), APERTURE)
@@ -550,7 +549,7 @@ def test_measure_module_imports_no_gi_no_link_no_ui_no_enhance_and_widgets_stay_
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

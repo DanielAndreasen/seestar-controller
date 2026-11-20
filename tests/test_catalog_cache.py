@@ -29,9 +29,9 @@ from seestar_controller.catalog import (
     default_cache_dir,
     resolve_name,
     resolve_name_cached,
+    simbad,
 )
 from seestar_controller.catalog import cache as cache_mod
-from seestar_controller.catalog import simbad
 
 #: Column order of the mocked TAP JSON payloads (mirrors build_lookup_query).
 COLUMNS = ["oid", "main_id", "ra", "dec", "otype", "id", "filter", "flux"]
@@ -312,7 +312,7 @@ def test_cache_key_is_stable_and_filename_safe():
     key = cache_key("M 42 -- weird ' chars / and \\ slashes")
     assert set(key) <= set("0123456789abcdef")  # hex -> filename-safe
     with pytest.raises(ValueError, match="string"):
-        cache_key(42)
+        cache_key(42)  # ty: ignore[invalid-argument-type]
 
 
 def test_same_query_same_file_different_queries_different_files(fake_simbad, cache):
@@ -411,7 +411,7 @@ def test_blank_name_rejected_without_fetch_or_cache(fake_simbad, cache, bad):
 
 def test_invalid_name_and_maxrec_rejected(fake_simbad, cache):
     with pytest.raises(ValueError, match="string"):
-        resolve_name_cached(None, cache)
+        resolve_name_cached(None, cache)  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError, match=">= 1"):
         resolve_name_cached("M 42", cache, maxrec=0)
     assert fake_simbad.calls == []
@@ -446,14 +446,14 @@ def test_catalog_package_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
 
 
 def test_public_api_is_exported_from_package():
-    import seestar_controller.catalog as catalog
+    from seestar_controller import catalog
 
     for name in catalog.__all__:
         assert hasattr(catalog, name), name

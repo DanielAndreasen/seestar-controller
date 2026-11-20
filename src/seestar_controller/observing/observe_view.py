@@ -49,23 +49,22 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+import numpy as np
+from gi.repository import Adw, Gdk, GLib, Gtk
+from PIL import Image
 
-import numpy as np  # noqa: E402
-from PIL import Image  # noqa: E402
+from seestar_controller.ui.connection import ConnectionStatus
 
-from seestar_controller.ui.connection import ConnectionStatus  # noqa: E402
-
-from .observe_controller import (  # noqa: E402
+from .observe_controller import (
     ObserveController,
     ObserveStateError,
     ObserveViewState,
     format_elapsed,
     format_target,
 )
-from .queue_controller import PlanQueueController  # noqa: E402
-from .queue_editor import QueueEditor  # noqa: E402
-from .session_log_dialog import SessionLogDialog  # noqa: E402
+from .queue_controller import PlanQueueController
+from .queue_editor import QueueEditor
+from .session_log_dialog import SessionLogDialog
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
 LEFT_PANE_POSITION = 560
@@ -386,7 +385,7 @@ class ObserveView(Gtk.Box):
                 self._preview_label.set_label(
                     f"{frame.source} frame #{frame.id} — {width}×{height}"
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 # a bad frame must never break the view
                 self._preview_label.set_label("preview frame could not be rendered")
         elif frame is None:

@@ -97,10 +97,11 @@ import json
 import logging
 import threading
 from collections import deque
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from .connection import (
     ConnectionController,
@@ -165,21 +166,21 @@ class Notification:
     title: str
     message: str
     source: str
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
         if isinstance(self.severity, str):
             object.__setattr__(self, "severity", NotificationSeverity(self.severity))
         if not isinstance(self.severity, NotificationSeverity):
-            raise ValueError(f"severity must be a NotificationSeverity, got {self.severity!r}")
+            raise ValueError(f"severity must be a NotificationSeverity, got {self.severity!r}")  # noqa: TRY004
         for name in ("title", "message", "source"):
             if not isinstance(getattr(self, name), str):
-                raise ValueError(f"{name} must be a string, got {getattr(self, name)!r}")
+                raise ValueError(f"{name} must be a string, got {getattr(self, name)!r}")  # noqa: TRY004
         if not isinstance(self.timestamp, datetime):
-            raise ValueError(f"timestamp must be a datetime, got {self.timestamp!r}")
+            raise ValueError(f"timestamp must be a datetime, got {self.timestamp!r}")  # noqa: TRY004
         if self.timestamp.tzinfo is None:
             object.__setattr__(
-                self, "timestamp", self.timestamp.replace(tzinfo=timezone.utc)
+                self, "timestamp", self.timestamp.replace(tzinfo=UTC)
             )
 
 
@@ -254,7 +255,7 @@ class NotificationBus:
         in :meth:`log` and can never be re-delivered by dedup.
         """
         if not isinstance(notification, Notification):
-            raise ValueError(f"push expects a Notification, got {notification!r}")
+            raise ValueError(f"push expects a Notification, got {notification!r}")  # noqa: TRY004
         with self._lock:
             if self._log and _dedup_key(self._log[-1]) == _dedup_key(notification):
                 return False
@@ -286,7 +287,6 @@ class NotificationBus:
 def _direct_invoke(callback: Callable[[], None]) -> None:
     """The default ``invoke_on_main``: run the callback directly (tests)."""
     callback()
-    return None
 
 
 #: An event subscription: ``subscribe(device, event_name, handler)`` registers
@@ -438,7 +438,7 @@ class NotificationController:
             handler = self._make_device_handler(name)
             try:
                 unsubscribe = self._subscribe(device, name, handler)
-            except Exception:
+            except Exception:  # noqa: BLE001, S112
                 continue  # a device without this event must not break the rest
             self._unsubscribers.append(unsubscribe)
 
@@ -449,7 +449,7 @@ class NotificationController:
         for unsubscribe in unsubscribers:
             try:
                 unsubscribe()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     def _make_device_handler(self, name: str) -> Callable[[Any], None]:

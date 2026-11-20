@@ -7,10 +7,9 @@ and the fw 9.75 handlers in the mock, using the live-probed fw 9.75 facts
 (Seestar S50, station mode, 2026-11-20 — see docs/wiki/progress.md).
 """
 
-import io
 import json
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -407,7 +406,7 @@ def test_albums_listing_shape(transport975, mock975):
 
 
 def test_page_number_and_page_name(transport975, mock975):
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
     for i in range(25):
         mock975.add_frame("sub", target={"name": "M 31"}, when=base + timedelta(seconds=i))
     # page count: 25 files / 20 per page = 2 pages; key is "dir", not "path"
@@ -462,7 +461,7 @@ def test_page_name_without_cursor_lists_root(transport975, mock975):
 
 
 def test_list_remote_frames_albums_flow(transport975, mock975):
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
     mock975.add_frame("sub", target={"ra": 5.5, "dec": 12.25, "name": "NGC 6888"}, when=base)
     mock975.add_frame("sub", target={"ra": 5.5, "dec": 12.25, "name": "NGC 6888"}, when=base + timedelta(minutes=10))
     mock975.add_frame("stack", target={"ra": 5.5, "dec": 12.25, "name": "NGC 6888"}, when=base + timedelta(minutes=20))
@@ -490,7 +489,7 @@ def test_list_remote_frames_albums_flow(transport975, mock975):
 
 
 def test_download_frames_over_http_on_975(device975, mock975, tmp_path):
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
     mock975.add_frame(
         "sub", exposure=10.0, gain=80, target={"ra": 5.5, "dec": 12.25, "name": "NGC 6888"}, when=base
     )
@@ -549,7 +548,7 @@ def test_fetch_frame_bytes_legacy_uses_get_frame(transport, mock_scope):
 
 def test_mock_fetch_http_serves_remote_path_and_404(mock975):
     record = mock975.add_frame("sub", target={"name": "M 31"})
-    url = frames.http_frame_url("127.0.0.1", record["remote_path"] if "remote_path" in record else "")
+    url = frames.http_frame_url("127.0.0.1", record.get("remote_path", ""))
     # add_frame returns the public record (no remote_path); rebuild from the store
     with mock975._frames_lock:
         remote = mock975._frames[-1]["remote_path"]
@@ -567,7 +566,7 @@ def test_parse_filename_meta():
     assert meta["exposure"] == 10.0
     assert meta["target"] == {"name": "NGC 6888"}
     assert meta["time"] == "2025-08-24T00:13:34.000"
-    assert meta["epoch"] == datetime(2025, 8, 24, 0, 13, 34, tzinfo=timezone.utc).timestamp()
+    assert meta["epoch"] == datetime(2025, 8, 24, 0, 13, 34, tzinfo=UTC).timestamp()
     stack = frames.parse_filename_meta("Stacked_3_M 31_240.0s_20250101-010203.fit")
     assert stack["exposure"] == 240.0
     assert stack["target"] == {"name": "M 31"}
@@ -576,7 +575,7 @@ def test_parse_filename_meta():
 
 
 def test_read_fits_header_meta():
-    when = datetime(2026, 5, 19, 22, 30, 15, 123000, tzinfo=timezone.utc)
+    when = datetime(2026, 5, 19, 22, 30, 15, 123000, tzinfo=UTC)
     blob = make_fits_bytes(
         when=when, exposure=10.0, gain=80, target={"ra": 5.5, "dec": 12.25, "name": "V* test"}
     )

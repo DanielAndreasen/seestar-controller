@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-from seestar_controller.link import protocol
 from seestar_controller.link.protocol import (
     Event,
     MessageDecoder,

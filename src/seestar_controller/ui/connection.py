@@ -76,9 +76,10 @@ Documented choices:
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from .state import SettingsValidationError, UIStateError, validate_scope_ip
 
@@ -156,7 +157,6 @@ InvokeOnMain = Callable[[Callable[[], None]], Any]
 def _direct_invoke(callback: Callable[[], None]) -> None:
     """The default ``invoke_on_main``: run the callback directly (tests)."""
     callback()
-    return None
 
 
 def default_device_factory(scope_ip: str, key_path: str) -> Any:
@@ -422,7 +422,7 @@ class ConnectionController:
             self._disarm(device)
             try:
                 device.disconnect()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass  # a failing disconnect must not break the state machine
         if snapshot is not None:
             self._invoke_on_main(lambda: self._notify(snapshot))
@@ -481,14 +481,14 @@ class ConnectionController:
         try:
             device = factory(ip, key_path)
             scope_state = device.state()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             error = f"{type(exc).__name__}: {exc}"
             if device is not None:
                 # the factory succeeded but the state read failed: close the
                 # half-open device instead of leaking it
                 try:
                     device.disconnect()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
                 device = None
                 scope_state = None
@@ -530,10 +530,10 @@ class ConnectionController:
             self._disarm(stale_device)
             try:
                 stale_device.disconnect()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
             return
-        self._notify(snapshot)  # type: ignore[arg-type]
+        self._notify(snapshot)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
     # -- device lifecycle events ----------------------------------------------------
 
@@ -554,7 +554,7 @@ class ConnectionController:
         for name, handler in handlers:
             try:
                 device.remove_event_handler(name, handler)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
     def _make_lifecycle_handler(self, device: Any, name: str) -> Callable:
@@ -588,7 +588,7 @@ class ConnectionController:
             # one when the read fails (documented choice).
             try:
                 refreshed = device.state()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 refreshed = None
             if refreshed is not None:
                 with self._lock:

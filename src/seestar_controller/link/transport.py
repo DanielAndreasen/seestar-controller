@@ -50,9 +50,10 @@ import logging
 import socket
 import threading
 import time
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Self
 
 from . import auth, keys, protocol
 from .protocol import Event, Reply
@@ -246,11 +247,11 @@ class LinkTransport:
         if self._protocol_log is not None:
             self._protocol_log.close()
 
-    def __enter__(self) -> "LinkTransport":
+    def __enter__(self) -> Self:
         self.connect()
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.disconnect()
 
     @property
@@ -644,7 +645,7 @@ class LinkTransport:
                 return
             try:
                 self._open_and_handshake()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "reconnect attempt %d to %s:%s failed: %s",
                     attempt,

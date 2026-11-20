@@ -48,10 +48,11 @@ import re
 import tempfile
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from . import compat
 from .transport import RpcError
@@ -94,8 +95,8 @@ def iso_utc(when: datetime) -> str:
     """Format ``when`` as an ISO-8601 UTC string (FITS ``DATE-OBS`` style,
     no timezone suffix): ``YYYY-MM-DDTHH:MM:SS.mmm``."""
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return when.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace(
+        when = when.replace(tzinfo=UTC)
+    return when.astimezone(UTC).isoformat(timespec="milliseconds").replace(
         "+00:00", ""
     )
 
@@ -110,18 +111,18 @@ def normalize_since(since: Any) -> float | None:
     if since is None:
         return None
     if isinstance(since, datetime):
-        when = since if since.tzinfo is not None else since.replace(tzinfo=timezone.utc)
+        when = since if since.tzinfo is not None else since.replace(tzinfo=UTC)
         return when.timestamp()
     if isinstance(since, str):
         try:
-            parsed = datetime.fromisoformat(since.strip().replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(since.strip())
         except ValueError:
             raise ValueError(f"since must be an ISO-8601 datetime string, got {since!r}") from None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
         return parsed.timestamp()
     if isinstance(since, bool):
-        raise ValueError(f"since must be a datetime, ISO string, or epoch seconds, got {since!r}")
+        raise ValueError(f"since must be a datetime, ISO string, or epoch seconds, got {since!r}")  # noqa: TRY004
     if isinstance(since, (int, float)):
         return float(since)
     raise ValueError(
@@ -192,7 +193,7 @@ def meta_to_sidecar(meta: FrameMeta, *, size: int | None = None) -> dict[str, An
         "exposure": meta.exposure,
         "gain": meta.gain,
         "target": dict(meta.target) if meta.target is not None else None,
-        "downloaded_at": iso_utc(datetime.now(timezone.utc)),
+        "downloaded_at": iso_utc(datetime.now(UTC)),
     }
     if size is not None:
         sidecar["size"] = int(size)
@@ -220,7 +221,7 @@ def encode_fits_b64(fits_bytes: bytes) -> str:
 def decode_fits_b64(data: Any) -> bytes:
     """Decode base64 FITS bytes from the wire; ``ValueError`` on bad input."""
     if not isinstance(data, str):
-        raise ValueError(f"fits_b64 must be a base64 string, got {type(data).__name__}")
+        raise ValueError(f"fits_b64 must be a base64 string, got {type(data).__name__}")  # noqa: TRY004
     try:
         return base64.b64decode(data.encode("ascii"), validate=True)
     except (ValueError, UnicodeEncodeError) as exc:
@@ -302,11 +303,11 @@ def _parse_iso_epoch(value: Any) -> float | None:
     if not isinstance(value, str) or not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.strip())
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
@@ -485,7 +486,7 @@ def parse_filename_meta(name: str) -> dict[str, Any]:
     try:
         when = datetime.strptime(
             match.group("date") + match.group("tod"), "%Y%m%d%H%M%S"
-        ).replace(tzinfo=timezone.utc)
+        ).replace(tzinfo=UTC)
     except ValueError:
         return meta
     meta["time"] = iso_utc(when)
@@ -503,7 +504,7 @@ def read_fits_header_meta(fits_bytes: bytes) -> dict[str, Any]:
     """
     try:
         from astropy.io import fits as pyfits
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
     try:
         with pyfits.open(io.BytesIO(fits_bytes), memmap=False) as hdul:
@@ -525,7 +526,7 @@ def read_fits_header_meta(fits_bytes: bytes) -> dict[str, Any]:
             if target:
                 meta["target"] = target
             return meta
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}
 
 

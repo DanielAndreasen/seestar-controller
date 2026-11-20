@@ -10,7 +10,7 @@ import os
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -103,7 +103,7 @@ def test_created_at_is_utc_iso(project):
     created_at = project.config["created_at"]
     parsed = datetime.fromisoformat(created_at)
     assert parsed.tzinfo is not None
-    assert parsed.utcoffset() == timezone.utc.utcoffset(None)
+    assert parsed.utcoffset() == UTC.utcoffset(None)
 
 
 def test_create_strips_name_and_creates_missing_root(tmp_path):
@@ -290,34 +290,29 @@ def test_db_check_constraints_enforced(project):
         project.db.execute(
             "INSERT INTO sessions (id, started_at) VALUES ('s1', '2026-11-20T22:00:00+00:00')"
         )
-    with pytest.raises(sqlite3.IntegrityError):
-        with project.db:
-            project.db.execute("INSERT INTO frames (session_id, kind, path, jd, utc) VALUES ('s1', 'x', 'p', 1.0, 't')")
-    with pytest.raises(sqlite3.IntegrityError):
-        with project.db:
-            project.db.execute("INSERT INTO stars (role) VALUES ('bogus')")
-    with pytest.raises(sqlite3.IntegrityError):
-        with project.db:
-            project.db.execute(
-                "INSERT INTO measurements (frame_id, jd, mag, excluded) VALUES (1, 2.0, 3.0, 2)"
-            )
+    with pytest.raises(sqlite3.IntegrityError), project.db:
+        project.db.execute("INSERT INTO frames (session_id, kind, path, jd, utc) VALUES ('s1', 'x', 'p', 1.0, 't')")
+    with pytest.raises(sqlite3.IntegrityError), project.db:
+        project.db.execute("INSERT INTO stars (role) VALUES ('bogus')")
+    with pytest.raises(sqlite3.IntegrityError), project.db:
+        project.db.execute(
+            "INSERT INTO measurements (frame_id, jd, mag, excluded) VALUES (1, 2.0, 3.0, 2)"
+        )
 
 
 def test_db_foreign_key_enforced(project):
-    with pytest.raises(sqlite3.IntegrityError):
-        with project.db:
-            project.db.execute(
-                "INSERT INTO measurements (frame_id, jd, mag) VALUES (999, 2460000.5, 12.3)"
-            )
+    with pytest.raises(sqlite3.IntegrityError), project.db:
+        project.db.execute(
+            "INSERT INTO measurements (frame_id, jd, mag) VALUES (999, 2460000.5, 12.3)"
+        )
 
 
 def test_db_transaction_rolls_back_on_error(project):
-    with pytest.raises(sqlite3.IntegrityError):
-        with project.db:
-            project.db.execute(
-                "INSERT INTO sessions (id, started_at) VALUES ('s1', '2026-11-20T22:00:00+00:00')"
-            )
-            project.db.execute("INSERT INTO stars (role) VALUES ('bogus')")  # fails
+    with pytest.raises(sqlite3.IntegrityError), project.db:
+        project.db.execute(
+            "INSERT INTO sessions (id, started_at) VALUES ('s1', '2026-11-20T22:00:00+00:00')"
+        )
+        project.db.execute("INSERT INTO stars (role) VALUES ('bogus')")  # fails
     count = project.db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     assert count == 0  # the whole transaction rolled back
 
@@ -596,14 +591,14 @@ def test_store_package_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
 
 
 def test_public_api_is_exported_from_package():
-    import seestar_controller.store as store
+    from seestar_controller import store
 
     for name in store.__all__:
         assert hasattr(store, name), name

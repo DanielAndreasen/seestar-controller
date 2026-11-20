@@ -50,7 +50,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -58,9 +58,8 @@ import pytest
 from astropy.io import fits as pyfits
 from PIL import Image
 
-import seestar_controller.enhance as enhance
+from seestar_controller import enhance
 from seestar_controller.enhance import (
-    DEFAULT_DEBOUNCE_S,
     MAX_UNDO_ENTRIES,
     EditorController,
     EditorSnapshot,
@@ -70,10 +69,10 @@ from seestar_controller.enhance import (
     ViewerController,
     ViewerSnapshot,
     default_pipeline,
+    editor_controller,
     render_pipeline,
     render_preview,
 )
-from seestar_controller.enhance import editor_controller
 from seestar_controller.store import (
     KIND_STACK,
     create_project,
@@ -84,7 +83,7 @@ from seestar_controller.store import (
 #: Directory of the enhance package (source-scan audit).
 ENHANCE_PACKAGE_DIR = Path(enhance.__file__).resolve().parent
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 DATE1 = "2026-11-20T22:00:00.000"
 DATE2 = "2026-11-20T22:00:10.000"
 
@@ -245,7 +244,7 @@ def make_editor(**kwargs):
     viewer = FakeViewer()
     kwargs.setdefault("render_max_size", 32)
     kwargs.setdefault("debounce_s", 0.0)
-    return viewer, EditorController(viewer, **kwargs)
+    return viewer, EditorController(viewer, **kwargs)  # ty: ignore[invalid-argument-type]
 
 
 def frozen(dt: datetime):
@@ -306,7 +305,7 @@ def stored_stacks(project):
 
 def test_initial_snapshot_is_empty():
     viewer = FakeViewer()
-    ec = EditorController(viewer)
+    ec = EditorController(viewer)  # ty: ignore[invalid-argument-type]
     assert ec.viewer_controller is viewer
     snap = ec.snapshot
     assert isinstance(snap, EditorSnapshot)
@@ -505,15 +504,15 @@ def test_set_param_with_equal_value_is_a_noop():
 def test_constructor_validation():
     viewer = FakeViewer()
     with pytest.raises(EnhanceError):
-        EditorController(viewer, render_max_size=0)
+        EditorController(viewer, render_max_size=0)  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
-        EditorController(viewer, render_max_size=True)
+        EditorController(viewer, render_max_size=True)  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
-        EditorController(viewer, render_max_size="32")
+        EditorController(viewer, render_max_size="32")  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
-        EditorController(viewer, debounce_s=-0.1)
+        EditorController(viewer, debounce_s=-0.1)  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
-        EditorController(viewer, debounce_s="x")
+        EditorController(viewer, debounce_s="x")  # ty: ignore[invalid-argument-type]
 
 
 # --- worker thread + invoke_on_main + debounce + generation ----------------------------------------
@@ -523,7 +522,7 @@ def test_queued_invoke_on_main_applies_only_on_drain():
     viewer = FakeViewer()
     queue = InvokeQueue()
     ec = EditorController(
-        viewer, invoke_on_main=queue, render_max_size=32, debounce_s=0.0
+        viewer, invoke_on_main=queue, render_max_size=32, debounce_s=0.0  # ty: ignore[invalid-argument-type]
     )
     viewer.open(make_stack(1), make_image())
     assert ec.wait(5.0)  # the worker finished and QUEUED its result
@@ -542,7 +541,7 @@ def test_debounce_coalesces_rapid_changes_into_one_render():
     viewer = FakeViewer()
     counting = CountingRender()
     ec = EditorController(
-        viewer, render_max_size=32, debounce_s=0.2, render_fn=counting
+        viewer, render_max_size=32, debounce_s=0.2, render_fn=counting  # ty: ignore[invalid-argument-type]
     )
     viewer.open(make_stack(1), make_image())
     assert ec.wait(5.0)
@@ -562,7 +561,7 @@ def test_stale_render_results_are_discarded_by_generation():
     queue = InvokeQueue()
     gated = GatedRender()
     ec = EditorController(
-        viewer, invoke_on_main=queue, render_max_size=32, debounce_s=0.0,
+        viewer, invoke_on_main=queue, render_max_size=32, debounce_s=0.0,  # ty: ignore[invalid-argument-type]
         render_fn=gated,
     )
     image = make_image()
@@ -582,7 +581,7 @@ def test_stale_render_results_are_discarded_by_generation():
     assert snap.error is None
     assert snap.rendering is False
     assert snap.enhanced_preview is not None
-    expected = render_pipeline(ec.pipeline, image, 32)
+    expected = render_pipeline(ec.pipeline, image, 32)  # ty: ignore[invalid-argument-type]
     assert snap.enhanced_preview.tobytes() == expected.tobytes()
 
 
@@ -594,7 +593,7 @@ def test_set_param_never_blocks_the_caller():
         return render_pipeline(pipeline, fits_image, max_size)
 
     ec = EditorController(
-        viewer, render_max_size=32, debounce_s=0.0, render_fn=slow
+        viewer, render_max_size=32, debounce_s=0.0, render_fn=slow  # ty: ignore[invalid-argument-type]
     )
     viewer.open(make_stack(1), make_image())
     start = time.perf_counter()
@@ -608,7 +607,7 @@ def test_render_error_lands_in_snapshot_and_controller_stays_usable():
     viewer = FakeViewer()
     flaky = FlakyRender()
     ec = EditorController(
-        viewer, render_max_size=32, debounce_s=0.0, render_fn=flaky
+        viewer, render_max_size=32, debounce_s=0.0, render_fn=flaky  # ty: ignore[invalid-argument-type]
     )
     seen: list[EditorSnapshot] = []
     ec.add_listener(seen.append)
@@ -627,7 +626,7 @@ def test_render_error_lands_in_snapshot_and_controller_stays_usable():
     snap = ec.snapshot
     assert snap.error is None
     assert snap.enhanced_preview is not None
-    assert snap.pipeline.ops[1].params.strength == pytest.approx(0.7)
+    assert snap.pipeline.ops[1].params.strength == pytest.approx(0.7)  # ty: ignore[missing-union-attribute]
 
 
 # --- listeners + frozen snapshot --------------------------------------------------------------------
@@ -686,7 +685,7 @@ def test_editor_controller_module_imports_no_gi_no_link_no_ui_widget_stays_lazy(
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
@@ -747,7 +746,7 @@ def test_integration_with_real_viewer_controller(project, stored_stacks):
     assert snap.original_preview is not None and snap.enhanced_preview is not None
     ec.set_param("denoise", strength=0.9)
     assert ec.wait(5.0)
-    assert ec.snapshot.pipeline.ops[1].params.strength == pytest.approx(0.9)
+    assert ec.snapshot.pipeline.ops[1].params.strength == pytest.approx(0.9)  # ty: ignore[missing-union-attribute]
     assert ec.snapshot.enhanced_preview is not None
     assert ec.undo() is True
     assert ec.wait(5.0)
@@ -755,6 +754,6 @@ def test_integration_with_real_viewer_controller(project, stored_stacks):
     # switching to the other stack resets the editor
     vc.open_stack(stack_frames[1].id)
     assert ec.wait(5.0)
-    assert ec.snapshot.stack.frame_id == stack_frames[1].id
+    assert ec.snapshot.stack.frame_id == stack_frames[1].id  # ty: ignore[missing-attribute]
     assert ec.snapshot.pipeline == default_pipeline()
     assert ec.undo_depth == 0

@@ -94,8 +94,9 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 from astropy.timeseries import LombScargle
@@ -349,7 +350,7 @@ def _grid_spec(
             "too few distinct times for the baseline/cadence (add points, lower "
             "min_cycles, or lower nyquist_factor)"
         )
-    n = int(math.ceil((f_max - f_min) / df)) + 1  # ceil: the grid spans at least up to f_max
+    n = math.ceil((f_max - f_min) / df) + 1  # ceil: the grid spans at least up to f_max
     if n > max_grid_points:
         raise PeriodogramError(
             f"the frequency grid would have {n} points (> max_grid_points={max_grid_points}) — "
@@ -584,7 +585,7 @@ def compute_periodogram(
                     maximum_frequency=float(spec.frequencies[-1]),
                 )
             )
-        except Exception as exc:  # e.g. a normalization without a defined FAP
+        except Exception as exc:  # e.g. a normalization without a defined FAP  # noqa: BLE001
             logger.info("false-alarm probability unavailable: %s", exc)
             fap = None
 

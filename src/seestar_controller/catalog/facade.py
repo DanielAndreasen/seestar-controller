@@ -56,7 +56,8 @@ or the module-level functions with an explicit (or default) cache::
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import cache as cache_mod
 from . import simbad, standards
@@ -67,7 +68,7 @@ from .simbad import (
     NameNotFoundError,
     SimbadResponseError,
 )
-from .standards import StandardStar, StandardsResponseError
+from .standards import StandardsResponseError, StandardStar
 
 
 class CatalogUnavailableError(CatalogError):
@@ -158,7 +159,7 @@ def lookup_name(
     if cache is None:
         cache = QueryCache()
     if not isinstance(name, str):
-        raise ValueError(f"name must be a string, got {name!r}")
+        raise ValueError(f"name must be a string, got {name!r}")  # noqa: TRY004
     query_name = name.strip()
     if not query_name:
         raise ValueError("name must not be empty")

@@ -17,7 +17,7 @@ import sys
 
 import pytest
 
-import seestar_controller.ui as ui
+from seestar_controller import ui
 from seestar_controller.ui.settings import (
     SettingsController,
     SettingsFieldError,
@@ -30,9 +30,9 @@ from seestar_controller.ui.state import (
     DEFAULT_SETTINGS,
     SETTINGS_FILE_NAME,
     SETTINGS_KEYS,
-    UIStateError,
     AppState,
     SettingsValidationError,
+    UIStateError,
     load_state,
 )
 
@@ -450,7 +450,7 @@ def test_pure_ui_modules_import_no_gi_and_widget_layer_stays_lazy():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

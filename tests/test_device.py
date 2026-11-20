@@ -192,7 +192,7 @@ def test_wildcard_handler_sees_goto_events(device):
 
 def test_remove_event_handler_stops_delivery(device, mock_scope):
     received: list = []
-    handler = lambda e: received.append(e)  # noqa: E731
+    handler = lambda e: received.append(e)
     device.add_event_handler("Stack", handler)
     device.remove_event_handler("Stack", handler)
     mock_scope.push_event({"Event": "Stack"})

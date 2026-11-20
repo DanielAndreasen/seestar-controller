@@ -97,7 +97,7 @@ class Op:
         if "params" not in data:
             raise EnhanceError(f"Op.from_dict: missing 'params' in {data!r}")
         params = spec.params_type.from_dict(data["params"])
-        return cls(name=name, params=params)
+        return cls(name=name, params=params)  # ty: ignore[invalid-argument-type]
 
 
 @dataclass(frozen=True)

@@ -73,14 +73,14 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, Gtk
 
-from .editor_controller import EditorController, EditorSnapshot  # noqa: E402
-from .fits_io import EnhanceError, StackInfo  # noqa: E402
-from .ops import BACKGROUND_METHODS, STRETCH_KINDS, WB_MODES  # noqa: E402
-from .pipeline import Pipeline  # noqa: E402
-from .viewer import texture_from_pil  # noqa: E402
-from .viewer_controller import ViewerController, ViewerSnapshot  # noqa: E402
+from .editor_controller import EditorController, EditorSnapshot
+from .fits_io import EnhanceError, StackInfo
+from .ops import BACKGROUND_METHODS, STRETCH_KINDS, WB_MODES
+from .pipeline import Pipeline
+from .viewer import texture_from_pil
+from .viewer_controller import ViewerController, ViewerSnapshot
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
 LEFT_PANE_POSITION = 380
@@ -565,7 +565,7 @@ class EnhanceEditor(Gtk.Box):
             return
         value: Any = scale.get_value()
         if is_int:
-            value = int(round(value))
+            value = round(value)
         try:
             self._editor_controller.set_param(op_name, **{field: value})
         except EnhanceError as exc:

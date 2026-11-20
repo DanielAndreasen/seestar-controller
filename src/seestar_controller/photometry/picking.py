@@ -75,8 +75,9 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import Any
 
 import numpy as np
 
@@ -90,9 +91,6 @@ from seestar_controller.store.stars import (
     load_star_picks,
     save_star_picks,
 )
-
-if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the runtime import graph gi/enhance-free
-    from seestar_controller.enhance.fits_io import FitsImage
 
 logger = logging.getLogger(__name__)
 
@@ -360,8 +358,8 @@ def _snap_centroid(
     if plane.ndim == 3:
         plane = plane[..., :3].mean(axis=2)
     height, width = plane.shape[0], plane.shape[1]
-    cx = int(math.floor(x))
-    cy = int(math.floor(y))
+    cx = math.floor(x)
+    cy = math.floor(y)
     x0 = max(0, cx - window)
     x1 = min(width, cx + window + 1)
     y0 = max(0, cy - window)

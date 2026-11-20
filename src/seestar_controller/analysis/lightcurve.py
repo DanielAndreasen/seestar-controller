@@ -81,8 +81,9 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from seestar_controller.store.measurements import lightcurve
 from seestar_controller.store.measurements import set_excluded as _store_set_excluded
@@ -164,7 +165,6 @@ InvokeOnMain = Callable[[Callable[[], None]], Any]
 def _direct_invoke(callback: Callable[[], None]) -> None:
     """The default ``invoke_on_main``: run the callback directly (tests)."""
     callback()
-    return None
 
 
 def _point_from_measurement(m: Any) -> LightcurvePoint:
@@ -257,7 +257,7 @@ MIN_MAG_SPAN = 1e-6
 
 #: The default window when there are no points (the placeholder is shown
 #: then, but reset/zoom must still not crash) — assigned after PlotWindow.
-DEFAULT_WINDOW: PlotWindow  # noqa: F821
+DEFAULT_WINDOW: PlotWindow
 
 
 @dataclass(frozen=True)
@@ -532,7 +532,7 @@ class LightcurveController:
             measurements = self._call_store(
                 lambda: lightcurve(project, include_excluded=True)
             )
-        except Exception as exc:  # surfaced as snapshot.error, never a crash
+        except Exception as exc:  # surfaced as snapshot.error, never a crash  # noqa: BLE001
             logger.info("lightcurve read failed: %s", exc)
             return LightcurveSnapshot(points=(), sessions=(), error=f"{type(exc).__name__}: {exc}")
         points = tuple(_point_from_measurement(m) for m in measurements)
@@ -708,7 +708,7 @@ class LightcurveController:
         def wrapper() -> None:
             try:
                 box["result"] = fn()
-            except BaseException as exc:  # re-raised on the calling thread
+            except BaseException as exc:  # re-raised on the calling thread  # noqa: BLE001
                 box["error"] = exc
             finally:
                 done.set()

@@ -41,9 +41,10 @@ current project and the persisted ``last_project`` are left unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from seestar_controller.store import (
     Project,

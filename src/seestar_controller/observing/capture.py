@@ -71,10 +71,11 @@ import logging
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from seestar_controller.link.frames import (
     KIND_STACK,
@@ -101,7 +102,6 @@ SESSION_LOG_FILE = "session_log.jsonl"
 
 #: Session-log event kinds.
 KIND_GOTO = "goto"
-KIND_STACK = "stack"
 KIND_ERROR = "error"
 KIND_FRAME = "frame"
 KIND_SESSION = "session"
@@ -129,10 +129,9 @@ LOG_SOURCES = (LOG_SOURCE_EXECUTOR, LOG_SOURCE_CAPTURE)
 LogListener = Callable[["LogEvent"], None]
 
 
-def _direct_invoke(callback: Callable[[], None]) -> None:
+def _direct_invoke(callback: Callable[[], Any]) -> None:
     """The default ``invoke_on_main``: run the callback directly (tests)."""
     callback()
-    return None
 
 
 def session_log_path(project: Any, session_id: str) -> Path:
@@ -355,7 +354,7 @@ class SessionCapture:
         *,
         executor: Any = None,
         poll_interval_s: float = 0.5,
-        invoke_on_main: Callable[[Callable[[], None]], Any] | None = None,
+        invoke_on_main: Callable[[Callable[[], Any]], Any] | None = None,
         bus: NotificationBus | None = None,
         download_timeout: float | None = None,
         clock: Callable[[], float] = time.time,
@@ -587,8 +586,7 @@ class SessionCapture:
                         items.append(("error", exc))
                         continue
                     items.append(("frame", kind, meta, fits))
-                    if meta.epoch >= self._since[kind]:
-                        self._since[kind] = meta.epoch
+                    self._since[kind] = max(meta.epoch, self._since[kind])
         return items
 
     def _apply(self, items: list[tuple]) -> int:

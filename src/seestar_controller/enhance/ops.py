@@ -128,7 +128,7 @@ class _SerializableParams:
 
     def to_dict(self) -> dict[str, Any]:
         """The params as a plain JSON-able dict (field name -> value)."""
-        return dataclasses.asdict(self)
+        return dataclasses.asdict(self)  # ty: ignore[invalid-argument-type]
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> _SerializableParams:
@@ -138,7 +138,7 @@ class _SerializableParams:
             raise EnhanceError(
                 f"{cls.__name__}.from_dict expects a dict, got {data!r}"
             )
-        fields = {f.name for f in dataclasses.fields(cls)}  # type: ignore[arg-type]
+        fields = {f.name for f in dataclasses.fields(cls)}  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
         unknown = sorted(set(data) - fields)
         if unknown:
             raise EnhanceError(
@@ -531,7 +531,7 @@ class OpSpec:
     pure apply function ``apply(img, params) -> img``."""
 
     name: str
-    params_type: type
+    params_type: type[_SerializableParams]
     apply: Callable[[np.ndarray, Any], np.ndarray]
 
 

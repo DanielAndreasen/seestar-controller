@@ -52,7 +52,7 @@ and the plot.
 import io
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pytest
@@ -66,19 +66,19 @@ try:
 except ValueError as exc:  # typelibs missing
     pytest.skip(f"GTK 4.0 / libadwaita typelibs missing: {exc}", allow_module_level=True)
 
-from gi.repository import GLib, Gtk  # noqa: E402
+from gi.repository import GLib, Gtk
 
-from seestar_controller.catalog.coords import J2000Coord  # noqa: E402
-from seestar_controller.catalog.facade import CatalogUnavailableError  # noqa: E402
-from seestar_controller.catalog.standards import StandardStar  # noqa: E402
-from seestar_controller.enhance import ViewerController  # noqa: E402
-from seestar_controller.photometry import (  # noqa: E402
+from seestar_controller.catalog.coords import J2000Coord
+from seestar_controller.catalog.facade import CatalogUnavailableError
+from seestar_controller.catalog.standards import StandardStar
+from seestar_controller.enhance import ViewerController
+from seestar_controller.photometry import (
     PickController,
     RunController,
     SuggestionController,
     sky_to_pixel,
 )
-from seestar_controller.store import (  # noqa: E402
+from seestar_controller.store import (
     KIND_STACK,
     KIND_SUB,
     StarPick,
@@ -91,7 +91,7 @@ from seestar_controller.store import (  # noqa: E402
     store_frame,
 )
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 DATE1 = "2026-11-20T22:00:00.000"
 
 
@@ -140,7 +140,7 @@ def gtk():
     """GTK initialized, or skip when no display is available (headless)."""
     try:
         ok = Gtk.init_check()
-    except Exception as exc:  # pragma: no cover - backend errors
+    except Exception as exc:  # pragma: no cover - backend errors  # noqa: BLE001
         pytest.skip(f"Gtk.init_check failed: {exc}")
     if not ok:
         pytest.skip("no display available (headless environment)")
@@ -613,7 +613,7 @@ def test_results_panel_run_button_runs_on_a_worker_thread(gtk, project):
 def test_results_panel_shows_clean_error_when_run_fails(gtk, project):
     from seestar_controller.photometry.results_view import ResultsPanel
 
-    session = _store_subs(project, n=2)
+    _store_subs(project, n=2)
     # NO picks stored -> the run fails with a clean status, never a crash
     rc = RunController(project=project, invoke_on_main=lambda cb: GLib.idle_add(cb))
     panel = ResultsPanel(run_controller=rc)

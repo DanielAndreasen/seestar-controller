@@ -33,16 +33,17 @@ from seestar_controller.catalog import (
     QueryCache,
     SimbadResponseError,
     SimbadUnavailableError,
-    StandardStar,
     StandardsResponseError,
+    StandardStar,
     StandardsUnavailableError,
     find_standard_stars_cached,
     lookup_name,
     lookup_standards,
     resolve_name,
     resolve_name_cached,
+    simbad,
+    standards,
 )
-from seestar_controller.catalog import simbad, standards
 
 #: Column order of the mocked SIMBAD TAP JSON payloads (mirrors build_lookup_query).
 SIMBAD_COLUMNS = ["oid", "main_id", "ra", "dec", "otype", "id", "filter", "flux"]
@@ -278,7 +279,7 @@ def test_lookup_name_validation_rejected_before_fetch_or_cache(fake_simbad, cach
     with pytest.raises(ValueError, match="empty"):
         lookup_name("   ", cache)
     with pytest.raises(ValueError, match="string"):
-        lookup_name(None, cache)
+        lookup_name(None, cache)  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError, match=">= 1"):
         lookup_name("M 42", cache, maxrec=0)
     assert fake_simbad.calls == []
@@ -454,14 +455,14 @@ def test_catalog_package_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
 
 
 def test_public_api_is_exported_from_package():
-    import seestar_controller.catalog as catalog
+    from seestar_controller import catalog
 
     for name in catalog.__all__:
         assert hasattr(catalog, name), name

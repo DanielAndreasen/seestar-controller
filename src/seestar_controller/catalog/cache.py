@@ -48,8 +48,9 @@ import math
 import os
 import tempfile
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from . import simbad
 from .simbad import CatalogCandidate
@@ -99,7 +100,7 @@ def default_cache_dir(env: Mapping[str, str] | None = None) -> Path:
 def cache_key(query: str) -> str:
     """Stable, filename-safe cache key for a ``query`` string: SHA-256 hex."""
     if not isinstance(query, str):
-        raise ValueError(f"query must be a string, got {query!r}")
+        raise ValueError(f"query must be a string, got {query!r}")  # noqa: TRY004
     return hashlib.sha256(query.encode("utf-8")).hexdigest()
 
 
@@ -352,7 +353,7 @@ def resolve_name_cached(
     if cache is None:
         cache = QueryCache()
     if not isinstance(name, str):
-        raise ValueError(f"name must be a string, got {name!r}")
+        raise ValueError(f"name must be a string, got {name!r}")  # noqa: TRY004
     query_name = name.strip()
     if not query_name:
         raise ValueError("name must not be empty")

@@ -8,7 +8,7 @@ import pytest
 
 from seestar_controller.link import auth, protocol
 from seestar_controller.link.auth import HandshakeError
-from seestar_controller.link.mock_scope import NOT_VERIFIED_CODE, MockScope
+from seestar_controller.link.mock_scope import NOT_VERIFIED_CODE
 from seestar_controller.link.transport import (
     ConnectionLostError,
     LinkTransport,
@@ -57,7 +57,7 @@ def test_concurrent_requests_correlated_by_id(transport, mock_scope):
     assert not errors
     assert len(results) == 8
     for n, result in results.items():
-        assert result["echo_params"] == {"n": n}
+        assert result["echo_params"] == {"n": n}  # ty: ignore[not-subscriptable]
 
 
 def test_event_dispatch_to_registered_handler(transport, mock_scope):
@@ -228,7 +228,7 @@ def test_busy_link_with_slow_replies_no_spurious_connection_lost(mock_scope, key
         assert not errors
         assert len(results) == 8 + (n - 100)
         for r in results.values():
-            assert r["echo_method"] == "slow"
+            assert r["echo_method"] == "slow"  # ty: ignore[not-subscriptable]
         assert not lost.is_set(), "busy-but-healthy link was declared lost"
         assert t.connected
     finally:

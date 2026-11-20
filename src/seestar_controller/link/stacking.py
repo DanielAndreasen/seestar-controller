@@ -30,7 +30,8 @@ real hardware.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 #: RPC that begins stacking a Stack on the current target.
 START_STACK_METHOD = "iscope_start_stacking"
@@ -57,7 +58,7 @@ MOSAIC_MAX_DEG = 10.0
 
 def exposure_to_exp_ms(exposure: float) -> int:
     """Convert a sub-frame exposure in seconds to wire ``exp_ms``."""
-    return int(round(float(exposure) * 1000.0))
+    return round(float(exposure) * 1000.0)
 
 
 def normalize_mosaic(mosaic: Any) -> tuple[bool, float | None, float | None]:
@@ -80,7 +81,7 @@ def normalize_mosaic(mosaic: Any) -> tuple[bool, float | None, float | None]:
             )
         pan_raw, tilt_raw = mosaic
     else:
-        raise ValueError(
+        raise ValueError(  # noqa: TRY004
             f"mosaic must be a bool or a (pan, tilt) framing in degrees, got {mosaic!r}"
         )
     try:
@@ -144,7 +145,7 @@ def wire_params_to_stack_args(params: Mapping[str, Any]) -> tuple[float, Any, An
     gain = params["gain"]
     raw_mosaic = params.get("is_mosaic", False)
     if not isinstance(raw_mosaic, bool):
-        raise ValueError(f"is_mosaic must be a bool, got {raw_mosaic!r}")
+        raise ValueError(f"is_mosaic must be a bool, got {raw_mosaic!r}")  # noqa: TRY004
     mosaic: Any = raw_mosaic
     if params.get("mosaic_pan") is not None or params.get("mosaic_tilt") is not None:
         mosaic = {

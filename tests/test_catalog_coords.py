@@ -186,7 +186,7 @@ def test_j2000coord_rejects_dec_out_of_range(bad_dec):
 def test_j2000coord_is_frozen():
     c = J2000Coord.from_degrees(1.0, 2.0)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        c.ra_deg = 5.0
+        c.ra_deg = 5.0  # ty: ignore[invalid-assignment]
 
 
 def test_j2000coord_parse_funnels_through_parsers():
@@ -278,14 +278,14 @@ def test_catalog_package_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
 
 
 def test_public_api_is_exported_from_package():
-    import seestar_controller.catalog as catalog
+    from seestar_controller import catalog
 
     for name in catalog.__all__:
         assert hasattr(catalog, name), name

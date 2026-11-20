@@ -32,7 +32,7 @@ import dataclasses
 import io
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,7 +40,7 @@ import numpy as np
 import pytest
 from astropy.io import fits as pyfits
 
-import seestar_controller.photometry as photometry
+from seestar_controller import photometry
 from seestar_controller.catalog.coords import J2000Coord, angular_distance
 from seestar_controller.catalog.facade import CatalogUnavailableError
 from seestar_controller.catalog.standards import StandardStar
@@ -66,7 +66,7 @@ from seestar_controller.store import (
 #: Directory of the photometry package (source-scan audit).
 PHOTOMETRY_PACKAGE_DIR = Path(photometry.__file__).resolve().parent
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 DATE1 = "2026-11-20T22:00:00.000"
 
 #: The synthetic frame: 64x64, CAR WCS, CRVAL (83, 22) at 1-based pixel (51, 51).
@@ -291,9 +291,9 @@ def test_refresh_lists_suggestions_nearest_first_and_filters_by_radius(picker, t
     assert "APASS A" in a.describe() and "11.20" in a.describe() and "0.0200" in a.describe()
     # the snapshot + suggestions are frozen
     with pytest.raises(dataclasses.FrozenInstanceError):
-        snap.error = "x"  # type: ignore[misc]
+        snap.error = "x"  # type: ignore[misc]  # ty: ignore[invalid-assignment]
     with pytest.raises(dataclasses.FrozenInstanceError):
-        a.name = "x"  # type: ignore[misc]
+        a.name = "x"  # type: ignore[misc]  # ty: ignore[invalid-assignment]
     assert ctrl.snapshot == snap
 
 
@@ -349,7 +349,7 @@ def test_catalog_unavailable_is_a_clean_error_state_and_recovers(picker):
     assert snap.suggestions == () and snap.target == picker.target.coord
     assert ctrl.error == snap.error
     # any exception type lands in the error state, never a traceback
-    ctrl._lookup = lambda coord, radius: 1 / 0
+    ctrl._lookup = lambda coord, radius: 1 / 0  # ty: ignore[invalid-assignment]
     snap = ctrl.refresh()
     assert snap.error is not None and "division" in snap.error
     # recovery: a working lookup clears the error
@@ -410,7 +410,7 @@ def test_add_suggestion_errors(picker, image):
     with pytest.raises(SuggestionError, match="out of range"):
         ctrl.add_suggestion(-2)
     with pytest.raises(SuggestionError, match="int"):
-        ctrl.add_suggestion("0")
+        ctrl.add_suggestion("0")  # ty: ignore[invalid-argument-type]
     with pytest.raises(SuggestionError, match="int"):
         ctrl.add_suggestion(True)
     # no pick controller attached
@@ -444,11 +444,11 @@ def test_controller_follows_target_changes(image):
     ctrl = SuggestionController(picker, lookup=make_lookup([STAR_A], calls), radius_deg=1.5)
     assert ctrl.snapshot.target is None  # no target yet
     picker.pick_at(40, 30, "target", snap=False)
-    assert calls and calls[-1][0] == picker.target.coord  # auto re-search on target pick
+    assert calls and calls[-1][0] == picker.target.coord  # auto re-search on target pick  # ty: ignore[missing-union-attribute]
     assert [s.name for s in ctrl.suggestions] == ["APASS A"]
     # moving the target re-searches with the new coord
     picker.pick_at(16, 16, "target", snap=False)
-    assert calls[-1][0] == picker.target.coord
+    assert calls[-1][0] == picker.target.coord  # ty: ignore[missing-union-attribute]
     assert calls[-1][0] != J2000Coord(ra_deg=83.01, dec_deg=21.98)
     # clearing the picks empties the suggestions
     picker.clear()
@@ -507,7 +507,7 @@ def test_listeners_idempotent_decorator_isolated_and_frozen(picker):
     ctrl.refresh()  # the broken listener must not break the others or refresh
     assert len(seen) == 1 and seen[0].suggestions
     with pytest.raises(dataclasses.FrozenInstanceError):
-        seen[0].radius_deg = 9.0  # type: ignore[misc]
+        seen[0].radius_deg = 9.0  # type: ignore[misc]  # ty: ignore[invalid-assignment]
     ctrl.remove_listener(observer)
     ctrl.remove_listener(observer)  # no-op
     ctrl.refresh()
@@ -530,14 +530,14 @@ def test_default_lookup_delegates_to_the_catalog_facade(monkeypatch, target_coor
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
 
     # the default lookup instantiates the facade's Catalog at CALL time and
     # delegates to lookup_standards(coord, radius_deg)
-    import seestar_controller.catalog.facade as facade
+    from seestar_controller.catalog import facade
 
     sentinel = [STAR_A]
 
@@ -619,7 +619,7 @@ def test_suggest_module_source_has_no_gi_and_is_pure():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

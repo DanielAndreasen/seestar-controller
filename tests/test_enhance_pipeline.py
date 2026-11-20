@@ -45,7 +45,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import seestar_controller.enhance as enhance
+from seestar_controller import enhance
 from seestar_controller.enhance import (
     OP_NAMES,
     OPS,
@@ -64,9 +64,10 @@ from seestar_controller.enhance import (
     apply_stretch,
     apply_white_balance,
     default_pipeline,
+    ops,
+    pipeline,
     render_pipeline,
 )
-from seestar_controller.enhance import ops, pipeline
 
 #: Directory of the enhance package (source-scan audit).
 ENHANCE_PACKAGE_DIR = Path(enhance.__file__).resolve().parent
@@ -249,14 +250,14 @@ def test_stretch_params_dict_roundtrip():
     with pytest.raises(EnhanceError):
         StretchParams.from_dict({"kind": "linear", "bogus": 1})
     with pytest.raises(EnhanceError):
-        StretchParams.from_dict("not a dict")
+        StretchParams.from_dict("not a dict")  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
         StretchParams.from_dict({"kind": "bogus"})  # re-validated on load
 
 
 def test_apply_stretch_rejects_wrong_params_type():
     with pytest.raises(EnhanceError):
-        apply_stretch(ramp_image(), DenoiseParams())  # type: ignore[arg-type]
+        apply_stretch(ramp_image(), DenoiseParams())  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 # --- denoise -----------------------------------------------------------------------------------
@@ -566,13 +567,13 @@ def test_every_op_handles_all_nan(fn, params):
 def test_ops_reject_bad_shapes_and_non_numeric():
     for fn, params in ALL_OPS:
         with pytest.raises(EnhanceError):
-            fn(np.zeros((4,), dtype=np.float32), params)
+            fn(np.zeros((4,), dtype=np.float32), params)  # ty: ignore[invalid-argument-type]
         with pytest.raises(EnhanceError):
-            fn(np.zeros((2, 2, 2, 2), dtype=np.float32), params)
+            fn(np.zeros((2, 2, 2, 2), dtype=np.float32), params)  # ty: ignore[invalid-argument-type]
         with pytest.raises(EnhanceError):
-            fn(np.zeros((4, 4, 4), dtype=np.float32), params)
+            fn(np.zeros((4, 4, 4), dtype=np.float32), params)  # ty: ignore[invalid-argument-type]
         with pytest.raises(EnhanceError):
-            fn("not an array", params)  # type: ignore[arg-type]
+            fn("not an array", params)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 def test_ops_registry():
@@ -597,7 +598,7 @@ def test_op_validates_name_and_params_type():
         Op("stretch", DenoiseParams())  # wrong params type
     assert "expects StretchParams" in str(excinfo.value)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        op.name = "denoise"  # type: ignore[misc]
+        op.name = "denoise"  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_op_dict_roundtrip():
@@ -614,7 +615,7 @@ def test_op_dict_roundtrip():
     with pytest.raises(EnhanceError):
         Op.from_dict({"op": "stretch"})  # missing params
     with pytest.raises(EnhanceError):
-        Op.from_dict("nope")
+        Op.from_dict("nope")  # ty: ignore[invalid-argument-type]
 
 
 # --- Pipeline ------------------------------------------------------------------------------------------
@@ -665,9 +666,9 @@ def test_pipeline_is_rerunnable_from_original_and_never_mutates():
 
 def test_pipeline_rejects_non_op_entries():
     with pytest.raises(EnhanceError):
-        Pipeline(("stretch",))  # type: ignore[arg-type]
+        Pipeline(("stretch",))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     with pytest.raises(dataclasses.FrozenInstanceError):
-        Pipeline().ops = ()  # type: ignore[misc]
+        Pipeline().ops = ()  # type: ignore[misc]  # ty: ignore[invalid-assignment]
 
 
 def test_pipeline_with_param_is_immutable():
@@ -706,7 +707,7 @@ def test_pipeline_dict_roundtrip():
     with pytest.raises(EnhanceError):
         Pipeline.from_dict({"ops": "stretch"})
     with pytest.raises(EnhanceError):
-        Pipeline.from_dict(["not", "a", "dict"])
+        Pipeline.from_dict(["not", "a", "dict"])  # ty: ignore[invalid-argument-type]
     assert Pipeline.from_dict({}) == Pipeline()  # empty ops default
 
 
@@ -728,9 +729,9 @@ def test_render_pipeline_grayscale_and_rgb():
     preview_rgb = render_pipeline(pipe, FitsImage(data=rgb, header={}), max_size=32)
     assert preview_rgb.mode == "RGB" and max(preview_rgb.size) <= 32
     with pytest.raises(EnhanceError):
-        render_pipeline("not a pipeline", FitsImage(data=img, header={}))  # type: ignore[arg-type]
+        render_pipeline("not a pipeline", FitsImage(data=img, header={}))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
-        render_pipeline(default_pipeline(), img)  # type: ignore[arg-type]
+        render_pipeline(default_pipeline(), img)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 # --- golden-hash regression ---------------------------------------------------------------------------
@@ -762,7 +763,7 @@ def test_pipeline_modules_import_no_gi_no_link_no_ui():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

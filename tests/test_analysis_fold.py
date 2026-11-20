@@ -36,7 +36,23 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import seestar_controller.analysis as analysis
+# tmp-project measurement helpers reused from the ticket-01 test module
+from test_analysis_lightcurve import (
+    QueuedInvoke,
+    two_session_project,
+)
+
+# synthetic sinusoid helpers reused from the ticket-02 test module
+from test_analysis_periodogram import (
+    P_TRUE,
+    SIGMA,
+    _project_with_sinusoid,
+    gapped_sampling,
+    make_points,
+    sinusoid_mags,
+)
+
+from seestar_controller import analysis
 from seestar_controller.analysis import fold as fold_module
 from seestar_controller.analysis.fold import (
     PERIOD_CONFIG_KEY,
@@ -48,8 +64,8 @@ from seestar_controller.analysis.fold import (
     PeriodController,
     PeriodError,
     PeriodSnapshot,
-    folded_window,
     fold_points,
+    folded_window,
     periodogram_window,
     phase_of,
     validate_period,
@@ -67,23 +83,9 @@ from seestar_controller.analysis.periodogram import (
 )
 from seestar_controller.store import (
     create_project,
+)
+from seestar_controller.store import (
     lightcurve as store_lightcurve,
-)
-
-# tmp-project measurement helpers reused from the ticket-01 test module
-from test_analysis_lightcurve import (  # noqa: E402
-    QueuedInvoke,
-    two_session_project,
-)
-
-# synthetic sinusoid helpers reused from the ticket-02 test module
-from test_analysis_periodogram import (  # noqa: E402
-    P_TRUE,
-    SIGMA,
-    _project_with_sinusoid,
-    gapped_sampling,
-    make_points,
-    sinusoid_mags,
 )
 
 #: Directory of the analysis package (source-scan audit).
@@ -192,7 +194,7 @@ def test_fold_points_empty_sets_and_invalid_input():
     with pytest.raises(FoldError):
         fold_points([_pt(1, 100.0)], 0.5, jd0=float("nan"))
     with pytest.raises(FoldError):
-        fold_points(42, 0.5)  # not iterable
+        fold_points(42, 0.5)  # not iterable  # ty: ignore[invalid-argument-type]
     with pytest.raises(FoldError):
         fold_points([object()], 0.5)  # no jd attribute
 
@@ -212,8 +214,8 @@ def test_fold_points_accepts_store_measurements(project):
 def test_folded_point_is_frozen_and_validated():
     fp = FoldedPoint(point=_pt(1, 100.0), phase=0.25)
     assert fp.phase == 0.25 and fp.point.measurement_id == 1
-    with pytest.raises(Exception):
-        fp.phase = 0.5  # frozen
+    with pytest.raises(Exception):  # noqa: B017
+        fp.phase = 0.5  # frozen  # ty: ignore[invalid-assignment]
     with pytest.raises(FoldError):
         FoldedPoint(point=_pt(1, 100.0), phase=1.0)  # phase must be < 1
     with pytest.raises(FoldError):
@@ -223,7 +225,7 @@ def test_folded_point_is_frozen_and_validated():
     with pytest.raises(FoldError):
         FoldedPoint(point=_pt(1, 100.0), phase=True)
     with pytest.raises(FoldError):
-        FoldedPoint(point="not-a-point", phase=0.5)  # type: ignore[arg-type]
+        FoldedPoint(point="not-a-point", phase=0.5)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 # --- the plot windows (pure transforms with x = phase / x = period) ------------------------------------
@@ -270,8 +272,8 @@ def test_period_snapshot_is_frozen_and_validated():
         result=None, peaks=(), folded=(), error=None,
     )
     assert snap.peak_index == 2
-    with pytest.raises(Exception):
-        snap.period = 0.6  # frozen
+    with pytest.raises(Exception):  # noqa: B017
+        snap.period = 0.6  # frozen  # ty: ignore[invalid-assignment]
     with pytest.raises(FoldError):
         PeriodSnapshot(period=-1.0, source=None, peak_index=None, jd0=None, result=None, peaks=(), folded=(), error=None)
     with pytest.raises(FoldError):
@@ -279,7 +281,7 @@ def test_period_snapshot_is_frozen_and_validated():
     with pytest.raises(FoldError):
         PeriodSnapshot(period=0.5, source=SOURCE_PEAK, peak_index=None, jd0=None, result=None, peaks=(), folded=(), error=None)
     with pytest.raises(FoldError):
-        PeriodSnapshot(period=None, source=None, peak_index=None, jd0=None, result=None, peaks=[], folded=(), error=None)  # type: ignore[arg-type]
+        PeriodSnapshot(period=None, source=None, peak_index=None, jd0=None, result=None, peaks=[], folded=(), error=None)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 # --- PeriodController: compute + select_peak + fold --------------------------------------------------------
@@ -331,7 +333,7 @@ def test_select_peak_errors_leave_the_state_unchanged(project):
             ctrl.select_peak(bad)
     for bad in (0.5, "0", True, None):
         with pytest.raises(PeriodError):
-            ctrl.select_peak(bad)  # type: ignore[arg-type]
+            ctrl.select_peak(bad)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     assert ctrl.period is None and ctrl.source is None
     assert ctrl.snapshot.peak_index is None
 
@@ -567,7 +569,7 @@ def test_fold_module_imports_no_gi_no_link_no_ui_no_photometry_no_enhance_and_wi
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

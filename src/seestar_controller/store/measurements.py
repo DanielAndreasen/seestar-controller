@@ -203,7 +203,7 @@ def add_measurement(
             "VALUES (?, ?, ?, ?, ?)",
             (frame_id, jd_value, mag_value, mag_err_value, int(excluded)),
         )
-        measurement_id = int(cur.lastrowid)
+        measurement_id = int(cur.lastrowid)  # ty: ignore[invalid-argument-type]
     return Measurement(
         id=measurement_id,
         frame_id=frame_id,

@@ -50,10 +50,10 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk  # noqa: E402
+from gi.repository import Adw, Gtk
 
-from .settings import SettingsController, SettingsFieldError  # noqa: E402
-from .state import EDITABLE_SETTINGS_KEYS  # noqa: E402
+from .settings import SettingsController, SettingsFieldError
+from .state import EDITABLE_SETTINGS_KEYS
 
 #: field key -> entry row title.
 FIELD_TITLES: dict[str, str] = {

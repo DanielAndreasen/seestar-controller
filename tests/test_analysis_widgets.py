@@ -50,7 +50,7 @@ import csv
 import io
 import json
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pytest
@@ -64,9 +64,12 @@ try:
 except ValueError as exc:  # typelibs missing
     pytest.skip(f"GTK 4.0 / libadwaita typelibs missing: {exc}", allow_module_level=True)
 
-from gi.repository import GLib, Gtk  # noqa: E402
+from gi.repository import GLib, Gtk
 
-from seestar_controller.analysis import (  # noqa: E402  (the views are the lazy PEP 562 exports)
+# the synthetic sinusoid (known period) reused from the ticket-02 test module
+from test_analysis_periodogram import P_TRUE, _project_with_sinusoid
+
+from seestar_controller.analysis import (
     SESSION_PALETTE,
     LightcurveController,
     LightcurveView,
@@ -76,7 +79,7 @@ from seestar_controller.analysis import (  # noqa: E402  (the views are the lazy
     full_window,
     zoom_window_at,
 )
-from seestar_controller.store import (  # noqa: E402
+from seestar_controller.store import (
     KIND_SUB,
     add_measurement,
     close_session,
@@ -87,10 +90,7 @@ from seestar_controller.store import (  # noqa: E402
     store_frame,
 )
 
-# the synthetic sinusoid (known period) reused from the ticket-02 test module
-from test_analysis_periodogram import P_TRUE, _project_with_sinusoid  # noqa: E402
-
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 JD0 = 2460000.5
 
 
@@ -129,7 +129,7 @@ def gtk():
     """GTK initialized, or skip when no display is available (headless)."""
     try:
         ok = Gtk.init_check()
-    except Exception as exc:  # pragma: no cover - backend errors
+    except Exception as exc:  # pragma: no cover - backend errors  # noqa: BLE001
         pytest.skip(f"Gtk.init_check failed: {exc}")
     if not ok:
         pytest.skip("no display available (headless environment)")
@@ -346,7 +346,7 @@ def test_period_view_peak_click_selects_and_persists_the_period(gtk, project):
     pump_main()
     assert pc.period == result.peaks[0].period
     assert pc.source == "peak"
-    assert abs(pc.period - P_TRUE) / P_TRUE < 0.01  # the true period recovered
+    assert abs(pc.period - P_TRUE) / P_TRUE < 0.01  # the true period recovered  # ty: ignore[unsupported-operator]
     # ...and persisted into project.json
     persisted = json.loads(project.config_path.read_text(encoding="utf-8"))["period"]
     assert persisted == pc.period
@@ -568,7 +568,7 @@ def test_lightcurve_page_export_dialog_callback(gtk, project, two_session_projec
     pump_main()
     assert dest.exists()
     with dest.open("r", encoding="utf-8", newline="") as fh:
-        assert list(csv.reader(fh))[0] == ["jd", "utc", "mag", "mag_err", "session", "target"]
+        assert next(iter(csv.reader(fh))) == ["jd", "utc", "mag", "mag_err", "session", "target"]
     # a cancelled dialog (GLib.Error) or a None file -> no-op
     before = dest.read_bytes()
     page._on_export_dialog_finished(FakeDialog(error=True), None, "lightcurve")

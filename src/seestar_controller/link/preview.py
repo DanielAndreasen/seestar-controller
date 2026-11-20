@@ -32,8 +32,9 @@ import queue
 import socket
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Self
 
 import numpy as np
 from PIL import Image
@@ -307,10 +308,10 @@ class PreviewStream:
             dispatcher.join()
         logger.info("preview stream stopped")
 
-    def __enter__(self) -> "PreviewStream":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.stop()
 
     @property

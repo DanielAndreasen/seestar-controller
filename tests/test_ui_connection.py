@@ -28,7 +28,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import seestar_controller.ui as ui
+from seestar_controller import ui
 from seestar_controller.ui.connection import (
     CONNECTION_LOST_EVENT,
     LIFECYCLE_EVENTS,
@@ -39,11 +39,9 @@ from seestar_controller.ui.connection import (
     ConnectionStateError,
     ConnectionStatus,
     describe_scope_state,
-    default_device_factory,
 )
 from seestar_controller.ui.settings import SettingsController
 from seestar_controller.ui.state import AppState, UIStateError
-
 
 # --- fakes ---------------------------------------------------------------------
 
@@ -203,7 +201,7 @@ def test_connect_accepts_explicit_scope_ip_and_factory_override(settings):
     device = FakeDevice()
     calls = []
     c = ConnectionController(settings, device_factory=make_factory(error=RuntimeError("no")))
-    worker = c.connect("10.0.0.9", device_factory=make_factory(device, calls=calls))
+    c.connect("10.0.0.9", device_factory=make_factory(device, calls=calls))
     assert c.wait(5)
     assert c.status == ConnectionStatus.CONNECTED
     assert calls == [("10.0.0.9", settings.values["key_path"])]
@@ -244,7 +242,7 @@ def test_connect_failure_sets_error_with_message(settings):
 
     assert c.status == ConnectionStatus.ERROR
     assert c.device is None and c.scope_state is None
-    assert "OSError" in c.error and "connection refused" in c.error
+    assert "OSError" in c.error and "connection refused" in c.error  # ty: ignore[unsupported-operator]
     assert [s.status for s in seen] == [ConnectionStatus.CONNECTING, ConnectionStatus.ERROR]
     assert seen[-1].error == c.error
 
@@ -258,7 +256,7 @@ def test_connect_failure_when_state_read_fails(settings):
     c.connect()
     assert c.wait(5)
     assert c.status == ConnectionStatus.ERROR
-    assert "scope busy" in c.error
+    assert "scope busy" in c.error  # ty: ignore[unsupported-operator]
 
 
 # --- connect: invalid / empty IP -> error WITHOUT calling the factory -------------------
@@ -274,7 +272,7 @@ def test_empty_scope_ip_is_error_without_calling_factory(tmp_path):
     c.add_listener(seen.append)
     assert c.connect() is None  # no worker thread
     assert c.status == ConnectionStatus.ERROR
-    assert "not set" in c.error
+    assert "not set" in c.error  # ty: ignore[unsupported-operator]
     assert calls == []
     assert [s.status for s in seen] == [ConnectionStatus.ERROR]
 
@@ -286,7 +284,7 @@ def test_invalid_scope_ip_is_error_without_calling_factory(settings):
     )
     assert c.connect("999.1.1.1") is None
     assert c.status == ConnectionStatus.ERROR
-    assert "scope_ip" in c.error
+    assert "scope_ip" in c.error  # ty: ignore[unsupported-operator]
     assert calls == []
     # another invalid form behaves the same
     c2 = ConnectionController(
@@ -318,7 +316,7 @@ def test_double_connect_is_rejected(settings):
     assert "connecting" in str(excinfo.value)
     assert isinstance(excinfo.value, UIStateError) and isinstance(excinfo.value, RuntimeError)
     release.set()
-    worker.join(5)
+    worker.join(5)  # ty: ignore[missing-union-attribute]
     assert c.wait(5)
     assert c.status == ConnectionStatus.CONNECTED
     # still connected -> rejected again, factory not called twice
@@ -405,7 +403,7 @@ def test_disconnect_while_connecting_discards_the_late_result(settings):
     c.disconnect()
     assert c.status == ConnectionStatus.DISCONNECTED
     release.set()
-    worker.join(5)
+    worker.join(5)  # ty: ignore[missing-union-attribute]
     assert c.wait(5)
     # the late success must NOT flip the state back to connected ...
     assert c.status == ConnectionStatus.DISCONNECTED
@@ -444,12 +442,12 @@ def test_reconnected_refreshes_the_scope_state(settings):
     c = ConnectionController(settings, device_factory=make_factory(device))
     c.connect()
     assert c.wait(5)
-    assert c.scope_state.mode == "idle"
+    assert c.scope_state.mode == "idle"  # ty: ignore[missing-union-attribute]
     device._state = FakeScopeState(mode="stacking", target=(1.0, 2.0))
     device.fire(RECONNECTED_EVENT, {"attempts": 2})
     assert c.status == ConnectionStatus.CONNECTED
-    assert c.scope_state.mode == "stacking"
-    assert c.scope_state.target == (1.0, 2.0)
+    assert c.scope_state.mode == "stacking"  # ty: ignore[missing-union-attribute]
+    assert c.scope_state.target == (1.0, 2.0)  # ty: ignore[missing-union-attribute]
 
 
 def test_lifecycle_events_from_a_stale_device_are_ignored(settings):
@@ -498,14 +496,14 @@ def test_worker_results_are_marshalled_via_invoke_on_main(settings):
     assert seen == [] and len(queue) == 1
 
     gate.set()
-    worker.join(5)
+    worker.join(5)  # ty: ignore[missing-union-attribute]
     assert c.wait(5)
     # the worker finished, but its result is only marshalled, not applied
     assert c.status == ConnectionStatus.CONNECTING
     assert len(queue) == 2 and seen == []
 
     # drain the queue (what the GLib main loop would do)
-    for callback in list(queue):
+    for callback in queue:
         callback()
     assert c.status == ConnectionStatus.CONNECTED
     assert c.device is device
@@ -523,14 +521,14 @@ def test_lifecycle_events_are_marshalled_too(settings):
     )
     c.connect()
     assert c.wait(5)
-    for callback in list(queue):
+    for callback in queue:
         callback()
     assert c.status == ConnectionStatus.CONNECTED
 
     device.fire(CONNECTION_LOST_EVENT, {"reason": "socket eof"})
     assert c.status == ConnectionStatus.CONNECTED  # not applied yet
     assert queue  # ... but marshalled
-    for callback in list(queue):
+    for callback in queue:
         callback()
     assert c.status == ConnectionStatus.RECONNECTING
 
@@ -632,7 +630,7 @@ def test_pure_connection_module_imports_no_gi_no_link_and_widget_layer_stays_laz
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

@@ -75,9 +75,10 @@ import struct
 import threading
 import time
 import urllib.parse
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Self
 
 import numpy as np
 from PIL import Image
@@ -145,7 +146,7 @@ def make_fits_bytes(
     from astropy.io import fits as pyfits
 
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo=UTC)
     rng = np.random.default_rng(seed)
     data = rng.integers(100, 900, size=size).astype(np.int16)
     hdu = pyfits.PrimaryHDU(data=data)
@@ -187,7 +188,7 @@ def make_jpeg_payload(seq: int, width: int, height: int, quality: int = 95) -> b
 class _CommandConnection:
     """One client on the command channel (:4700)."""
 
-    def __init__(self, scope: "MockScope", sock: socket.socket, address: Any) -> None:
+    def __init__(self, scope: MockScope, sock: socket.socket, address: Any) -> None:
         self.scope = scope
         self.sock = sock
         self.address = address
@@ -441,11 +442,11 @@ class MockScope:
         self._listeners.clear()
         self._threads.clear()
 
-    def __enter__(self) -> "MockScope":
+    def __enter__(self) -> Self:
         self.start()
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.stop()
 
     # -- bound ports ---------------------------------------------------------
@@ -753,9 +754,9 @@ class MockScope:
         """
         kind = frames.normalize_kind(kind)
         if when is None:
-            when = datetime.now(timezone.utc)
+            when = datetime.now(UTC)
         elif when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
+            when = when.replace(tzinfo=UTC)
         if target is None:
             with self._scope_state_lock:
                 target = copy.deepcopy(self._scope_state["target"])
@@ -899,7 +900,7 @@ class MockScope:
         else:
             ra_raw, dec_raw = params.get("ra"), params.get("dec")
         try:
-            ra, dec = float(ra_raw), float(dec_raw)
+            ra, dec = float(ra_raw), float(dec_raw)  # ty: ignore[invalid-argument-type]
         except (TypeError, ValueError):
             return True, {"error": "expected float param"}, 108
         if not (0.0 <= ra < 24.0 and -90.0 <= dec <= 90.0):
@@ -1002,7 +1003,7 @@ class MockScope:
         entries (stateful cursor from the page-number call); out of range ->
         204. Without a cursor, lists the album root (one dir entry)."""
         try:
-            page = int(params.get("page"))
+            page = int(params.get("page"))  # ty: ignore[invalid-argument-type]
         except (TypeError, ValueError):
             return True, {"error": "expected int param"}, 104
         with self._frames_lock:
@@ -1025,7 +1026,7 @@ class MockScope:
                 ],
                 0,
             )
-        records = self._folder_records(folder)
+        records = self._folder_records(folder)  # ty: ignore[invalid-argument-type]
         pages = math.ceil(len(records) / frames.PAGE_SIZE) if records else 0
         if page < 0 or page >= max(pages, 1) or pages == 0:
             return True, {"error": "out of limit"}, compat.OUT_OF_LIMIT_CODE
@@ -1088,8 +1089,8 @@ class MockScope:
             return True, self.scope_state(), 0
         if method == "scope_goto_target":
             try:
-                ra = float(params.get("ra"))
-                dec = float(params.get("dec"))
+                ra = float(params.get("ra"))  # ty: ignore[invalid-argument-type]
+                dec = float(params.get("dec"))  # ty: ignore[invalid-argument-type]
             except (TypeError, ValueError):
                 return True, {"error": f"ra/dec must be numbers, got {dict(params)!r}"}, -1
             if not (0.0 <= ra < 24.0 and -90.0 <= dec <= 90.0):
@@ -1137,7 +1138,7 @@ class MockScope:
         while not self._stopping.is_set():
             try:
                 sock, address = listener.accept()
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 break

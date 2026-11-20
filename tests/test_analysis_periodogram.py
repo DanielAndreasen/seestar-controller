@@ -33,7 +33,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import seestar_controller.analysis as analysis
+# tmp-project measurement helpers reused from the ticket-01 test module
+from test_analysis_lightcurve import (
+    JD0,
+    T0,
+    date_obs_str,
+    fits_bytes,
+    frozen,
+)
+
+from seestar_controller import analysis
 from seestar_controller.analysis import periodogram as periodogram_module
 from seestar_controller.analysis.lightcurve import AnalysisError, LightcurvePoint
 from seestar_controller.analysis.periodogram import (
@@ -60,15 +69,6 @@ from seestar_controller.store import (
     lightcurve,
     start_session,
     store_frame,
-)
-
-# tmp-project measurement helpers reused from the ticket-01 test module
-from test_analysis_lightcurve import (  # noqa: E402
-    JD0,
-    T0,
-    date_obs_str,
-    fits_bytes,
-    frozen,
 )
 
 #: Directory of the analysis package (source-scan audit).
@@ -209,9 +209,9 @@ def test_frequency_grid_rejects_degenerate_input():
     with pytest.raises(PeriodogramError):
         frequency_grid([1.0, float("nan"), 2.0])  # non-finite
     with pytest.raises(PeriodogramError):
-        frequency_grid([[1.0, 2.0], [3.0, 4.0]])  # 2-D
+        frequency_grid([[1.0, 2.0], [3.0, 4.0]])  # 2-D  # ty: ignore[invalid-argument-type]
     with pytest.raises(PeriodogramError):
-        frequency_grid("abc")  # non-numeric
+        frequency_grid("abc")  # non-numeric  # ty: ignore[invalid-argument-type]
     with pytest.raises(PeriodogramError):
         frequency_grid([1.0, 2.0])  # two points: f_max <= f_min -> empty grid
     with pytest.raises(PeriodogramError):
@@ -290,8 +290,8 @@ def test_peak_validation():
     with pytest.raises(PeriodogramError):
         Peak(period=1.0, frequency=1.0, power=True)
     pk = Peak(period=0.35, frequency=1.0 / 0.35, power=0.9)
-    with pytest.raises(Exception):
-        pk.power = 0.1  # frozen
+    with pytest.raises(Exception):  # noqa: B017
+        pk.power = 0.1  # frozen  # ty: ignore[invalid-assignment]
     assert issubclass(PeriodogramError, AnalysisError)
     assert issubclass(PeriodogramError, ValueError)
 
@@ -447,7 +447,7 @@ def test_compute_periodogram_rejects_degenerate_input():
     with pytest.raises(PeriodogramError):
         compute_periodogram(one)  # single point
     with pytest.raises(PeriodogramError):
-        compute_periodogram(42)  # not iterable
+        compute_periodogram(42)  # not iterable  # ty: ignore[invalid-argument-type]
     t = dense_times()
     with pytest.raises(PeriodogramError):
         compute_periodogram(make_points(t, np.full(len(t), 12.0)))  # constant mags
@@ -460,7 +460,7 @@ def test_compute_periodogram_rejects_degenerate_input():
     with pytest.raises(PeriodogramError):
         compute_periodogram(make_points(t, 12.0 + 0.01 * np.arange(len(t))), top_n=0)
     with pytest.raises(PeriodogramError):
-        compute_periodogram(make_points(t, 12.0 + 0.01 * np.arange(len(t))), include_excluded="yes")
+        compute_periodogram(make_points(t, 12.0 + 0.01 * np.arange(len(t))), include_excluded="yes")  # ty: ignore[invalid-argument-type]
     with pytest.raises(PeriodogramError):
         compute_periodogram(make_points([0.0, 1.0, 2.0], [12.0, 12.1, 11.9]))  # f_max <= f_min
     with pytest.raises(PeriodogramError):
@@ -473,10 +473,10 @@ def test_compute_periodogram_rejects_degenerate_input():
 def test_result_is_frozen_and_carries_the_grid():
     t = gapped_sampling()
     result = compute_periodogram(make_points(t, sinusoid_mags(t), np.full(len(t), SIGMA)))
-    with pytest.raises(Exception):
-        result.peaks = ()  # frozen
-    with pytest.raises(Exception):
-        result.peaks[0].power = 0.0  # peaks frozen
+    with pytest.raises(Exception):  # noqa: B017
+        result.peaks = ()  # frozen  # ty: ignore[invalid-assignment]
+    with pytest.raises(Exception):  # noqa: B017
+        result.peaks[0].power = 0.0  # peaks frozen  # ty: ignore[invalid-assignment]
     assert isinstance(result.frequencies, np.ndarray)
     assert isinstance(result.powers, np.ndarray)
     assert result.frequencies.dtype == np.float64 and result.powers.dtype == np.float64
@@ -540,7 +540,7 @@ def test_project_periodogram_honors_the_store_lightcurve_default(project):
     r_top3 = project_periodogram(project, top_n=3)
     assert len(r_top3.peaks) == 3
     with pytest.raises(PeriodogramError):
-        project_periodogram(project, include_excluded="yes")
+        project_periodogram(project, include_excluded="yes")  # ty: ignore[invalid-argument-type]
 
 
 def test_project_periodogram_of_an_empty_project_is_a_clean_error(project):
@@ -571,7 +571,7 @@ def test_periodogram_module_imports_no_gi_no_link_no_ui_no_photometry_no_enhance
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

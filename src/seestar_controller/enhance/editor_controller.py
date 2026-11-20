@@ -73,9 +73,10 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from PIL import Image
 
@@ -156,7 +157,6 @@ RenderFn = Callable[[Pipeline, FitsImage, int], Image.Image]
 def _direct_invoke(callback: Callable[[], None]) -> None:
     """The default ``invoke_on_main``: run the callback directly (tests)."""
     callback()
-    return None
 
 
 def default_render_fn(
@@ -612,12 +612,12 @@ class EditorController:
         if image is not None:
             try:
                 original = render_preview(image, max_size=self._render_max_size)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 errors.append(f"original preview: {type(exc).__name__}: {exc}")
             if pipeline is not None:
                 try:
                     enhanced = self._render_fn(pipeline, image, self._render_max_size)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     errors.append(f"enhanced preview: {type(exc).__name__}: {exc}")
         error = "; ".join(errors) if errors else None
         if error is not None:

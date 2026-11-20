@@ -84,9 +84,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, Gtk
 
-from seestar_controller.analysis import (  # noqa: E402
+from seestar_controller.analysis import (
     FOLDED_CSV_FILE,
     AnalysisError,
     ExportError,
@@ -95,44 +95,44 @@ from seestar_controller.analysis import (  # noqa: E402
     export_folded_csv,
     export_lightcurve_csv,
 )
-from seestar_controller.analysis.lightcurve_view import (  # noqa: E402
+from seestar_controller.analysis.lightcurve_view import (
     LightcurveView as LightcurveViewWidget,
 )
-from seestar_controller.analysis.period_view import (  # noqa: E402
+from seestar_controller.analysis.period_view import (
     PeriodView as PeriodViewWidget,
 )
-from seestar_controller.store.csv_export import CSV_FILE as LIGHTCURVE_CSV_FILE  # noqa: E402
-from seestar_controller.store.errors import ProjectError  # noqa: E402
-from seestar_controller.enhance import EditorController, ViewerController  # noqa: E402
-from seestar_controller.enhance.enhance_view import (  # noqa: E402
+from seestar_controller.enhance import EditorController, ViewerController
+from seestar_controller.enhance.enhance_view import (
     EnhanceEditor as EnhanceEditorWidget,
 )
-from seestar_controller.observing import (  # noqa: E402
+from seestar_controller.observing import (
     ObserveController,
     PlanQueueController,
 )
-from seestar_controller.observing.observe_view import (  # noqa: E402
+from seestar_controller.observing.observe_view import (
     ObserveView as ObserveViewWidget,
 )
-from seestar_controller.observing.queue_editor import QueueEditor  # noqa: E402
-from seestar_controller.photometry import (  # noqa: E402
+from seestar_controller.observing.queue_editor import QueueEditor
+from seestar_controller.photometry import (
     PickController,
     RunController,
     SuggestionController,
 )
-from seestar_controller.photometry.results_view import (  # noqa: E402
+from seestar_controller.photometry.results_view import (
     ResultsPanel as ResultsPanelWidget,
 )
-from seestar_controller.photometry.star_picker import (  # noqa: E402
+from seestar_controller.photometry.star_picker import (
     StarPickerView as StarPickerWidget,
 )
+from seestar_controller.store.csv_export import (
+    CSV_FILE as LIGHTCURVE_CSV_FILE,
+)
+from seestar_controller.store.errors import ProjectError
 
-
-from .connection import ConnectionController  # noqa: E402
-from .project_controller import ProjectController, ProjectEvent  # noqa: E402
-from .settings import SettingsController  # noqa: E402
-from .state import VIEWS, AppState, UnknownViewError, view_by_id  # noqa: E402
-
+from .connection import ConnectionController
+from .project_controller import ProjectController, ProjectEvent
+from .settings import SettingsController
+from .state import VIEWS, AppState, view_by_id
 
 #: Minimum content height (pixels) of a view page's scrolled window. Every
 #: page scrolls vertically instead of demanding its full natural height, so

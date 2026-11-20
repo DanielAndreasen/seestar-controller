@@ -46,10 +46,9 @@ tests/test_enhance_widgets.py and skip without ``gi``.
 import hashlib
 import json
 import re
-import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -57,8 +56,7 @@ import pytest
 from astropy.io import fits as pyfits
 from PIL import Image
 
-import seestar_controller.enhance as enhance
-import seestar_controller.store as store
+from seestar_controller import enhance, store
 from seestar_controller.enhance import (
     EditorController,
     EnhanceError,
@@ -66,9 +64,9 @@ from seestar_controller.enhance import (
     default_pipeline,
     list_project_stacks,
     load_fits,
+    persistence,
 )
-from seestar_controller.enhance import persistence
-from seestar_controller.enhance.fits_io import FitsImage, StackInfo
+from seestar_controller.enhance.fits_io import StackInfo
 from seestar_controller.enhance.pipeline import Pipeline
 from seestar_controller.enhance.render import to_pil_image, tonemap
 from seestar_controller.store import (
@@ -93,7 +91,7 @@ from seestar_controller.store.presets import (
 #: Directory of the enhance package (source-scan audit).
 ENHANCE_PACKAGE_DIR = Path(enhance.__file__).resolve().parent
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 DATE1 = "2026-11-20T22:00:00.000"
 DATE2 = "2026-11-20T22:00:10.000"
 
@@ -232,11 +230,11 @@ def test_save_enhanced_validates_arguments(project, open_stack):
     with pytest.raises(EnhanceError):
         persistence.save_enhanced(None, stack, pipeline, fits_image)
     with pytest.raises(EnhanceError):
-        persistence.save_enhanced(project, None, pipeline, fits_image)
+        persistence.save_enhanced(project, None, pipeline, fits_image)  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
-        persistence.save_enhanced(project, stack, "not-a-pipeline", fits_image)
+        persistence.save_enhanced(project, stack, "not-a-pipeline", fits_image)  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
-        persistence.save_enhanced(project, stack, pipeline, "not-an-image")
+        persistence.save_enhanced(project, stack, pipeline, "not-an-image")  # ty: ignore[invalid-argument-type]
     # an unknown session is a store error, wrapped into EnhanceError
     bogus = StackInfo(
         frame_id=stack.frame_id, session_id="no-such-session",
@@ -304,13 +302,13 @@ def test_export_rejects_bad_format_quality_and_suffix(tmp_path, open_stack):
     with pytest.raises(EnhanceError, match="quality"):
         persistence.export_render(pil_image, tmp_path / "x.jpg", format="JPEG", quality=101)
     with pytest.raises(EnhanceError, match="quality"):
-        persistence.export_render(pil_image, tmp_path / "x.jpg", format="JPEG", quality="95")
+        persistence.export_render(pil_image, tmp_path / "x.jpg", format="JPEG", quality="95")  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError, match="suffix"):
         persistence.export_render(pil_image, tmp_path / "x.png", format="JPEG")
     with pytest.raises(EnhanceError, match="suffix"):
         persistence.export_render(pil_image, tmp_path / "x.gif", format="PNG")
     with pytest.raises(EnhanceError):
-        persistence.export_render(object(), tmp_path / "x.png")
+        persistence.export_render(object(), tmp_path / "x.png")  # ty: ignore[invalid-argument-type]
 
 
 # --- presets: persistence layer + store layer ---------------------------------------------------------
@@ -343,11 +341,11 @@ def test_preset_for_validates_arguments(project, open_stack):
     with pytest.raises(EnhanceError):
         persistence.save_preset_for(None, stack, pipeline)
     with pytest.raises(EnhanceError):
-        persistence.load_preset_for(project, None)
+        persistence.load_preset_for(project, None)  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
-        persistence.delete_preset_for(None, stack)
+        persistence.delete_preset_for(None, stack)  # ty: ignore[invalid-argument-type]
     with pytest.raises(EnhanceError):
-        persistence.save_preset_for(project, stack, "not-a-pipeline")
+        persistence.save_preset_for(project, stack, "not-a-pipeline")  # ty: ignore[invalid-argument-type]
     # (a mapping that is not JSON-serializable is rejected at the store level,
     #  see test_store_presets_module_roundtrip_and_errors)
 
@@ -367,11 +365,11 @@ def test_store_presets_module_roundtrip_and_errors(project, stored_stacks):
     with pytest.raises(PresetError, match="no frame"):
         save_preset(project, 999, {"ops": []})
     with pytest.raises(PresetError, match="mapping"):
-        save_preset(project, f2.id, ["not", "a", "mapping"])
+        save_preset(project, f2.id, ["not", "a", "mapping"])  # ty: ignore[invalid-argument-type]
     with pytest.raises(PresetError, match="JSON"):
         save_preset(project, f2.id, {"ops": object()})
     with pytest.raises(TypeError):
-        save_preset(project, "1", {"ops": []})
+        save_preset(project, "1", {"ops": []})  # ty: ignore[invalid-argument-type]
     with pytest.raises(TypeError):
         load_preset(project, True)
     # a corrupt row raises on load
@@ -600,7 +598,7 @@ def test_persistence_module_imports_no_gi_no_link_no_ui():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

@@ -96,12 +96,6 @@ from .ops import (
     apply_stretch,
     apply_white_balance,
 )
-from .pipeline import (
-    Op,
-    Pipeline,
-    default_pipeline,
-    render_pipeline,
-)
 from .persistence import (
     DEFAULT_EXPORT_QUALITY,
     ENHANCED_HISTORY,
@@ -112,6 +106,12 @@ from .persistence import (
     load_preset_for,
     save_enhanced,
     save_preset_for,
+)
+from .pipeline import (
+    Op,
+    Pipeline,
+    default_pipeline,
+    render_pipeline,
 )
 from .render import (
     ASINH_SOFTNESS,
@@ -165,18 +165,21 @@ __all__ = [
     "LOG_BASE",
     "MAX_CACHE_ENTRIES",
     "MAX_UNDO_ENTRIES",
-    "OP_NAMES",
     "OPS",
-    "STRETCH_KINDS",
+    "OP_NAMES",
     "STRETCHES",
+    "STRETCH_KINDS",
     "WB_MODES",
     "BackgroundParams",
     "DenoiseParams",
     "EditorController",
     "EditorListener",
     "EditorSnapshot",
+    # widget layer (lazy, imports gi):
+    "EnhanceEditor",
     "EnhanceError",
     "FitsImage",
+    "ImageViewer",
     "InvokeOnMain",
     "Op",
     "OpSpec",
@@ -209,7 +212,4 @@ __all__ = [
     "save_preset_for",
     "to_pil_image",
     "tonemap",
-    # widget layer (lazy, imports gi):
-    "EnhanceEditor",
-    "ImageViewer",
 ]

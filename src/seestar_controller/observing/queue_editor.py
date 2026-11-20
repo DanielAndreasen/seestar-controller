@@ -45,22 +45,22 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gtk, Pango
 
-from seestar_controller.catalog.coords import J2000Coord  # noqa: E402
+from seestar_controller.catalog.coords import J2000Coord
 
-from .queue import (  # noqa: E402
+from .queue import (
+    DEFAULT_EXPOSURE_S,
+    DEFAULT_GAIN,
     EXPOSURE_MAX_S,
     EXPOSURE_MIN_S,
     GAIN_MAX,
     GAIN_MIN,
     MOSAIC_MAX_DEG,
     MOSAIC_MIN_DEG,
-    DEFAULT_EXPOSURE_S,
-    DEFAULT_GAIN,
     QueueError,
 )
-from .queue_controller import PlanQueueController  # noqa: E402
+from .queue_controller import PlanQueueController
 
 #: Per-row button spec: (key, icon, tooltip).
 _ROW_BUTTONS: tuple[tuple[str, str, str], ...] = (

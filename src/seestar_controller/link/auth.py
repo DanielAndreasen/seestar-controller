@@ -29,8 +29,9 @@ the mock Scope.
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -97,7 +98,7 @@ def verify_challenge(public_key: Any, challenge: str, signature_b64: str) -> boo
             signature, challenge.encode("utf-8"), padding.PKCS1v15(), hashes.SHA1()
         )
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 

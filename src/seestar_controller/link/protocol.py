@@ -29,8 +29,9 @@ Only the envelope is handled here; signing lives in
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 #: Line terminator used by the Scope on the command channel.
 LINE_TERMINATOR = b"\r\n"

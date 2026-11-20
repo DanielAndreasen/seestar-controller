@@ -80,8 +80,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from seestar_controller.link.image import Frame
 from seestar_controller.link.preview import (
@@ -181,7 +182,6 @@ InvokeOnMain = Callable[[Callable[[], None]], Any]
 def _direct_invoke(callback: Callable[[], None]) -> None:
     """The default ``invoke_on_main``: run the callback directly (tests)."""
     callback()
-    return None
 
 
 #: An executor factory: ``factory(device, queue, project, **kwargs) ->
@@ -613,7 +613,7 @@ class ObserveController:
             stream = self._preview_stream_factory(device, host)
             stream.add_callback(self._on_stream_frame)
             stream.start(tele=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             message = f"{type(exc).__name__}: {exc}"
             logger.warning("preview stream could not start: %s", message)
             self._notify(

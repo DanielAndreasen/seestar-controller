@@ -80,7 +80,7 @@ def test_wide_socket_serves_frames_with_wide_resolution(keypair):
 
 def test_default_ports_are_4700_4800_4804():
     """The mock's defaults match the Scope's real ports."""
-    scope = MockScope.__new__(MockScope)  # inspect defaults without binding
+    MockScope.__new__(MockScope)  # inspect defaults without binding
     import inspect
 
     sig = inspect.signature(MockScope.__init__)
@@ -328,8 +328,8 @@ def test_stop_start_streaming_gates_frame_push(keypair):
     try:
         sock = socket.create_connection(("127.0.0.1", scope.tele_port), timeout=5)
         try:
-            assert image.read_frame(sock).id == 0
-            assert image.read_frame(sock).id == 1
+            assert image.read_frame(sock).id == 0  # ty: ignore[missing-union-attribute]
+            assert image.read_frame(sock).id == 1  # ty: ignore[missing-union-attribute]
             scope.stop_streaming()
             assert not scope.streaming
             sock.settimeout(0.4)

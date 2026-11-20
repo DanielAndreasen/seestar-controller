@@ -172,36 +172,39 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk
 
-from seestar_controller.analysis import LightcurveController, PeriodController  # noqa: E402
-from seestar_controller.enhance import EditorController, ViewerController  # noqa: E402
-from seestar_controller.observing import (  # noqa: E402
+from seestar_controller.analysis import (
+    LightcurveController,
+    PeriodController,
+)
+from seestar_controller.enhance import EditorController, ViewerController
+from seestar_controller.observing import (
     ObserveController,
     PlanQueueController,
 )
-from seestar_controller.photometry import (  # noqa: E402
+from seestar_controller.photometry import (
     PickController,
     RunController,
     SuggestionController,
 )
 
-from .connection import ConnectionController  # noqa: E402
-from .connection_panel import ConnectionPanel  # noqa: E402
-from .notification_log import NotificationLogDialog  # noqa: E402
-from .notifications import NotificationBus, NotificationController  # noqa: E402
-from .project_controller import ProjectController  # noqa: E402
-from .settings import SettingsController, comp_search_radius_deg  # noqa: E402
-from .settings_dialog import SettingsDialog  # noqa: E402
-from .state import (  # noqa: E402
+from .connection import ConnectionController
+from .connection_panel import ConnectionPanel
+from .notification_log import NotificationLogDialog
+from .notifications import NotificationBus, NotificationController
+from .project_controller import ProjectController
+from .settings import SettingsController, comp_search_radius_deg
+from .settings_dialog import SettingsDialog
+from .state import (
     DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
     AppState,
     SettingsValidationError,
     load_state,
 )
-from .toast import NotificationToasts  # noqa: E402
-from .views import build_view  # noqa: E402
+from .toast import NotificationToasts
+from .views import build_view
 
 #: GApplication id.
 APP_ID = "io.github.seestar-controller"
@@ -261,7 +264,7 @@ def _capture_geometry(window: Gtk.Window) -> dict:
     if get_position is not None:
         try:
             x, y = get_position()
-        except Exception:
+        except Exception:  # noqa: BLE001
             x = y = None
     return {"width": width, "height": height, "x": x, "y": y}
 

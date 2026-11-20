@@ -26,14 +26,14 @@ from seestar_controller.catalog import (
     CatalogError,
     J2000Coord,
     QueryCache,
-    StandardStar,
     StandardsResponseError,
+    StandardStar,
     StandardsUnavailableError,
     angular_distance,
     find_standard_stars,
     find_standard_stars_cached,
+    standards,
 )
-from seestar_controller.catalog import standards
 
 #: Column order of the mocked TAP JSON payloads (mirrors build_cone_query).
 COLUMNS = ["RAJ2000", "DEJ2000", "Vmag"]
@@ -292,15 +292,15 @@ def test_invalid_maxrec_band_target_mag_mag_range_rejected(fake_vizier):
     with pytest.raises(ValueError, match="band"):
         find_standard_stars(TARGET, RADIUS, band="K")
     with pytest.raises(ValueError, match="target_mag"):
-        find_standard_stars(TARGET, RADIUS, target_mag="bright")
+        find_standard_stars(TARGET, RADIUS, target_mag="bright")  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError, match="target_mag"):
         find_standard_stars(TARGET, RADIUS, target_mag=float("nan"))
     with pytest.raises(ValueError, match="mag_range"):
         find_standard_stars(TARGET, RADIUS, mag_range=(10.0, 5.0))
     with pytest.raises(ValueError, match="mag_range"):
-        find_standard_stars(TARGET, RADIUS, mag_range=(1.0, 2.0, 3.0))
+        find_standard_stars(TARGET, RADIUS, mag_range=(1.0, 2.0, 3.0))  # ty: ignore[invalid-argument-type]
     with pytest.raises(ValueError, match="mag_range"):
-        find_standard_stars(TARGET, RADIUS, mag_range=("a", 5.0))
+        find_standard_stars(TARGET, RADIUS, mag_range=("a", 5.0))  # ty: ignore[invalid-argument-type]
     assert fake_vizier.calls == []
 
 
@@ -394,7 +394,7 @@ def test_fetch_posts_tap_form_and_parses_json(monkeypatch):
 def test_fetch_http_error_raises_unavailable(monkeypatch):
     def fake_urlopen(request, timeout):
         raise urllib.error.HTTPError(
-            VIZIER_TAP_SYNC_URL, 503, "Service Unavailable", None, None
+            VIZIER_TAP_SYNC_URL, 503, "Service Unavailable", None, None  # ty: ignore[invalid-argument-type]
         )
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -531,7 +531,7 @@ def test_fetch_vizier_asu_tsv_builds_the_cone_url(monkeypatch):
 def test_fetch_vizier_asu_tsv_http_error_raises_unavailable(monkeypatch):
     def fake_urlopen(request, timeout):
         raise urllib.error.HTTPError(
-            standards.VIZIER_ASU_TSV_URL_CFA, 404, "Page unavailable", None, None
+            standards.VIZIER_ASU_TSV_URL_CFA, 404, "Page unavailable", None, None  # ty: ignore[invalid-argument-type]
         )
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -785,14 +785,14 @@ def test_catalog_package_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
 
 
 def test_public_api_is_exported_from_package():
-    import seestar_controller.catalog as catalog
+    from seestar_controller import catalog
 
     for name in catalog.__all__:
         assert hasattr(catalog, name), name

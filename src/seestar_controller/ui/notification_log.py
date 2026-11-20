@@ -30,9 +30,13 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gtk, Pango
 
-from .notifications import Notification, NotificationBus, NotificationSeverity  # noqa: E402
+from .notifications import (
+    Notification,
+    NotificationBus,
+    NotificationSeverity,
+)
 
 
 class NotificationLogDialog(Adw.Dialog):

@@ -39,7 +39,7 @@ them down to the Enhance page.
 
 import io
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pytest
@@ -53,17 +53,22 @@ try:
 except ValueError as exc:  # typelibs missing
     pytest.skip(f"GTK 4.0 / libadwaita typelibs missing: {exc}", allow_module_level=True)
 
-from gi.repository import GLib, Gtk  # noqa: E402
+from gi.repository import GLib, Gtk
 
-from seestar_controller.enhance import (  # noqa: E402
+from seestar_controller.enhance import (
     STRETCH_KINDS,
     EditorController,
     ViewerController,
     default_pipeline,
 )
-from seestar_controller.store import KIND_STACK, create_project, start_session, store_frame  # noqa: E402
+from seestar_controller.store import (
+    KIND_STACK,
+    create_project,
+    start_session,
+    store_frame,
+)
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 DATE1 = "2026-11-20T22:00:00.000"
 DATE2 = "2026-11-20T22:00:10.000"
 
@@ -99,7 +104,7 @@ def gtk():
     """GTK initialized, or skip when no display is available (headless)."""
     try:
         ok = Gtk.init_check()
-    except Exception as exc:  # pragma: no cover - backend errors
+    except Exception as exc:  # pragma: no cover - backend errors  # noqa: BLE001
         pytest.skip(f"Gtk.init_check failed: {exc}")
     if not ok:
         pytest.skip("no display available (headless environment)")
@@ -202,7 +207,7 @@ def test_viewer_refresh_button_relists(gtk, viewer, viewer_controller, project):
 
     # store another stack after the viewer was built; Refresh picks it up
     # (the project fixture already has one open session — reuse it)
-    session = get_open_session(project).id
+    session = get_open_session(project).id  # ty: ignore[missing-union-attribute]
     store_frame(
         project, session, KIND_STACK,
         fits_bytes(synthetic_image(32, seed=9), date_obs="2026-11-20T23:00:00.000", obj="M 33"),

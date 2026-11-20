@@ -140,7 +140,7 @@ def _enhanced_fits_bytes(pipeline: Pipeline, fits_image: FitsImage) -> bytes:
             continue
         try:
             header[key] = value
-        except Exception:
+        except Exception:  # noqa: BLE001, S112
             continue  # an unassignable card (e.g. COMMENT/HISTORY handled below)
     header.add_history(f"{ENHANCED_HISTORY}: {', '.join(pipeline.names) or 'none'}")
     hdu = pyfits.PrimaryHDU(data=np.ascontiguousarray(out, dtype=np.float32), header=header)
@@ -150,7 +150,7 @@ def _enhanced_fits_bytes(pipeline: Pipeline, fits_image: FitsImage) -> bytes:
 
 
 def save_enhanced(
-    project: Project,
+    project: Project | None,
     stack: StackInfo,
     pipeline: Pipeline,
     fits_image: FitsImage,
@@ -277,7 +277,9 @@ def export_render(
     return target
 
 
-def save_preset_for(project: Project, stack: StackInfo, pipeline: Pipeline) -> Preset:
+def save_preset_for(
+    project: Project | None, stack: StackInfo, pipeline: Pipeline
+) -> Preset:
     """Save (or replace) the enhancement preset of ``stack`` in ``project``:
     the pipeline serialized via :meth:`~.pipeline.Pipeline.to_dict` into the
     project db's ``presets`` table (see

@@ -80,13 +80,19 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from seestar_controller.catalog.coords import J2000Coord, angular_distance
 from seestar_controller.store.stars import ROLE_COMP
 
-from .picking import PhotometryError, PickController, PickSession, StarPickSpec, sky_to_pixel
+from .picking import (
+    PhotometryError,
+    PickController,
+    PickSession,
+    StarPickSpec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +135,7 @@ LookupFn = Callable[[Any, float], Sequence[Any]]
 #: set). Default None -> run inline (synchronous). The widget layer sets this
 #: to its worker-thread search, so the blocking catalog lookup never runs on
 #: the GLib main loop.
-SearchRunner = Callable[[], None]
+SearchRunner = Callable[[], Any]
 
 
 def default_standards_lookup(coord: Any, radius_deg: float) -> Sequence[Any]:
@@ -153,7 +159,7 @@ def _validate_radius(value: Any) -> float:
     """Validate a comp-search radius (degrees): a real number (not a bool, not
     a string) in ``(0, MAX_COMP_SEARCH_RADIUS_DEG]``; returns the float.
     Raises :class:`SuggestionError` otherwise."""
-    if isinstance(value, bool) or isinstance(value, str):
+    if isinstance(value, (bool, str)):
         raise SuggestionError(f"radius_deg must be a number, got {value!r}")
     try:
         radius = float(value)
@@ -224,7 +230,7 @@ def _star_coord(star: Any) -> J2000Coord | None:
     if ra is not None and dec is not None:
         try:
             return J2000Coord(ra_deg=float(ra), dec_deg=float(dec))
-        except Exception:  # CoordinateError is a ValueError; be lenient with fakes
+        except Exception:  # CoordinateError is a ValueError; be lenient with fakes  # noqa: BLE001
             return None
     if isinstance(coord, (tuple, list)) and len(coord) == 2:
         try:
@@ -457,7 +463,7 @@ class SuggestionController:
         target = self._target
         try:
             stars = self._lookup(target, self._radius)
-        except Exception as exc:  # catalog taxonomy included; never BaseException
+        except Exception as exc:  # catalog taxonomy included; never BaseException  # noqa: BLE001
             logger.warning("catalog comp lookup failed: %s", exc)
             self._suggestions = ()
             self._error = f"catalog lookup failed: {exc}"

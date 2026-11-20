@@ -84,8 +84,9 @@ from __future__ import annotations
 import io
 import logging
 import math
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -294,7 +295,11 @@ def measure_star(
             f"pick ({px}, {py}) falls outside the {width}x{height} image"
         )
 
-    from photutils.aperture import CircularAnnulus, CircularAperture, aperture_photometry
+    from photutils.aperture import (
+        CircularAnnulus,
+        CircularAperture,
+        aperture_photometry,
+    )
 
     finite = np.isfinite(plane)
     mask = None if bool(finite.all()) else ~finite
@@ -380,9 +385,7 @@ def _normalize_picks(
         )
     norm: list[_NormPick] = []
     for pick in picks:
-        if isinstance(pick, StarPickSpec):
-            role, label, x, y = pick.role, pick.label, pick.x, pick.y
-        elif isinstance(pick, StarPick):
+        if isinstance(pick, (StarPickSpec, StarPick)):
             role, label, x, y = pick.role, pick.label, pick.x, pick.y
         else:
             raise MeasurementError(

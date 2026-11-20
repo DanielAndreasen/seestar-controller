@@ -88,7 +88,7 @@ def collect(names) -> tuple[dict, dict]:
             payloads[name].append(dict(event.payload))
         return handler
 
-    return counts, payloads, make
+    return counts, payloads, make  # ty: ignore[invalid-explicit-return]
 
 
 # -- ReconnectPolicy ---------------------------------------------------------
@@ -164,7 +164,7 @@ def test_drop_connection_triggers_reconnect_rehandshake_and_restored_subscriptio
     mock_scope, keypair,
 ):
     t = build_transport(mock_scope, keypair, FAST_POLICY)
-    counts, payloads, make = collect(
+    counts, payloads, make = collect(  # ty: ignore[invalid-assignment]
         (CONNECTION_LOST_EVENT, RECONNECTING_EVENT, RECONNECTED_EVENT)
     )
     for name, handler in ((n, make(n)) for n in counts):
@@ -207,7 +207,7 @@ def test_drop_connection_triggers_reconnect_rehandshake_and_restored_subscriptio
 def test_reconnect_backoff_gives_up_after_max_attempts(mock_scope, keypair):
     policy = ReconnectPolicy(max_attempts=3, base_delay=0.05, cap=0.1)
     t = build_transport(mock_scope, keypair, policy)
-    counts, _payloads, make = collect(
+    counts, _payloads, make = collect(  # ty: ignore[invalid-assignment]
         (CONNECTION_LOST_EVENT, RECONNECTING_EVENT, RECONNECTED_EVENT)
     )
     for name in counts:
@@ -295,7 +295,7 @@ def test_lifecycle_and_error_events_dispatched_exactly_once(mock_scope, keypair)
         request_timeout=2.0,
         reconnect=FAST_POLICY,
     )
-    counts, payloads, make = collect(LIFECYCLE_EVENTS)
+    counts, payloads, make = collect(LIFECYCLE_EVENTS)  # ty: ignore[invalid-assignment]
     for name in LIFECYCLE_EVENTS:
         d.add_event_handler(name, make(name))
     try:

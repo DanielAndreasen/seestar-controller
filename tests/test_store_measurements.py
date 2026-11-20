@@ -9,7 +9,7 @@ Round-trips close and reopen the project to prove persistence.
 import dataclasses
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -47,7 +47,7 @@ def frozen(dt: datetime):
     return lambda: dt
 
 
-T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 T1 = T0 + timedelta(hours=1, minutes=30)
 T2 = T0 + timedelta(hours=3)
 
@@ -218,7 +218,7 @@ def test_add_measurement_rejects_non_finite_jd(project, three_frames, bad_jd):
 )
 def test_add_measurement_bad_argument_types_raise_type_error(project, three_frames, kwargs):
     f1, _f2, _f3 = three_frames
-    args = dict(frame_id=f1, mag=12.0, excluded=False)
+    args = {"frame_id": f1, "mag": 12.0, "excluded": False}
     args.update(kwargs)
     with pytest.raises(TypeError):
         add_measurement(project, **args)
@@ -271,7 +271,7 @@ def test_lightcurve_filters_excluded_unless_included(project, three_frames):
 
 def test_lightcurve_include_excluded_must_be_bool(project):
     with pytest.raises(TypeError):
-        lightcurve(project, include_excluded="yes")
+        lightcurve(project, include_excluded="yes")  # ty: ignore[invalid-argument-type]
 
 
 # --- set_excluded --------------------------------------------------------------------------
@@ -327,7 +327,7 @@ def test_set_excluded_unknown_id_raises_clear_error(project, three_frames):
 def test_set_excluded_bad_argument_types_raise_type_error(project, three_frames, kwargs):
     f1, _f2, _f3 = three_frames
     m = add_measurement(project, f1, 12.0)
-    args = dict(measurement_id=m.id, excluded=True)
+    args = {"measurement_id": m.id, "excluded": True}
     args.update(kwargs)
     with pytest.raises(TypeError):
         set_excluded(project, **args)
@@ -399,7 +399,7 @@ def test_measurements_persist_across_reopen(root, project, two_sessions, three_f
 
 
 def test_measurement_api_is_exported_from_package():
-    import seestar_controller.store as store
+    from seestar_controller import store
 
     for name in (
         "Measurement",
@@ -440,7 +440,7 @@ def test_measurements_module_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout

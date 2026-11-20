@@ -44,16 +44,15 @@ The panel re-renders on every frozen
 from __future__ import annotations
 
 import threading
-from typing import Any
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import GLib, Gtk  # noqa: E402
+from gi.repository import GLib, Gtk
 
-from .suggest import (  # noqa: E402
+from .suggest import (
     CompSuggestion,
     SuggestionController,
     SuggestionError,

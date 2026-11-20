@@ -202,7 +202,7 @@ def test_save_accepts_any_iterable(project):
 
 def test_save_rejects_non_starpick_items(project):
     with pytest.raises(TypeError, match="StarPick"):
-        save_star_picks(project, [TARGET, "comp A"])
+        save_star_picks(project, [TARGET, "comp A"])  # ty: ignore[invalid-argument-type]
     assert load_star_picks(project) == []
     assert project.db.execute("SELECT COUNT(*) FROM stars").fetchone()[0] == 0
 
@@ -390,7 +390,7 @@ def test_from_dict_ignores_extra_keys_and_rejects_missing():
         with pytest.raises(StarPickError, match="missing keys"):
             StarPick.from_dict(broken)
     with pytest.raises(StarPickError, match="mapping"):
-        StarPick.from_dict(["not", "a", "mapping"])
+        StarPick.from_dict(["not", "a", "mapping"])  # ty: ignore[invalid-argument-type]
 
 
 # --- db is authoritative over the project.json mirror -----------------------------------------
@@ -412,7 +412,7 @@ def test_load_reads_db_not_the_mirror(root, project):
 
 
 def test_star_picks_api_is_exported_from_package():
-    import seestar_controller.store as store
+    from seestar_controller import store
 
     for name in (
         "StarPick",
@@ -437,8 +437,6 @@ def test_star_picks_api_is_exported_from_package():
 
 
 def test_stars_module_imports_no_gtk_and_no_link():
-    import subprocess
-    import sys
 
     code = (
         "import sys;"
@@ -449,7 +447,7 @@ def test_stars_module_imports_no_gtk_and_no_link():
         "print('clean')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
