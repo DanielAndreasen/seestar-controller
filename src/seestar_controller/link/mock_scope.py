@@ -21,6 +21,12 @@ parked, ``ScopePark`` event pushed), and stacking control:
 stacking, then pushes ``Stack`` progress events with frame count + elapsed
 until stopped) and ``iscope_stop_stacking`` (mode -> idle, final ``Stack``
 event). Invalid stacking params are rejected with a non-zero reply code.
+On the fw 9.75 dialect the same operations are served under their 9.75
+names: ``scope_goto`` takes POSITIONAL ``[ra, dec]`` (a dict is answered
+code 0 but ignored — no slew — exactly like the real firmware), and
+``iscope_get_app_state`` returns the live-probed ``View`` tree (``stage`` /
+``target_name`` / ``target_ra_dec`` plus the stage child node; a coordinate
+goto does not update ``target_name``).
 Every stacked sub-frame and the final Stack are recorded in a frame store
 (:meth:`MockScope.add_frame`, FITS bytes generated with astropy.io.fits and
 a ``DATE-OBS`` header) and served over the wire — as ``list_frames`` /
@@ -217,6 +223,7 @@ class _CommandConnection:
         # Positional params (a JSON list, e.g. scope_goto [ra, dec]) are
         # wrapped so the mapping-based handlers keep working.
         raw_params = request.params
+        self.scope.last_wire_params[method] = raw_params
         if isinstance(raw_params, Mapping):
             params = dict(raw_params)
         else:
@@ -366,10 +373,18 @@ class MockScope:
         self._scope_state: dict[str, Any] = {
             "mode": "idle",
             "target": None,
+            "target_name": None,
             "stacking": {"state": "idle", "lapse_ms": 0, "frames": 0},
         }
+        #: fw 9.75 ``View.target_name`` — NOT updated by a coordinate
+        #: ``scope_goto`` (live-observed on fw 9.75); set via
+        #: :meth:`set_view_target_name`
+        self.view_target_name: str | None = None
         #: last accepted goto target {"ra": ..., "dec": ...} (test hook)
         self.last_goto: dict[str, float] | None = None
+        #: method -> the raw wire ``params`` of the last request (test hook:
+        #: a list stays a list, e.g. ``scope_goto`` -> ``[ra, dec]``)
+        self.last_wire_params: dict[str, Any] = {}
         #: last accepted stacking params (wire shape, test hook)
         self.last_stack_params: dict[str, Any] | None = None
         self._stack_stop = threading.Event()
@@ -579,6 +594,19 @@ class MockScope:
                 "lapse_ms": lapse_ms,
                 "frames": frames,
             }
+
+    def set_view_target_name(self, name: str | None) -> None:
+        """Test knob: set the fw 9.75 ``View.target_name`` (and the legacy
+        ``get_scope_state`` ``target_name``).
+
+        A coordinate ``scope_goto`` / ``scope_goto_target`` does NOT change
+        it on fw 9.75 (live-observed: after a coordinate goto the scope kept
+        naming sub-frames after the previous target), which is exactly the
+        stale-name situation the facade's last-goto fallback handles.
+        """
+        self.view_target_name = name
+        with self._scope_state_lock:
+            self._scope_state["target_name"] = name
 
     def begin_goto(self, ra: float, dec: float) -> None:
         """Start a simulated slew to (ra, dec).
@@ -848,8 +876,19 @@ class MockScope:
 
     def app_state_tree(self) -> dict[str, Any]:
         """The fw 9.75 ``iscope_get_app_state`` function tree, derived from
-        the mock's device state (live-probed shape: ``View`` with ``state``,
-        ``target_ra_dec`` and child ``Stack`` / ``AutoGoto`` nodes)."""
+        the mock's device state.
+
+        Live-probed shape (Seestar S50, station mode, fw 9.75, polled
+        read-only on 192.168.87.185:4700, 2026-11-20): the ``View`` node
+        carries ``state``/``mode``/``stage``/``target_name``/
+        ``target_ra_dec: [ra_hours, dec_deg]`` plus a child node named after
+        the stage — ``ContinuousExposure`` for a plain live view,
+        ``AutoGoto`` while slewing, ``Stack`` (``state``, ``lapse_ms``,
+        ``stacked_frame``, ``dropped_frame``) while stacking; ``stage`` is
+        ``"Park"`` when parked. A coordinate ``scope_goto`` does NOT update
+        ``target_name`` on fw 9.75 (live-observed), so the name comes from
+        the :meth:`set_view_target_name` knob and survives gotos.
+        """
         state = self.scope_state()
         tree: dict[str, Any] = {
             "FocuserMove": {"state": "complete", "lapse_ms": 0, "position": 1571},
@@ -869,38 +908,59 @@ class MockScope:
                 "cam_id": 0,
                 "lp_filter": False,
                 "gain": 0,
+                "lapse_ms": 0,
                 "route": [],
             }
             if mode == "parked":
                 view["stage"] = "Park"
+            elif mode == "slewing":
+                view["stage"] = "AutoGoto"
+                view["AutoGoto"] = {"state": "working", "lapse_ms": 0, "route": []}
+            elif mode == "stacking":
+                view["stage"] = "Stack"
+            else:
+                view["stage"] = "ContinuousExposure"
+                view["ContinuousExposure"] = {
+                    "state": "working",
+                    "lapse_ms": 0,
+                    "fps": 2.0,
+                }
             if target:
                 view["target_ra_dec"] = [float(target["ra"]), float(target["dec"])]
-                if target.get("name"):
-                    view["target_name"] = str(target["name"])
-            if mode == "slewing":
-                view["AutoGoto"] = {"state": "working", "lapse_ms": 0, "route": []}
-            stacking = state["stacking"]
-            view["Stack"] = {
-                "state": stacking["state"] if mode == "stacking" else "idle",
-                "lapse_ms": stacking["lapse_ms"],
-                "stacked_frame": stacking["frames"],
-                "dropped_frame": 0,
-            }
+            if self.view_target_name:
+                view["target_name"] = self.view_target_name
+            if mode == "stacking":
+                stacking = state["stacking"]
+                view["Stack"] = {
+                    "state": stacking["state"],
+                    "lapse_ms": stacking["lapse_ms"],
+                    "stacked_frame": stacking["frames"],
+                    "dropped_frame": 0,
+                }
             tree["View"] = view
         return tree
 
     def _handle_scope_goto_975(
         self, params: Mapping[str, Any]
     ) -> tuple[bool, Any, int]:
-        """fw 9.75 ``scope_goto``: dict ``{"ra", "dec"}`` or positional
-        ``[ra, dec]``; wrong types -> 108, out of range -> 207 (no motion)."""
+        """fw 9.75 ``scope_goto``: POSITIONAL params ``[ra, dec]`` (seestarpy
+        ``raw.scope_goto`` sends ``'params': [ra, dec]``; the transport passes
+        the list through as a JSON array, which the mock unwraps into
+        ``{"args": [ra, dec]}``). A dict ``{"ra", "dec"}`` is *silently
+        ignored* by fw 9.75 — code 0, but NO slew (live-observed on the S50:
+        the desktop goto "succeeded" while the scope never moved). Wrong
+        types in the list -> 108, out of range -> 207 (no motion either way).
+        """
         if "args" in params and isinstance(params["args"], (list, tuple)):
             args = list(params["args"])
-            ra_raw, dec_raw = (args + [None, None])[:2]
+            if len(args) != 2:
+                return True, {"error": "expected [ra, dec]"}, 108
+            ra_raw, dec_raw = args
         else:
-            ra_raw, dec_raw = params.get("ra"), params.get("dec")
+            # dict params: fw 9.75 answers code 0 but ignores them (no slew)
+            return True, 0, 0
         try:
-            ra, dec = float(ra_raw), float(dec_raw)  # ty: ignore[invalid-argument-type]
+            ra, dec = float(ra_raw), float(dec_raw)
         except (TypeError, ValueError):
             return True, {"error": "expected float param"}, 108
         if not (0.0 <= ra < 24.0 and -90.0 <= dec <= 90.0):

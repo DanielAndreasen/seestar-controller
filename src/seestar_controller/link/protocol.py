@@ -8,6 +8,10 @@ the open-source seestar_alp / seestarpy projects:
 
     {"id": 112, "method": "iscope_start_view", "params": {"mode": "star"}}
 
+  ``params`` may also be a JSON *array* for positional-param methods —
+  fw 9.75 ``scope_goto`` takes ``{"id": 113, "method": "scope_goto",
+  "params": [13.4, 54.8]}`` (``[ra_hours, dec_deg]``).
+
 - **Reply** (scope -> client), correlated by ``id``::
 
     {"jsonrpc": "2.0", "Timestamp": "9507.244805160",
@@ -29,7 +33,7 @@ Only the envelope is handled here; signing lives in
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,16 +46,25 @@ HEARTBEAT_METHOD = "test_connection"
 
 @dataclass(frozen=True)
 class Request:
-    """A client -> scope request envelope."""
+    """A client -> scope request envelope.
+
+    ``params`` is a mapping for object-style params, or a list for
+    positional params (fw 9.75 ``scope_goto`` sends ``[ra, dec]``).
+    """
 
     id: int
     method: str
-    params: Mapping[str, Any] = field(default_factory=dict)
+    params: Mapping[str, Any] | Sequence[Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         msg: dict[str, Any] = {"id": self.id, "method": self.method}
         if self.params:
-            msg["params"] = dict(self.params)
+            # positional params stay a JSON array; mappings a JSON object
+            msg["params"] = (
+                list(self.params)
+                if isinstance(self.params, (list, tuple))
+                else dict(self.params)
+            )
         return msg
 
 

@@ -50,7 +50,7 @@ import logging
 import socket
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Self
@@ -294,9 +294,19 @@ class LinkTransport:
     # -- RPC ---------------------------------------------------------------
 
     def request(
-        self, method: str, params: Mapping[str, Any] | None = None, *, timeout: float | None = None
+        self,
+        method: str,
+        params: Mapping[str, Any] | Sequence[Any] | None = None,
+        *,
+        timeout: float | None = None,
     ) -> Any:
         """Send one request, wait for its reply, return ``result``.
+
+        ``params`` is normally a mapping (``{"ra": ..., "dec": ...}``), but
+        some fw 9.75 methods take POSITIONAL params — ``scope_goto`` expects
+        ``[ra_hours, dec_deg]`` (seestarpy ``raw.scope_goto`` sends
+        ``'params': [ra, dec]``) — so a list/tuple is passed through to the
+        wire unchanged instead of being mangled by ``dict(params)``.
 
         Raises :class:`RpcError` on a non-zero reply code,
         :class:`RequestTimeoutError` if no reply arrives within ``timeout``
@@ -311,12 +321,16 @@ class LinkTransport:
     def request_raw(
         self,
         method: str,
-        params: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | Sequence[Any] | None = None,
         *,
         timeout: float | None = None,
         suppress_scope_error: bool = False,
     ) -> Reply:
         """Send one request and return the correlated :class:`Reply`.
+
+        ``params`` may be a mapping (sent as a JSON object) or a list/tuple
+        (sent as a JSON array, unchanged — fw 9.75 ``scope_goto`` takes
+        positional ``[ra, dec]`` and silently ignores a dict).
 
         With ``suppress_scope_error=True`` a 103 (method not found) reply is
         still returned (and still resolves the future) but does not dispatch
@@ -327,7 +341,11 @@ class LinkTransport:
                 raise ConnectionLostError("not connected")
         msg: dict[str, Any] = {"id": next(self._ids), "method": method}
         if params:
-            msg["params"] = dict(params)
+            # Positional params (fw 9.75 scope_goto [ra, dec]) go on the wire
+            # as a JSON array; mappings as a JSON object.
+            msg["params"] = (
+                list(params) if isinstance(params, (list, tuple)) else dict(params)
+            )
         future: Future[Reply] = Future()
         send_failed = False
         with self._send_lock:
