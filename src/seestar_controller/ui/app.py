@@ -785,7 +785,12 @@ class SeestarApplication(Adw.Application):
         return self._state
 
     def do_startup(self) -> None:
-        super().do_startup()
+        # Chain up explicitly to the nearest parent vfunc: on PyGObject,
+        # vfuncs reached through super() are not bound to the instance, so
+        # super().do_startup() would call Gio.Application.startup() with no
+        # argument and fail. Chaining to Adw.Application (not Gio) is
+        # required so libadwaita's own startup (adw_init) runs.
+        Adw.Application.do_startup(self)
         apply_dark_theme(self._state.dark_theme)
 
     def do_activate(self) -> None:
