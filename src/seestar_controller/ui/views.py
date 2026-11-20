@@ -12,18 +12,25 @@ dependency — it needs the system GTK headers to build)::
 
 Most views are still :class:`_PlaceholderView`\\ s (a centered label); later
 tickets (image-enhance, photometry, period-analysis) replace the placeholder
-content. The **Observe** view (observing ticket 01) already carries the real
-content: a :class:`~seestar_controller.observing.queue_editor.QueueEditor`
+content. The **Observe** view (observing tickets 01 + 03) already carries the
+real content: the two-pane
+:class:`~seestar_controller.observing.observe_view.ObserveView` widget — the
+:class:`~seestar_controller.observing.queue_editor.QueueEditor` plus the
+night controls on the left, the live preview + queue progress on the right —
 driven by the app's shared
+:class:`~seestar_controller.observing.observe_controller.ObserveController`
+and
 :class:`~seestar_controller.observing.queue_controller.PlanQueueController`
-(passed in by the app window via :func:`build_view`; a fresh controller is
-created when omitted, so the view also constructs standalone).
+(both passed in by the app window via :func:`build_view`; fresh controllers
+are created when omitted, so the view also constructs standalone).
 :data:`VIEW_CLASSES` maps the pure-layer view ids
 (:mod:`seestar_controller.ui.state`) to the widget classes, and
 :func:`build_view` is the factory the app window uses.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import gi
 
@@ -32,10 +39,18 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Gtk  # noqa: E402
 
-from seestar_controller.observing import PlanQueueController  # noqa: E402
+from seestar_controller.observing import (  # noqa: E402
+    ObserveController,
+    PlanQueueController,
+)
+from seestar_controller.observing.observe_view import (  # noqa: E402
+    ObserveView as ObserveViewWidget,
+)
 from seestar_controller.observing.queue_editor import QueueEditor  # noqa: E402
 
-from .state import VIEWS, UnknownViewError, view_by_id  # noqa: E402
+from .connection import ConnectionController  # noqa: E402
+from .settings import SettingsController  # noqa: E402
+from .state import VIEWS, AppState, UnknownViewError, view_by_id  # noqa: E402
 
 
 class _PlaceholderView(Gtk.Box):
@@ -72,38 +87,57 @@ class _PlaceholderView(Gtk.Box):
 
 
 class ObserveView(_PlaceholderView):
-    """Observe view: the plan/queue editor (observing ticket 01) plus a
-    preview placeholder (live preview + queue progress come in later
-    observing tickets).
+    """Observe view (observing tickets 01 + 03): wraps the two-pane
+    :class:`~seestar_controller.observing.observe_view.ObserveView` widget —
+    queue editor + night controls (start/pause/skip/stop/park) on the left,
+    live preview + queue progress on the right.
 
-    ``queue_controller`` is the app's shared
-    :class:`~seestar_controller.observing.queue_controller.PlanQueueController`
-    (the app window passes it); when omitted, the view creates its own.
+    ``queue_controller`` and ``observe_controller`` are the app's shared
+    controllers (the app window passes them via :func:`build_view`); when
+    omitted, the view creates its own, so it also constructs standalone.
+    ``project`` is the store project the Start button passes to
+    ``start_night`` (the Projects view is a later ticket; it can also be set
+    later via :meth:`observe_widget.set_project`).
     """
 
     view_id = "observe"
     title = "Observe"
 
     def __init__(
-        self, queue_controller: PlanQueueController | None = None, **kwargs
+        self,
+        queue_controller: PlanQueueController | None = None,
+        observe_controller: ObserveController | None = None,
+        project: Any = None,
+        **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
         self._queue_controller = (
             queue_controller if queue_controller is not None else PlanQueueController()
         )
+        self._observe_controller = (
+            observe_controller
+            if observe_controller is not None
+            else ObserveController(
+                ConnectionController(SettingsController(AppState())),
+                self._queue_controller,
+            )
+        )
+        self._project = project
+        # the inner widget handles its own padding
+        kwargs.setdefault("margin_top", 0)
+        kwargs.setdefault("margin_bottom", 0)
+        kwargs.setdefault("margin_start", 0)
+        kwargs.setdefault("margin_end", 0)
+        kwargs.setdefault("spacing", 0)
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
-        self._queue_editor = QueueEditor(self._queue_controller)
-        self.append(self._queue_editor)
-        preview = Gtk.Label(
-            label="Live preview + queue progress come in later observing tickets",
-            halign=Gtk.Align.CENTER,
-            valign=Gtk.Align.CENTER,
-            vexpand=True,
-            css_classes=["dim-label"],
+        self._observe_widget = ObserveViewWidget(
+            self._observe_controller,
+            queue_controller=self._queue_controller,
+            project=self._project,
         )
-        self.append(preview)
+        self.append(self._observe_widget)
 
     @property
     def queue_controller(self) -> PlanQueueController:
@@ -112,8 +146,18 @@ class ObserveView(_PlaceholderView):
 
     @property
     def queue_editor(self) -> QueueEditor:
-        """The queue editor widget."""
-        return self._queue_editor
+        """The queue editor widget (left pane of the observe widget)."""
+        return self._observe_widget.queue_editor
+
+    @property
+    def observe_controller(self) -> ObserveController:
+        """The shared pure-layer observe controller driving this view."""
+        return self._observe_controller
+
+    @property
+    def observe_widget(self) -> ObserveViewWidget:
+        """The two-pane observe widget (editor + controls | preview + progress)."""
+        return self._observe_widget
 
 
 class EnhanceView(_PlaceholderView):
@@ -158,16 +202,25 @@ VIEW_CLASSES: dict[str, type[_PlaceholderView]] = {
 
 
 def build_view(
-    view_id: str, *, queue_controller: PlanQueueController | None = None
+    view_id: str,
+    *,
+    queue_controller: PlanQueueController | None = None,
+    observe_controller: ObserveController | None = None,
+    project: Any = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
 
     Raises :class:`~seestar_controller.ui.state.UnknownViewError` for an id
-    not in the pure-layer view list. ``queue_controller`` is forwarded to the
-    Observe view (observing ticket 01) — the app window passes its shared
-    plan-queue controller; the other views ignore it.
+    not in the pure-layer view list. ``queue_controller`` /
+    ``observe_controller`` / ``project`` are forwarded to the Observe view
+    (observing tickets 01 + 03) — the app window passes its shared
+    controllers; the other views ignore them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
-        return ObserveView(queue_controller=queue_controller)
+        return ObserveView(
+            queue_controller=queue_controller,
+            observe_controller=observe_controller,
+            project=project,
+        )
     return VIEW_CLASSES[view_id]()

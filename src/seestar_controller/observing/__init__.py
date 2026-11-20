@@ -1,4 +1,5 @@
-"""Observing — tonight's plan (queue) + editor, and the night executor.
+"""Observing — tonight's plan (queue) + editor, the night executor, and the
+Observe view wiring (ticket 03).
 
 Spec: ``.scratch/observing/spec.md``. Strict two-layer split (the sandbox has
 no GTK, see docs/wiki/assumptions.md):
@@ -15,15 +16,23 @@ no GTK, see docs/wiki/assumptions.md):
 - **Executor layer** — :mod:`.executor` (:class:`~.executor.NightExecutor`,
   :class:`~.executor.ExecutorState`, :class:`~.executor.ExecutorSnapshot`,
   :class:`~.executor.ExecutorEvent`, the error policies): the headless night
-  state machine driving the link Device facade through the queue. It imports
-  **no ``gi``** but does import the link + store (stdlib + link + store +
-  :mod:`.queue`), so it is re-exported here **lazily** (PEP 562) — importing
-  this package alone never pulls the link into ``sys.modules``.
+  state machine driving the link Device facade through the queue; and
+  :mod:`.observe_controller` (:class:`~.observe_controller.ObserveController`
+  + :class:`~.observe_controller.ObserveViewState`, the pure binding of
+  connection + queue + executor + preview stream + notification bus that the
+  Observe view renders — ticket 03). Both import **no ``gi``** but do import
+  the link + store + ui controllers (stdlib + link + store + ui.connection /
+  ui.notifications + :mod:`.queue`), so they are re-exported here **lazily**
+  (PEP 562) — importing this package alone never pulls the link into
+  ``sys.modules``.
 - **Widget layer** — :mod:`.queue_editor` (:class:`~.queue_editor.QueueEditor`,
   the Gtk.ListBox editor with per-row reorder/remove/duplicate buttons and the
-  add-by-name / add-by-RA-Dec area). It imports ``gi`` at module top and is
-  re-exported here **lazily** (PEP 562 ``__getattr__``), so
-  ``import seestar_controller.observing`` never imports ``gi``.
+  add-by-name / add-by-RA-Dec area) and :mod:`.observe_view`
+  (:class:`~.observe_view.ObserveView`, the two-pane Observe view: queue
+  editor + night controls on the left, live preview + progress on the right).
+  Both import ``gi`` at module top and are re-exported here **lazily**
+  (PEP 562 ``__getattr__``), so ``import seestar_controller.observing``
+  never imports ``gi``.
 
 On the desktop, PyGObject is not a pip dependency — install the system
 packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` (see the README).
@@ -62,15 +71,16 @@ from .queue import (
 )
 from .queue_controller import PlanQueueController
 
-#: Widget-layer names re-exported lazily from :mod:`.queue_editor` (importing
-#: it pulls in ``gi`` — only the GUI path does).
+#: Widget-layer names re-exported lazily (importing the modules pulls in
+#: ``gi`` — only the GUI path does).
 _WIDGET_EXPORTS = {
+    "ObserveView": "observe_view",
     "QueueEditor": "queue_editor",
 }
 
-#: Executor-layer names re-exported lazily from :mod:`.executor` (importing it
-#: pulls in the link + store — only the executor path does; importing this
-#: package alone stays link-free).
+#: Executor-layer names re-exported lazily from :mod:`.executor` and
+#: :mod:`.observe_controller` (importing them pulls in the link + store —
+#: only the executor path does; importing this package alone stays link-free).
 _EXECUTOR_EXPORTS = {
     "EXECUTOR_STATES": "executor",
     "ERROR_POLICIES": "executor",
@@ -82,6 +92,20 @@ _EXECUTOR_EXPORTS = {
     "ExecutorState": "executor",
     "ExecutorStateError": "executor",
     "NightExecutor": "executor",
+    "DEFAULT_PREVIEW_MAX_FPS": "observe_controller",
+    "ExecutorFactory": "observe_controller",
+    "InvokeOnMain": "observe_controller",
+    "OBSERVE_SOURCE": "observe_controller",
+    "ObserveController": "observe_controller",
+    "ObserveStateError": "observe_controller",
+    "ObserveViewListener": "observe_controller",
+    "ObserveViewState": "observe_controller",
+    "PreviewFrameListener": "observe_controller",
+    "PreviewStreamFactory": "observe_controller",
+    "default_executor_factory": "observe_controller",
+    "default_preview_stream_factory": "observe_controller",
+    "format_elapsed": "observe_controller",
+    "format_target": "observe_controller",
 }
 
 
@@ -141,6 +165,22 @@ __all__ = [
     "ExecutorState",
     "ExecutorStateError",
     "NightExecutor",
+    # observe controller (lazy, imports link + store + ui controllers):
+    "DEFAULT_PREVIEW_MAX_FPS",
+    "ExecutorFactory",
+    "InvokeOnMain",
+    "OBSERVE_SOURCE",
+    "ObserveController",
+    "ObserveStateError",
+    "ObserveViewListener",
+    "ObserveViewState",
+    "PreviewFrameListener",
+    "PreviewStreamFactory",
+    "default_executor_factory",
+    "default_preview_stream_factory",
+    "format_elapsed",
+    "format_target",
     # widget layer (lazy, imports gi):
+    "ObserveView",
     "QueueEditor",
 ]

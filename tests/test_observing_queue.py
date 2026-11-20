@@ -76,10 +76,12 @@ PURE_OBSERVING_MODULES = ("__init__", "queue", "queue_controller")
 
 #: The executor-layer observing modules — no ``gi`` allowed, but they DO import
 #: the link + store (that is the point of the executor); exported lazily.
-EXECUTOR_OBSERVING_MODULES = ("executor",)
+#: ``observe_controller`` (ticket 03) additionally imports the ui connection /
+#: notification controllers (pure, gi-free) — still no ``gi``.
+EXECUTOR_OBSERVING_MODULES = ("executor", "observe_controller")
 
 #: The widget observing modules — ``gi`` at module top, lazy-exported via PEP 562.
-WIDGET_OBSERVING_MODULES = ("queue_editor",)
+WIDGET_OBSERVING_MODULES = ("queue_editor", "observe_view")
 
 COORD_A = J2000Coord(ra_deg=83.8215, dec_deg=-5.39114)  # ~ M 42 area
 COORD_B = J2000Coord(ra_deg=10.68, dec_deg=41.27)  # ~ M 31 area

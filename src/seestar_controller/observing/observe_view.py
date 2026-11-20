@@ -1,0 +1,417 @@
+"""The Observe view widget — the WIDGET layer of observing ticket 03.
+
+This module imports ``gi`` at module top (it is a widget module, the only
+place allowed to): it is never imported by the pure layer
+(:mod:`seestar_controller.observing.observe_controller` /
+:mod:`.queue_controller` / :mod:`.executor`) or eagerly by the package
+``__init__`` — the pure layer stays gi-free and headless-testable (see
+docs/wiki/assumptions.md: the sandbox has no GTK).
+
+On the desktop the system packages are required (PyGObject is NOT a pip
+dependency — it needs the system GTK headers to build)::
+
+    sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+
+:class:`ObserveView` is a thin observer over the pure
+:class:`~seestar_controller.observing.observe_controller.ObserveController`
+(the app owns one shared instance; the window passes it down via
+:func:`seestar_controller.ui.views.build_view`):
+
+- **left pane** — the :class:`~.queue_editor.QueueEditor` (ticket 01) plus the
+  night controls: **Start night**, **Pause/Resume** (one toggle button), **Skip**,
+  **Stop**, **Park** — all bound to the controller's passthroughs, with an
+  inline status label for errors (start without connection/project, park
+  while disconnected);
+- **right pane** — the live preview (a :class:`Gtk.Picture` fed from the
+  latest decoded frame: the ndarray is encoded to PNG via PIL and wrapped in
+  a :class:`Gdk.Texture` with ``Gdk.Texture.new_from_bytes`` — marshalled
+  onto the main loop already, because the controller's ``invoke_on_main`` is
+  ``GLib.idle_add`` in the app) over a "no preview yet" placeholder, plus a
+  **Night progress** group: current target (name + RA/Dec), executor state,
+  sub-frames stacked, elapsed, queue position, session;
+- the two panes sit in a :class:`Gtk.Paned` (documented choice — simpler than
+  ``Adw.OverlaySplitView`` and keeps both panes visible on a wide window).
+
+The widget re-renders on every :class:`~.observe_controller.ObserveViewState`
+snapshot (it registers as a controller listener); it never blocks the main
+loop — all heavy work (executor, preview sockets) lives in the controllers'
+threads.
+"""
+
+from __future__ import annotations
+
+import io
+from typing import Any
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+
+from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+
+import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
+
+from seestar_controller.ui.connection import ConnectionStatus  # noqa: E402
+
+from .observe_controller import (  # noqa: E402
+    ObserveController,
+    ObserveStateError,
+    ObserveViewState,
+    format_elapsed,
+    format_target,
+)
+from .queue_controller import PlanQueueController  # noqa: E402
+from .queue_editor import QueueEditor  # noqa: E402
+
+#: Left-pane width at construction (pixels; the user can drag the paned handle).
+LEFT_PANE_POSITION = 560
+
+
+def texture_from_array(arr: np.ndarray) -> Gdk.Texture:
+    """Build a :class:`Gdk.Texture` from a decoded preview ndarray.
+
+    Grayscale ``(h, w)`` arrays are expanded to RGB; the array is encoded to
+    PNG via PIL and wrapped with ``Gdk.Texture.new_from_bytes`` (kept simple
+    on purpose — the preview is a status image, not a processing target).
+    """
+    if arr.ndim == 2:
+        arr = np.repeat(arr[:, :, None], 3, axis=2)
+    image = Image.fromarray(np.ascontiguousarray(arr, dtype=np.uint8)).convert("RGB")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return Gdk.Texture.new_from_bytes(GLib.Bytes(buffer.getvalue()))
+
+
+class ObserveView(Gtk.Box):
+    """The Observe view: queue editor + night controls on the left, live
+    preview + queue progress on the right, driven by a pure
+    :class:`~.observe_controller.ObserveController`.
+
+    - ``observe_controller`` — the app's shared controller (required);
+    - ``queue_controller`` — the queue editor's controller (defaults to the
+      observe controller's own queue controller);
+    - ``project`` — the store project the Start button passes to
+      ``start_night`` (defaults to the controller's project, set via
+      :meth:`~.observe_controller.ObserveController.set_project`).
+    """
+
+    def __init__(
+        self,
+        observe_controller: ObserveController,
+        *,
+        queue_controller: PlanQueueController | None = None,
+        project: Any = None,
+        **kwargs,
+    ) -> None:
+        kwargs.setdefault("orientation", Gtk.Orientation.VERTICAL)
+        kwargs.setdefault("spacing", 0)
+        super().__init__(**kwargs)
+        self._controller = observe_controller
+        self._queue_controller = (
+            queue_controller
+            if queue_controller is not None
+            else observe_controller.queue_controller
+        )
+        self._project = project
+        self._last_frame_id: int | None = None
+
+        paned = Gtk.Paned(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            start_child=self._build_left_pane(),
+            end_child=self._build_right_pane(),
+            position=LEFT_PANE_POSITION,
+            shrink_start_child=False,
+            shrink_end_child=False,
+            wide_handle=True,
+        )
+        self._paned = paned
+        self.append(paned)
+
+        self._controller.add_listener(self._on_state)
+        self._on_state(self._controller.snapshot)
+
+    # -- construction ------------------------------------------------------------
+
+    def _build_left_pane(self) -> Gtk.Widget:
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        left.set_margin_top(12)
+        left.set_margin_bottom(12)
+        left.set_margin_start(12)
+        left.set_margin_end(12)
+        left.set_hexpand(True)
+        left.set_vexpand(True)
+
+        self._queue_editor = QueueEditor(self._queue_controller)
+        left.append(self._queue_editor)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, wrap=True)
+        self._start_button = Gtk.Button(
+            label="Start night", css_classes=["suggested-action"],
+            tooltip_text="Start the queue against the connected scope",
+        )
+        self._start_button.connect("clicked", self._on_start_clicked)
+        self._pause_button = Gtk.Button(
+            label="Pause", tooltip_text="Pause / resume the current target"
+        )
+        self._pause_button.connect("clicked", self._on_pause_clicked)
+        self._skip_button = Gtk.Button(label="Skip", tooltip_text="Skip the current target")
+        self._skip_button.connect("clicked", lambda *_a: self._controller.skip())
+        self._stop_button = Gtk.Button(label="Stop", tooltip_text="Stop the night gracefully")
+        self._stop_button.connect("clicked", lambda *_a: self._controller.stop())
+        self._park_button = Gtk.Button(label="Park", tooltip_text="Park the scope now")
+        self._park_button.connect("clicked", self._on_park_clicked)
+        for button in (
+            self._start_button,
+            self._pause_button,
+            self._skip_button,
+            self._stop_button,
+            self._park_button,
+        ):
+            controls.append(button)
+        left.append(controls)
+
+        self._status_label = Gtk.Label(label="", wrap=True, halign=Gtk.Align.CENTER)
+        left.append(self._status_label)
+        return left
+
+    def _build_right_pane(self) -> Gtk.Widget:
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        right.set_margin_top(12)
+        right.set_margin_bottom(12)
+        right.set_margin_start(12)
+        right.set_margin_end(12)
+        right.set_hexpand(True)
+        right.set_vexpand(True)
+
+        # preview area: picture + "no preview yet" placeholder overlay
+        self._picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True)
+        self._picture.set_hexpand(True)
+        self._picture.set_vexpand(True)
+        self._picture.set_size_request(320, 240)
+        placeholder = Gtk.Label(
+            label="no preview yet",
+            halign=Gtk.Align.CENTER,
+            valign=Gtk.Align.CENTER,
+            css_classes=["dim-label", "heading"],
+        )
+        self._preview_overlay = Gtk.Overlay(child=self._picture)
+        self._preview_overlay.add_overlay(placeholder)
+        self._preview_placeholder = placeholder
+        frame = Gtk.Frame(child=self._preview_overlay)
+        frame.set_vexpand(True)
+        right.append(frame)
+        self._preview_label = Gtk.Label(
+            label="", halign=Gtk.Align.CENTER, css_classes=["dim-label", "caption"]
+        )
+        right.append(self._preview_label)
+
+        # progress group
+        group = Adw.PreferencesGroup(title="Night progress")
+        self._target_row = Adw.ActionRow(title="Target")
+        self._state_row = Adw.ActionRow(title="State")
+        self._frames_row = Adw.ActionRow(title="Sub-frames stacked")
+        self._elapsed_row = Adw.ActionRow(title="Elapsed on target")
+        self._queue_row = Adw.ActionRow(title="Queue position")
+        self._session_row = Adw.ActionRow(title="Session")
+        for row in (
+            self._target_row,
+            self._state_row,
+            self._frames_row,
+            self._elapsed_row,
+            self._queue_row,
+            self._session_row,
+        ):
+            group.add(row)
+        right.append(group)
+        return right
+
+    # -- public helpers (also used by the widget tests) ------------------------------
+
+    @property
+    def controller(self) -> ObserveController:
+        """The pure-layer observe controller backing this view."""
+        return self._controller
+
+    @property
+    def queue_controller(self) -> PlanQueueController:
+        """The plan-queue controller behind the editor."""
+        return self._queue_controller
+
+    @property
+    def queue_editor(self) -> QueueEditor:
+        """The queue editor widget (left pane)."""
+        return self._queue_editor
+
+    @property
+    def paned(self) -> Gtk.Paned:
+        """The two-pane split."""
+        return self._paned
+
+    @property
+    def picture(self) -> Gtk.Picture:
+        """The preview picture (right pane)."""
+        return self._picture
+
+    @property
+    def start_button(self) -> Gtk.Button:
+        return self._start_button
+
+    @property
+    def pause_button(self) -> Gtk.Button:
+        return self._pause_button
+
+    @property
+    def skip_button(self) -> Gtk.Button:
+        return self._skip_button
+
+    @property
+    def stop_button(self) -> Gtk.Button:
+        return self._stop_button
+
+    @property
+    def park_button(self) -> Gtk.Button:
+        return self._park_button
+
+    @property
+    def status_label(self) -> Gtk.Label:
+        return self._status_label
+
+    @property
+    def preview_label(self) -> Gtk.Label:
+        return self._preview_label
+
+    @property
+    def target_row(self) -> Adw.ActionRow:
+        return self._target_row
+
+    @property
+    def state_row(self) -> Adw.ActionRow:
+        return self._state_row
+
+    @property
+    def frames_row(self) -> Adw.ActionRow:
+        return self._frames_row
+
+    @property
+    def elapsed_row(self) -> Adw.ActionRow:
+        return self._elapsed_row
+
+    @property
+    def queue_row(self) -> Adw.ActionRow:
+        return self._queue_row
+
+    @property
+    def session_row(self) -> Adw.ActionRow:
+        return self._session_row
+
+    def set_project(self, project: Any) -> None:
+        """Set the project the Start button passes to ``start_night``."""
+        self._project = project
+        self._on_state(self._controller.snapshot)
+
+    def row_subtitles(self) -> dict[str, str]:
+        """The current progress-row subtitles (test helper)."""
+        return {
+            "target": self._target_row.get_subtitle(),
+            "state": self._state_row.get_subtitle(),
+            "frames": self._frames_row.get_subtitle(),
+            "elapsed": self._elapsed_row.get_subtitle(),
+            "queue": self._queue_row.get_subtitle(),
+            "session": self._session_row.get_subtitle(),
+        }
+
+    # -- rendering ---------------------------------------------------------------------
+
+    def _on_state(self, state: ObserveViewState) -> None:
+        """Controller listener: a new ObserveViewState -> re-render labels,
+        buttons and the preview picture."""
+        self._target_row.set_subtitle(format_target(state.entry))
+        self._state_row.set_subtitle(state.executor_state.value)
+        self._frames_row.set_subtitle(str(state.frames_stacked))
+        self._elapsed_row.set_subtitle(format_elapsed(state.elapsed_s))
+        if state.queue_index is not None and state.queue_entries:
+            self._queue_row.set_subtitle(
+                f"{state.queue_index + 1} / {len(state.queue_entries)}"
+            )
+        else:
+            self._queue_row.set_subtitle(f"0 / {len(state.queue_entries)}")
+        self._session_row.set_subtitle(state.session or "—")
+
+        # preview picture from the latest frame
+        frame = state.preview_frame
+        if frame is not None and getattr(frame, "id", None) != self._last_frame_id:
+            self._last_frame_id = getattr(frame, "id", None)
+            try:
+                self._picture.set_paintable(texture_from_array(frame.image))
+                self._preview_placeholder.set_visible(False)
+                width, height = frame.width, frame.height
+                self._preview_label.set_label(
+                    f"{frame.source} frame #{frame.id} — {width}×{height}"
+                )
+            except Exception:
+                # a bad frame must never break the view
+                self._preview_label.set_label("preview frame could not be rendered")
+        elif frame is None:
+            self._preview_placeholder.set_visible(True)
+
+        # buttons
+        connected = self._controller.connection.status == ConnectionStatus.CONNECTED
+        has_project = self._project is not None or self._controller.project is not None
+        self._start_button.set_sensitive(
+            connected and has_project and not state.night_active
+        )
+        self._pause_button.set_sensitive(state.night_active)
+        self._pause_button.set_label(
+            "Resume" if state.executor_state.value == "paused" else "Pause"
+        )
+        self._skip_button.set_sensitive(state.night_active)
+        self._stop_button.set_sensitive(state.night_active)
+        self._park_button.set_sensitive(connected)
+
+        # inline error from the executor
+        if state.error:
+            self._set_status(state.error, error=True)
+        elif not state.night_active and state.executor_state.value in ("done", "aborted"):
+            self._set_status(f"night {state.executor_state.value}", error=False)
+        else:
+            self._set_status("", error=False)
+
+    def _set_status(self, text: str, *, error: bool) -> None:
+        self._status_label.set_label(text)
+        for css_class in ("error", "dim-label"):
+            self._status_label.remove_css_class(css_class)
+        if error:
+            self._status_label.add_css_class("error")
+        else:
+            self._status_label.add_css_class("dim-label")
+
+    # -- button handlers -----------------------------------------------------------------
+
+    def _on_start_clicked(self, *_args) -> None:
+        """Start night: ``controller.start_night(project)``; inline error on
+        failure (not connected / no project / already running)."""
+        project = self._project if self._project is not None else self._controller.project
+        try:
+            self._controller.start_night(project)
+        except Exception as exc:  # noqa: BLE001 - shown inline, never crash the view
+            self._set_status(f"{type(exc).__name__}: {exc}", error=True)
+            return
+        self._set_status("night running", error=False)
+
+    def _on_pause_clicked(self, *_args) -> None:
+        """Pause/Resume toggle: resume when PAUSED, else pause."""
+        if self._controller.snapshot.executor_state.value == "paused":
+            self._controller.resume()
+        else:
+            self._controller.pause()
+
+    def _on_park_clicked(self, *_args) -> None:
+        """Park: ``controller.park()``; inline error when not connected."""
+        try:
+            self._controller.park()
+        except ObserveStateError as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._set_status("scope parked", error=False)

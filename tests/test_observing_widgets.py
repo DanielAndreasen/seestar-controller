@@ -22,7 +22,21 @@ an unknown name; and the wiring: ``build_view("observe", queue_controller=...)``
 hands the shared controller to the Observe view's editor, the app owns one
 shared :class:`~seestar_controller.observing.PlanQueueController`, and the
 window passes it down to the Observe page.
+
+Observing ticket 03 adds the Observe-view wiring tests: the two-pane
+:class:`~seestar_controller.observing.observe_view.ObserveView` (queue editor
++ night controls on the left, preview picture + progress rows on the right)
+built via ``build_view("observe", queue_controller=..., observe_controller=...)``
+against a stub observe controller — the Start/Pause/Skip/Stop/Park buttons
+call the controller's passthroughs (with an inline error when start fails),
+:class:`~seestar_controller.observing.ObserveViewState` snapshots re-render
+the progress rows / preview picture / button sensitivity, and the app owns
+one shared :class:`~seestar_controller.observing.ObserveController` that the
+window passes down to the Observe page.
 """
+
+import dataclasses
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,11 +52,17 @@ from gi.repository import Gtk  # noqa: E402
 
 from seestar_controller.catalog.coords import J2000Coord  # noqa: E402
 from seestar_controller.catalog.simbad import NameNotFoundError  # noqa: E402
+from seestar_controller.link.image import Frame  # noqa: E402
+from seestar_controller.link.preview import PreviewFrame, decode_payload  # noqa: E402
 from seestar_controller.observing import (  # noqa: E402
     EVENT_ADDED,
+    ExecutorState,
+    ObserveStateError,
+    ObserveViewState,
     PlanQueueController,
     QueueEntry,
 )
+from seestar_controller.ui.connection import ConnectionStatus  # noqa: E402
 
 COORD_A = J2000Coord(ra_deg=83.8215, dec_deg=-5.39114)  # ~ M 42
 COORD_B = J2000Coord(ra_deg=10.68, dec_deg=41.27)  # ~ M 31
@@ -287,3 +307,259 @@ def test_editor_events_flow_to_controller_listeners(gtk, controller, editor):
     editor.add_button.emit("clicked")
     assert [e.kind for e in seen] == [EVENT_ADDED]
     assert seen[0].entry is controller[0]
+
+
+# --- observing ticket 03: the Observe view wiring -----------------------------------------
+
+
+def preview_frame(frame_id: int = 1, width: int = 8, height: int = 6) -> PreviewFrame:
+    """A small decoded preview frame (grayscale raw wire frame)."""
+    size = width * height
+    payload = bytes([frame_id % 256]) * size
+    frame = Frame(code=0, id=frame_id, width=width, height=height, size=size, payload=payload)
+    return PreviewFrame(
+        source="tele", image=decode_payload(frame), frame=frame, timestamp=0.0
+    )
+
+
+class StubObserveController:
+    """Duck-typed :class:`~seestar_controller.observing.ObserveController` for
+    widget tests — records the calls, serves crafted snapshots."""
+
+    def __init__(
+        self,
+        queue_controller,
+        *,
+        status=ConnectionStatus.CONNECTED,
+        project=None,
+    ):
+        self._queue_controller = queue_controller
+        self.connection = SimpleNamespace(status=status)
+        self.project = project
+        self._snapshot = ObserveViewState(
+            executor_state=ExecutorState.IDLE,
+            queue_index=None,
+            entry=None,
+            frames_stacked=0,
+            elapsed_s=0.0,
+            error=None,
+            session=None,
+            queue_entries=queue_controller.entries,
+            preview_frame=None,
+            preview_running=False,
+            night_active=False,
+        )
+        self.listeners: list = []
+        self.calls: list = []
+        self.start_error: Exception | None = None
+
+    @property
+    def queue_controller(self):
+        return self._queue_controller
+
+    @property
+    def snapshot(self):
+        return self._snapshot
+
+    def set_snapshot(self, **changes):
+        """Replace the snapshot and notify the view listeners (like the real
+        controller's emission)."""
+        self._snapshot = dataclasses.replace(self._snapshot, **changes)
+        for listener in list(self.listeners):
+            listener(self._snapshot)
+
+    def add_listener(self, listener):
+        self.listeners.append(listener)
+        return listener
+
+    def remove_listener(self, listener):
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def start_night(self, project=None, **kwargs):
+        self.calls.append(("start_night", project, kwargs))
+        if self.start_error is not None:
+            raise self.start_error
+        return SimpleNamespace()
+
+    def pause(self):
+        self.calls.append(("pause",))
+
+    def resume(self):
+        self.calls.append(("resume",))
+
+    def skip(self):
+        self.calls.append(("skip",))
+
+    def stop(self):
+        self.calls.append(("stop",))
+
+    def park(self):
+        self.calls.append(("park",))
+
+
+@pytest.fixture()
+def observe_stub(controller):
+    return StubObserveController(controller, project=object())
+
+
+def test_observe_view_two_pane_layout(gtk, controller, observe_stub):
+    from seestar_controller.ui.views import build_view
+
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    assert view.view_id == "observe"
+    assert view.observe_controller is observe_stub
+    widget = view.observe_widget
+    assert widget.controller is observe_stub
+    assert widget.queue_controller is controller
+    assert widget.queue_editor.controller is controller
+    # two panes: editor + controls | preview + progress
+    assert widget.paned.get_start_child() is not None
+    assert widget.paned.get_end_child() is not None
+    assert widget.picture is not None
+    for name in ("start_button", "pause_button", "skip_button", "stop_button", "park_button"):
+        assert getattr(widget, name) is not None
+    assert set(widget.row_subtitles()) == {
+        "target",
+        "state",
+        "frames",
+        "elapsed",
+        "queue",
+        "session",
+    }
+    # the idle snapshot is rendered
+    subs = widget.row_subtitles()
+    assert subs["target"] == "—"
+    assert subs["state"] == "idle"
+    assert subs["frames"] == "0"
+    assert subs["elapsed"] == "0 s"
+    assert subs["queue"] == "0 / 0"
+    assert subs["session"] == "—"
+    # start needs a project, park needs a connection
+    assert not widget.start_button.get_sensitive()
+    assert widget.park_button.get_sensitive()
+    assert not widget.pause_button.get_sensitive()
+
+
+def test_night_control_buttons_call_the_controller(gtk, controller, observe_stub):
+    from seestar_controller.ui.views import build_view
+
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    widget.start_button.emit("clicked")
+    widget.pause_button.emit("clicked")  # idle -> pause passthrough
+    widget.skip_button.emit("clicked")
+    widget.stop_button.emit("clicked")
+    widget.park_button.emit("clicked")
+    assert [c[0] for c in observe_stub.calls] == [
+        "start_night",
+        "pause",
+        "skip",
+        "stop",
+        "park",
+    ]
+    assert observe_stub.calls[0][1] is observe_stub.project
+
+
+def test_pause_button_resumes_when_paused(gtk, controller, observe_stub):
+    from seestar_controller.ui.views import build_view
+
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    observe_stub.set_snapshot(
+        executor_state=ExecutorState.PAUSED, night_active=True
+    )
+    assert widget.pause_button.get_label() == "Resume"
+    widget.pause_button.emit("clicked")
+    assert observe_stub.calls[-1] == ("resume",)
+
+
+def test_start_button_shows_inline_error_when_start_fails(gtk, controller, observe_stub):
+    from seestar_controller.ui.views import build_view
+
+    observe_stub.start_error = ObserveStateError(
+        "not connected to the scope — connect first (header bar)"
+    )
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    widget.start_button.emit("clicked")
+    label = widget.status_label.get_label()
+    assert "not connected" in label
+    assert widget.status_label.has_css_class("error")
+
+
+def test_snapshot_updates_progress_labels_preview_and_buttons(gtk, controller, observe_stub):
+    from seestar_controller.ui.views import build_view
+
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    entry = QueueEntry.resolved("M 42", COORD_A)
+    observe_stub.set_snapshot(
+        executor_state=ExecutorState.STACKING,
+        queue_index=0,
+        entry=entry,
+        frames_stacked=7,
+        elapsed_s=65.0,
+        session="sess-1",
+        queue_entries=(entry,),
+        preview_frame=preview_frame(5),
+        preview_running=True,
+        night_active=True,
+    )
+    subs = widget.row_subtitles()
+    assert subs["target"] == "M 42 — RA 5.5881h Dec -5.3911°"
+    assert subs["state"] == "stacking"
+    assert subs["frames"] == "7"
+    assert subs["elapsed"] == "65 s"
+    assert subs["queue"] == "1 / 1"
+    assert subs["session"] == "sess-1"
+    # the preview picture got a texture from the frame
+    assert widget.picture.get_paintable() is not None
+    assert "tele frame #5" in widget.preview_label.get_label()
+    # night active: start disabled, pause/skip/stop enabled
+    assert not widget.start_button.get_sensitive()
+    assert widget.pause_button.get_sensitive()
+    assert widget.skip_button.get_sensitive()
+    assert widget.stop_button.get_sensitive()
+    assert widget.pause_button.get_label() == "Pause"
+
+    # DONE: start enabled again (connected + project), status line says done
+    observe_stub.set_snapshot(
+        executor_state=ExecutorState.DONE, night_active=False, preview_running=False
+    )
+    assert widget.start_button.get_sensitive()
+    assert "done" in widget.status_label.get_label()
+
+    # an executor error shows inline
+    observe_stub.set_snapshot(
+        executor_state=ExecutorState.ABORTED, error="slew failed", night_active=False
+    )
+    assert "slew failed" in widget.status_label.get_label()
+    assert widget.status_label.has_css_class("error")
+
+
+def test_app_owns_shared_observe_controller_and_window_passes_it_down(app, gtk):
+    from seestar_controller.observing import ObserveController
+    from seestar_controller.ui.app import SeestarWindow
+    from seestar_controller.ui.views import ObserveView
+
+    assert isinstance(app.observe_controller, ObserveController)
+    assert app.observe_controller.connection is app.connection_controller
+    assert app.observe_controller.queue_controller is app.queue_controller
+    window = SeestarWindow(app, app.state)
+    assert window.observe_controller is app.observe_controller
+    observe_page = window.view_stack.get_child_by_name("observe")
+    assert isinstance(observe_page, ObserveView)
+    assert observe_page.observe_controller is app.observe_controller
+    assert observe_page.observe_widget.controller is app.observe_controller
+    assert observe_page.queue_editor.controller is app.queue_controller

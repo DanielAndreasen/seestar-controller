@@ -70,11 +70,16 @@ user-invoked :class:`~seestar_controller.ui.notification_log.NotificationLogDial
 listing the bus log with a Clear button — background events never open
 modal dialogs.
 
-Observing (ticket 01): the application owns a shared
+Observing (tickets 01 + 03): the application owns a shared
 :class:`~seestar_controller.observing.queue_controller.PlanQueueController`
-(tonight's plan queue, in memory for the session — not persisted to disk yet),
-and the window passes it to the Observe view, whose
-:class:`~seestar_controller.observing.queue_editor.QueueEditor` edits it.
+(tonight's plan queue, in memory for the session — not persisted to disk yet)
+and a shared
+:class:`~seestar_controller.observing.observe_controller.ObserveController`
+binding connection + queue + night executor + preview stream + notification
+bus (its ``invoke_on_main`` is :func:`GLib.idle_add`, like the connection
+controller's). The window passes both to the Observe view, whose queue
+editor edits the queue and whose preview/progress/controls render the
+observe controller's snapshots.
 """
 
 from __future__ import annotations
@@ -88,7 +93,10 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from seestar_controller.observing import PlanQueueController  # noqa: E402
+from seestar_controller.observing import (  # noqa: E402
+    ObserveController,
+    PlanQueueController,
+)
 
 from .connection import ConnectionController  # noqa: E402
 from .connection_panel import ConnectionPanel  # noqa: E402
@@ -181,6 +189,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         connection_controller: ConnectionController | None = None,
         notification_bus: NotificationBus | None = None,
         queue_controller: PlanQueueController | None = None,
+        observe_controller: ObserveController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -226,6 +235,20 @@ class SeestarWindow(Adw.ApplicationWindow):
             else getattr(app, "queue_controller", None)
             or PlanQueueController()
         )
+        # Observing ticket 03: one shared observe controller (connection +
+        # queue + executor + preview + bus); the Observe view renders its
+        # snapshots and binds its controls to it.
+        self._observe_controller = (
+            observe_controller
+            if observe_controller is not None
+            else getattr(app, "observe_controller", None)
+            or ObserveController(
+                self._connection_controller,
+                self._queue_controller,
+                self._notification_bus,
+                invoke_on_main=_invoke_on_main,
+            )
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -265,7 +288,11 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._stack = Adw.ViewStack()
         for view in state.views:
             self._stack.add_titled(
-                build_view(view.id, queue_controller=self._queue_controller),
+                build_view(
+                    view.id,
+                    queue_controller=self._queue_controller,
+                    observe_controller=self._observe_controller,
+                ),
                 view.id,
                 view.title,
             )
@@ -376,6 +403,12 @@ class SeestarWindow(Adw.ApplicationWindow):
         Observe view's queue editor edits through it)."""
         return self._queue_controller
 
+    @property
+    def observe_controller(self) -> ObserveController:
+        """The shared observe controller (observing ticket 03 — the Observe
+        view renders its snapshots and binds its controls to it)."""
+        return self._observe_controller
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -459,6 +492,17 @@ class SeestarApplication(Adw.Application):
         # plan, in memory for the session — not persisted to disk yet); the
         # window passes it to the Observe view's queue editor.
         self.queue_controller = PlanQueueController()
+        # Observing ticket 03: the shared observe controller over the
+        # connection controller + queue controller + notification bus; the
+        # window passes it to the Observe view (preview + progress +
+        # night controls). Worker-thread callbacks are marshalled onto the
+        # GLib main loop, like the connection controller's.
+        self.observe_controller = ObserveController(
+            self.connection_controller,
+            self.queue_controller,
+            self.notification_bus,
+            invoke_on_main=_invoke_on_main,
+        )
 
     @property
     def state(self) -> AppState:
