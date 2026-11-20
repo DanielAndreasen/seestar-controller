@@ -4,7 +4,7 @@
 
 **Blocked by:** ui-shell 01, image-enhance 01, project-store 04, catalog 02
 
-**Status:** implemented in 1eb3882
+**Status:** implemented in dec3fa3
 
 - [x] Click on image selects a star (nearest detected source or exact pixel)
 - [x] Click pixel → RA/Dec via FITS WCS
