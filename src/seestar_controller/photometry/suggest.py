@@ -60,6 +60,15 @@ Conventions (documented choices):
   :attr:`SuggestionSnapshot.error` with an empty suggestion list; the
   controller stays usable and the next :meth:`~SuggestionController.refresh`
   recovers. No traceback ever escapes.
+- **No WCS on the frame -> a "plate-solve first" hint, not an error (ticket
+  05):** raw Seestar subs have no celestial WCS, so a target picked on them
+  is pixel-only (``coord=None``). Catalog assist needs the target's SKY
+  position, so :meth:`~SuggestionController.refresh` then skips the catalog
+  lookup entirely and surfaces :data:`NO_WCS_HINT` in
+  :attr:`SuggestionSnapshot.error` — a clear hint tying into the astrometry
+  spec, never an exception; picking itself is unaffected
+  (:meth:`~seestar_controller.photometry.picking.PickController.pick_at`
+  always works in pixel space).
 - **Blocking call:** :meth:`~SuggestionController.refresh` runs the catalog
   lookup inline (network, up to the catalog timeout) — call it off the GLib
   main loop; the widget layer (:mod:`.suggestions_panel`) runs it on a worker
@@ -121,6 +130,15 @@ _RADIUS_EPSILON_DEG = 1e-6
 #: Two sky positions closer than this (degrees) are the same star — used to
 #: reject adding the same suggestion twice as a comp.
 _SAME_STAR_EPSILON_DEG = 1e-9
+
+#: The hint surfaced in :attr:`SuggestionSnapshot.error` when the target pick
+#: has no sky coordinates because the frame has no usable WCS (a raw Seestar
+#: sub — ticket 05): catalog assist needs a plate-solved frame.
+NO_WCS_HINT = (
+    "the target pick has no sky coordinates — this frame has no WCS (no "
+    "celestial CTYPE cards); plate-solve it first (astrometry) to use catalog "
+    "assist"
+)
 
 
 #: The injectable catalog callable: ``lookup(coord, radius_deg) -> sequence of
@@ -204,8 +222,11 @@ class SuggestionSnapshot:
       picked yet);
     - ``radius_deg`` — the configured comp-search radius;
     - ``suggestions`` — the suggestions, nearest-first, as a tuple;
-    - ``error`` — a clean one-line error message when the last catalog lookup
-      failed (e.g. offline with no cache), else None — never a traceback.
+    - ``error`` — a clean one-line message when the assist cannot run: the
+      last catalog lookup failed (e.g. offline with no cache), OR the target
+      pick has no sky coordinates because the frame has no WCS
+      (:data:`NO_WCS_HINT` — plate-solve first, ticket 05); None when
+      healthy — never a traceback.
     """
 
     target: J2000Coord | None
@@ -247,8 +268,9 @@ class SuggestionController:
     - ``picker_controller`` — the shared
       :class:`~seestar_controller.photometry.picking.PickController`; the
       suggestion controller follows it (listens to its snapshots) and
-      re-searches whenever the target pick's sky coord changes. May be None
-      (standalone) and attached later with :meth:`attach_picker`.
+      re-searches whenever the target pick changes (its sky coord, or a
+      pixel-only target appearing on a frame without WCS — ticket 05). May
+      be None (standalone) and attached later with :meth:`attach_picker`.
     - ``lookup`` — the injectable catalog callable ``lookup(coord,
       radius_deg) -> sequence of standard stars`` (default:
       :func:`default_standards_lookup`, the lazy catalog facade). Tests mock
@@ -284,6 +306,7 @@ class SuggestionController:
         self._radius = _validate_radius(radius_deg)
         self._search_runner: SearchRunner | None = search_runner
         self._target: J2000Coord | None = None
+        self._has_target: bool = False
         self._suggestions: tuple[CompSuggestion, ...] = ()
         self._error: str | None = None
         self._listeners: list[SuggestListener] = []
@@ -372,7 +395,7 @@ class SuggestionController:
 
     def attach_picker(self, picker_controller: PickController) -> None:
         """Follow ``picker_controller``: register as its listener and
-        re-search whenever the target pick's sky coord changes (via the
+        re-search whenever the target pick changes (via the
         :attr:`search_runner` when set, else inline) — also once immediately
         (inline) when a target is already picked. Re-attaching detaches the
         previous picker first."""
@@ -380,8 +403,7 @@ class SuggestionController:
             self._picker.remove_listener(self._on_pick_session)
         self._picker = picker_controller
         picker_controller.add_listener(self._on_pick_session)
-        target = self._target_of(picker_controller)
-        if target is not None and target != self._target:
+        if self._target_state(picker_controller) != (self._has_target, self._target):
             self.refresh()
 
     def detach_picker(self) -> None:
@@ -398,13 +420,25 @@ class SuggestionController:
         target = picker.target
         return target.coord if target is not None else None
 
+    @classmethod
+    def _target_state(cls, picker: PickController | None) -> tuple[bool, J2000Coord | None]:
+        """The ``(has_target, coord)`` state of ``picker``: a pixel-only target
+        pick (no WCS on the frame, ticket 05) counts as a target with coord
+        None — distinct from no target at all."""
+        if picker is None:
+            return (False, None)
+        target = picker.target
+        if target is None:
+            return (False, None)
+        return (True, target.coord)
+
     def _on_pick_session(self, session: PickSession) -> None:
-        """Pick-controller listener: re-search when the target coord changed."""
-        target = next(
-            (p.coord for p in session.picks if p.role == "target" and p.coord is not None),
-            None,
-        )
-        if target != self._target:
+        """Pick-controller listener: re-search when the target pick changed
+        (coord changed, a target appeared/disappeared, or the target became
+        pixel-only — no WCS on the frame)."""
+        target_pick = next((p for p in session.picks if p.role == "target"), None)
+        state = (True, target_pick.coord) if target_pick is not None else (False, None)
+        if state != (self._has_target, self._target):
             self._request_search()
 
     def _request_search(self) -> None:
@@ -426,7 +460,7 @@ class SuggestionController:
         if radius == self._radius:
             return radius
         self._radius = radius
-        if self._target is not None:
+        if self._has_target:
             self._request_search()
         else:
             self._notify()
@@ -440,6 +474,10 @@ class SuggestionController:
 
         - no target picked (or no picker attached) -> empty suggestions,
           ``target=None``, no error;
+        - a target picked WITHOUT sky coordinates (the frame has no usable
+          WCS — a raw Seestar sub, ticket 05) -> empty suggestions and
+          :data:`NO_WCS_HINT` in :attr:`SuggestionSnapshot.error` ("plate-solve
+          first"); the catalog ``lookup`` is NOT called and nothing raises;
         - the ``lookup`` callable is called as ``lookup(target, radius_deg)``;
           ANY exception it raises (e.g.
           :class:`~seestar_controller.catalog.facade.CatalogUnavailableError`
@@ -454,13 +492,17 @@ class SuggestionController:
         Notifies the listeners. NOTE: blocks on the catalog lookup — call off
         the main loop.
         """
-        self._target = self._target_of(self._picker)
-        if self._target is None:
+        has_target, coord = self._target_state(self._picker)
+        self._has_target = has_target
+        self._target = coord
+        if coord is None:
             self._suggestions = ()
-            self._error = None
+            # a pixel-only target (no WCS on the frame) gets the plate-solve
+            # hint; no target at all stays a clean empty state (ticket 05)
+            self._error = NO_WCS_HINT if has_target else None
             self._notify()
             return self.snapshot
-        target = self._target
+        target = coord
         try:
             stars = self._lookup(target, self._radius)
         except Exception as exc:  # catalog taxonomy included; never BaseException  # noqa: BLE001

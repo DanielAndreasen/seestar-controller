@@ -1,5 +1,6 @@
 """Pure-layer tests for photometry ticket 01 — star picking on an image
-(:mod:`seestar_controller.photometry.picking`).
+(:mod:`seestar_controller.photometry.picking`) — and ticket 05 — picking on
+REAL Seestar frames (subs without a celestial WCS, RGB stacks with SIP).
 
 Headless: no ``gi`` anywhere (the sandbox has no GTK, see
 docs/wiki/assumptions.md). The WCS helpers are exercised with synthetic FITS
@@ -8,6 +9,13 @@ and the save/load round-trip runs on a tmp project via
 :mod:`seestar_controller.store` (``create_project`` / ``start_session`` /
 ``store_frame`` with a synthetic WCS FITS stack — the same pattern as
 tests/test_enhance_fits.py).
+
+Ticket 05 regression tests: a synthetic Seestar-style sub header (NAXIS=2, NO
+CTYPE cards, the consecutive COMMENT cards real frames carry), a synthetic
+RGB stack (NAXIS=3 + SIP distortion keywords), and a small REAL Seestar sub
+cropped into tests/fixtures/seestar_sub_no_wcs.fits (tests never read the
+user's home dir) — on all of them ``pick_at`` succeeds (pixel-only without a
+WCS, sky coords attached on the RGB stack), the picks save/load and measure.
 
 Also covered: the package boundary — a subprocess test (no ``gi``, no
 ``link``, no ``ui``, no ``enhance`` in ``sys.modules``, the widget layer stays
@@ -39,12 +47,15 @@ from seestar_controller.photometry import (
     PickingError,
     PickSession,
     StarPickSpec,
+    has_celestial_wcs,
     picking,
     pixel_to_sky,
     sky_to_pixel,
+    try_pixel_to_sky,
 )
 from seestar_controller.store import (
     KIND_STACK,
+    KIND_SUB,
     create_project,
     load_star_picks,
     start_session,
@@ -53,6 +64,13 @@ from seestar_controller.store import (
 
 #: Directory of the photometry package (source-scan audit).
 PHOTOMETRY_PACKAGE_DIR = Path(photometry.__file__).resolve().parent
+
+#: Test fixtures shipped with the repo (never the user's home dir).
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
+#: A small REAL Seestar S50 sub (96x96 crop of a ngc7789 sub, original header
+#: kept): NAXIS=2, NO CTYPE cards — no celestial WCS.
+REAL_SEESTAR_SUB = FIXTURES_DIR / "seestar_sub_no_wcs.fits"
 
 #: The pure photometry modules — no ``gi`` import allowed (subprocess-enforced).
 PURE_PHOTOMETRY_MODULES = ("__init__", "picking", "suggest", "measure", "run")
@@ -137,6 +155,81 @@ def fits_bytes(data: np.ndarray, *, wcs: dict | None = None, date_obs: str = DAT
     buf = io.BytesIO()
     pyfits.HDUList([hdu]).writeto(buf)
     return buf.getvalue()
+
+
+def seestar_sub_header() -> dict:
+    """A synthetic Seestar S50 SUB header (ticket 05): NAXIS=2 with NO CTYPE
+    cards (no celestial WCS), the two consecutive COMMENT cards real frames
+    carry (joined value contains ``\\n``), and the RA/DEC object cards (which
+    are NOT WCS cards)."""
+    return {
+        "SIMPLE": True,
+        "BITPIX": 16,
+        "NAXIS": 2,
+        "NAXIS1": 64,
+        "NAXIS2": 64,
+        "EXTEND": True,
+        "COMMENT": (
+            "  FITS (Flexible Image Transport System) format is defined in 'Astronomy\n"
+            "  and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H"
+        ),
+        "BZERO": 32768,
+        "BSCALE": 1,
+        "CREATOR": "ZWO Seestar S50",
+        "PRODUCER": "ZWO",
+        "IMAGETYP": "Light",
+        "EXPOSURE": 10.0,
+        "EXPTIME": 10.0,
+        "GAIN": 80,
+        "RA": 359.47083,
+        "DEC": 56.726111,
+        "DATE-OBS": "2026-11-20T21:33:33.024310",
+        "FILTER": "IRCUT",
+        "INSTRUME": "Seestar S50",
+        "OBJECT": "M 31",
+    }
+
+
+def rgb_stack_header(*, sip: bool = True, wcsaxes: int = 3) -> dict:
+    """A synthetic Seestar RGB STACK header (ticket 05): NAXIS=3 (color axis
+    3) with a celestial WCS on axes 1-2 and, when ``sip``, SIP distortion
+    keywords — a plain ``WCS(dict)`` raises on this ("SIP distortions only
+    work in 2 dimensions")."""
+    from astropy.wcs import WCS
+
+    w = WCS(naxis=3)
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN", "STOKES"]
+    w.wcs.crval = [83.0, 22.0, 1.0]
+    w.wcs.crpix = [51.0, 51.0, 1.0]
+    w.wcs.cdelt = [-0.001, 0.001, 1.0]
+    header = dict(w.to_header())
+    header.update(
+        {
+            "NAXIS": 3,
+            "NAXIS1": 64,
+            "NAXIS2": 64,
+            "NAXIS3": 3,
+            "BITPIX": -32,
+            "WCSAXES": wcsaxes,
+        }
+    )
+    if sip:
+        header.update(
+            {
+                "A_ORDER": 2,
+                "B_ORDER": 2,
+                "A_2_0": 1e-5,
+                "B_0_2": 1e-5,
+                "A_1_1": 1e-6,
+                "B_1_1": -1e-6,
+            }
+        )
+    return header
+
+
+def rgb_image(size: int = 64) -> np.ndarray:
+    """A synthetic RGB image: the synthetic frame stacked to (size, size, 3)."""
+    return np.stack([synthetic_image(size)] * 3, axis=-1)
 
 
 def frozen(dt: datetime):
@@ -313,13 +406,10 @@ def test_star_pick_spec_validation_describe_and_frozen():
 # --- PickController: picking ---------------------------------------------------------------
 
 
-def test_pick_at_requires_image_and_wcs_and_bounds():
+def test_pick_at_requires_image_and_bounds_and_validates_role():
     header = wcs_header()
     ctrl = PickController()
     with pytest.raises(PickingError, match="no image"):
-        ctrl.pick_at(1, 1, "target")
-    ctrl.set_image(FakeImage(synthetic_image(32), {}))  # no WCS
-    with pytest.raises(PickingError, match="no WCS"):
         ctrl.pick_at(1, 1, "target")
     ctrl.set_image(FakeImage(synthetic_image(32), header))
     for x, y in ((-1.0, 0.0), (32.0, 0.0), (0.0, -1.0), (0.0, 32.0)):
@@ -367,6 +457,163 @@ def test_pick_at_snap_false_and_flat_or_nan_window_use_exact_pixel():
     ctrl.set_image(nan_img)
     spec = ctrl.pick_at(3, 3, "comp")
     assert (spec.x, spec.y) == (3.0, 3.0)
+
+
+# --- ticket 05: real Seestar frames — subs without WCS, RGB stacks with SIP -------------------
+
+
+def test_pick_at_on_seestar_sub_without_wcs_is_pixel_only():
+    """A raw Seestar sub (NAXIS=2, no CTYPE cards) has no celestial WCS:
+    ``pick_at`` still works — the pick is pixel-only (``coord=None``) — while
+    the strict :func:`pixel_to_sky` keeps raising :class:`PickingError`."""
+    header = seestar_sub_header()
+    assert not has_celestial_wcs(header)
+    assert try_pixel_to_sky(header, 40, 30) is None
+    with pytest.raises(PickingError, match="no WCS"):
+        pixel_to_sky(header, 40, 30)
+    with pytest.raises(PickingError, match="plate-solve"):
+        sky_to_pixel(header, J2000Coord(ra_deg=83.0, dec_deg=22.0))
+
+    ctrl = PickController()
+    ctrl.set_image(FakeImage(synthetic_image(64, stars=((30, 40, 8000.0),)), header))
+    spec = ctrl.pick_at(42, 32, "target", label="Target")
+    assert spec.coord is None  # pixel-only pick
+    assert spec.x == pytest.approx(40.0, abs=0.75)  # still snapped to the star
+    assert spec.y == pytest.approx(30.0, abs=0.75)
+    assert ctrl.target is spec and "RA" not in spec.describe()
+    comp = ctrl.pick_at(16, 16, "comp", label="Comp A", snap=False)
+    assert comp.coord is None and ctrl.comps == (comp,)
+    # add_at_sky needs a WCS (a sky position cannot map to a pixel without
+    # one) — a clear plate-solve hint, not a crash
+    with pytest.raises(PickingError, match="plate-solve"):
+        ctrl.add_at_sky(J2000Coord(ra_deg=83.0, dec_deg=22.0))
+
+
+def test_pick_at_on_rgb_stack_with_sip_attaches_sky_coords():
+    """An RGB stack (NAXIS=3 + SIP keywords) breaks a plain ``WCS(dict)``;
+    the WCS is built from the 2D celestial subset (color axis dropped, SIP
+    kept in 2D), so ``pick_at`` attaches sky coords as on any WCS frame."""
+    header = rgb_stack_header(sip=True)
+    assert has_celestial_wcs(header)
+    # the strict helpers work on the RGB header directly
+    coord = pixel_to_sky(header, 50, 50)  # 0-based (50,50) == CRPIX -> CRVAL
+    assert coord.ra_deg == pytest.approx(83.0, abs=1e-9)
+    assert coord.dec_deg == pytest.approx(22.0, abs=1e-9)
+    x, y = sky_to_pixel(header, coord)
+    assert (x, y) == pytest.approx((50.0, 50.0), abs=1e-6)
+
+    ctrl = PickController()
+    ctrl.set_image(FakeImage(rgb_image(64), header))
+    spec = ctrl.pick_at(42, 32, "target", label="Target")
+    assert spec.coord is not None  # sky coords attached on the RGB stack
+    assert spec.x == pytest.approx(40.0, abs=0.75)  # snapped (channel mean)
+    assert spec.y == pytest.approx(30.0, abs=0.75)
+    expected = pixel_to_sky(header, spec.x, spec.y)
+    assert spec.coord.ra_deg == pytest.approx(expected.ra_deg, abs=1e-9)
+    assert spec.coord.dec_deg == pytest.approx(expected.dec_deg, abs=1e-9)
+    # round-trip through the RGB WCS
+    rx, ry = sky_to_pixel(header, spec.coord)
+    assert (rx, ry) == pytest.approx((spec.x, spec.y), abs=1e-6)
+
+
+def test_rgb_stack_variants_wcs_build():
+    """The WCS build tolerates the RGB-stack header shapes: 3D WCS without
+    SIP (celestial subset), WCSAXES=2 on 3D data, and SIP stripped."""
+    from astropy.wcs import WCS
+
+    for header in (
+        rgb_stack_header(sip=False),  # 3D WCS, no SIP -> .celestial subset
+        rgb_stack_header(sip=True, wcsaxes=2),  # WCSAXES=2 on NAXIS=3 data
+    ):
+        assert has_celestial_wcs(header)
+        coord = pixel_to_sky(header, 50, 50)
+        assert coord.ra_deg == pytest.approx(83.0, abs=1e-9)
+        assert coord.dec_deg == pytest.approx(22.0, abs=1e-9)
+    # a plain WCS(dict) really raises on the SIP variant (the regression)
+    with pytest.raises(Exception, match="2 dimensions"):
+        WCS(rgb_stack_header(sip=True))
+    # non-celestial 2D axes are rejected (no usable CELESTIAL WCS)
+    assert not has_celestial_wcs({"CTYPE1": "X", "CTYPE2": "Y"})
+    assert not has_celestial_wcs({"CTYPE1": "RA---TAN", "CTYPE2": "X"})
+
+
+def test_real_seestar_sub_fixture_picks_pixel_only_and_measures():
+    """The real-FITS fixture (a 96x96 crop of a real Seestar S50 sub from the
+    ngc7789 project, original header): no CTYPE -> pixel-only picks that save,
+    load and MEASURE. Tests read only tests/fixtures/, never the home dir."""
+    with pyfits.open(REAL_SEESTAR_SUB) as hdul:
+        data = np.asarray(hdul[0].data)
+        header = hdul[0].header
+    assert "CTYPE1" not in header  # the real sub really has no WCS
+    assert not has_celestial_wcs(header)
+    image = FakeImage(data, header)
+    ctrl = PickController()
+    ctrl.set_image(image)
+    # click on the brightest pixel of the real frame (a real star)
+    iy, ix = np.unravel_index(int(np.argmax(data)), data.shape)
+    spec = ctrl.pick_at(float(ix), float(iy), "target", label="Target")
+    assert spec.coord is None
+    assert spec.x == pytest.approx(float(ix), abs=1.5)
+    assert spec.y == pytest.approx(float(iy), abs=1.5)
+    # a comp on the second-brightest pixel away from the target (another star)
+    masked = np.array(data, dtype=np.float64)
+    masked[max(0, iy - 12) : iy + 13, max(0, ix - 12) : ix + 13] = -np.inf
+    jy, jx = np.unravel_index(int(np.argmax(masked)), masked.shape)
+    comp = ctrl.pick_at(float(jx), float(jy), "comp", label="Comp A", snap=False)
+    assert comp.coord is None
+
+    # the pixel-only picks are measurable (measure needs no WCS)
+    from seestar_controller.photometry import measure_frame_data
+
+    fm = measure_frame_data(
+        np.asarray(image.data, dtype=np.float64),
+        header,
+        ctrl.picks,
+        jd=2461365.0,
+    )
+    assert fm.mag is not None and np.isfinite(fm.mag)
+
+
+def test_pixel_only_picks_save_load_and_measure_on_tmp_project(root):
+    """End-to-end on a tmp project with a stored no-WCS Seestar-style sub:
+    pick target + comp (pixel-only), save, reload, measure the stored frame."""
+    from seestar_controller.photometry import measure_frame
+
+    project = create_project("ngc7789 night", root=root)
+    try:
+        session = start_session(project, clock=frozen(T0))
+        frame = store_frame(
+            project,
+            session,
+            KIND_SUB,
+            fits_bytes(synthetic_image(64, stars=((30, 40, 8000.0), (16, 16, 5000.0))), wcs=None),
+            meta={"target": "M 31", "exposure": 10.0, "gain": 80},
+        )
+        ctrl = PickController(project=project)
+        ctrl.set_image(FakeImage(synthetic_image(64, stars=((30, 40, 8000.0), (16, 16, 5000.0))), seestar_sub_header()))
+        target = ctrl.pick_at(42, 32, "target", label="Target")
+        comp = ctrl.pick_at(16, 16, "comp", label="Comp A", snap=False)
+        assert target.coord is None and comp.coord is None
+
+        saved = ctrl.save()
+        assert [p.role for p in saved] == ["target", "comp"]
+        stored = load_star_picks(project)
+        assert stored[0].ra_deg is None and stored[0].dec_deg is None  # NULL sky coords
+        assert stored[1].ra_deg is None and stored[1].dec_deg is None
+        assert project.config["star_picks"]["target"]["ra_deg"] is None
+
+        # a fresh controller restores the pixel-only picks
+        reloaded = PickController(project=project)
+        assert [p.role for p in reloaded.picks] == ["target", "comp"]
+        assert all(p.coord is None for p in reloaded.picks)
+        assert reloaded.picks[0].x == pytest.approx(target.x)
+
+        # ... and the stored no-WCS sub frame measures fine with them
+        m = measure_frame(project, frame.id, reloaded.picks)
+        assert m.mag is not None and np.isfinite(m.mag)
+        assert m.mag_err is not None and np.isfinite(m.mag_err)
+    finally:
+        project.close()
 
 
 def test_pick_at_target_replaces_and_comps_accumulate():
@@ -644,6 +891,7 @@ def test_public_api_is_exported_from_package():
         "DEFAULT_SKY_OUT_PX",
         "LookupFn",
         "MAX_COMP_SEARCH_RADIUS_DEG",
+        "NO_WCS_HINT",
         "PhotometryError",
         "PickController",
         "PickListener",
@@ -659,8 +907,10 @@ def test_public_api_is_exported_from_package():
         "SuggestionError",
         "SuggestionSnapshot",
         "default_standards_lookup",
+        "has_celestial_wcs",
         "pixel_to_sky",
         "sky_to_pixel",
+        "try_pixel_to_sky",
     ):
         assert name in photometry.__all__, name
         assert hasattr(photometry, name), name

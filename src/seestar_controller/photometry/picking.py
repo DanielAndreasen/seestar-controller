@@ -16,7 +16,9 @@ What lives here:
   :class:`PickingError` (ticket 01) and :class:`~.suggest.SuggestionError`
   (ticket 02) both subclass it, so widget code can catch one type;
 - :func:`pixel_to_sky` / :func:`sky_to_pixel` — the FITS-WCS pixel <-> sky
-  conversion (:mod:`astropy.wcs`, lazy);
+  conversion (:mod:`astropy.wcs`, lazy), plus the lenient variants
+  :func:`try_pixel_to_sky` (None instead of raising) and
+  :func:`has_celestial_wcs` (bool) used by the picking/suggest paths;
 - :class:`StarPickSpec` — one picked star (role, pixel, sky coord, label);
 - :class:`ApertureParams` — the aperture radius + sky annulus (pixels) stored
   alongside the picks;
@@ -25,7 +27,8 @@ What lives here:
 - :class:`PickController` — the app-level shared controller: the current image
   (a :class:`~seestar_controller.enhance.fits_io.FitsImage`, duck-typed), the
   picks, :meth:`~PickController.pick_at` (click -> optional snap to the local
-  brightness centroid -> WCS -> pick), :meth:`~PickController.add_at_sky`
+  brightness centroid -> sky coord when the frame has a WCS -> pick; always
+  works in pixel space, see below), :meth:`~PickController.add_at_sky`
   (the inverse: a sky position — e.g. a catalog suggestion, ticket 02 — ->
   WCS pixel -> pick), remove/set_role/clear, aperture
   settings, save/load into the project via
@@ -39,14 +42,20 @@ Conventions (documented choices):
   itself is 1-based, so :func:`pixel_to_sky` / :func:`sky_to_pixel` add/subtract
   1 internally — callers always use 0-based image pixels (the same convention
   as the numpy ``data[y, x]`` array and the store's ``StarPick.x``/``y``).
-- **Missing WCS -> :class:`PickingError`.** ``astropy.wcs.WCS({})`` does NOT
-  raise (it builds an identity WCS with blank ``CTYPE``), so the helpers check
-  explicitly: a header without celestial ``CTYPE`` cards (or with a WCS that
-  cannot be built / yields non-finite coordinates) raises
-  :class:`PickingError`. :meth:`PickController.pick_at` therefore requires a
-  WCS header — a pick always carries its sky position so it can be matched to
-  catalog stars (spec user story 11); pixel-only picks can only be *loaded*
-  from the store, never created by clicking.
+- **Missing WCS -> pixel-only picks (ticket 05).** Real Seestar sub-frames
+  carry NO celestial WCS (no ``CTYPE`` cards), and RGB stacks (``NAXIS=3`` +
+  SIP distortion keywords) make a plain ``WCS(dict)`` raise. The strict
+  helpers :func:`pixel_to_sky` / :func:`sky_to_pixel` still raise
+  :class:`PickingError` on such headers (``WCS({})`` alone does NOT raise —
+  it builds an identity WCS with blank ``CTYPE`` — so the check is explicit),
+  but :meth:`PickController.pick_at` NEVER requires a WCS: picking always
+  works in pixel space, and the sky coord is attached only when a usable 2D
+  celestial WCS exists (:func:`has_celestial_wcs` / :func:`try_pixel_to_sky`);
+  otherwise the pick is pixel-only (``coord=None``, storable — the store's
+  ``ra_deg``/``dec_deg`` are nullable). RGB stacks are handled by building the
+  WCS from the 2D celestial subset: the color axis is dropped (``naxis=2``)
+  and the SIP distortion is kept in 2D when possible, else the SIP keywords
+  are dropped (see :func:`_wcs_from_header`).
 - **Snap (documented, kept simple):** :meth:`PickController.pick_at` snaps the
   click to the brightness-weighted centroid of the finite pixels inside a
   ``(2*SNAP_WINDOW_PX+1)`` square window around the click, with weights
@@ -75,6 +84,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
@@ -130,8 +140,38 @@ def _finite_float(value: Any, what: str) -> float:
     return result
 
 
-def _wcs_from_header(header: Any) -> Any:
-    """Build an :class:`astropy.wcs.WCS` from a FITS ``header`` mapping.
+#: FITS SIP distortion keywords (``A_ORDER``, ``B_2_0``, ``AP_1_1``, ...) —
+#: dropped when a >2-dimensional header cannot carry them (ticket 05).
+_SIP_KEY_RE = re.compile(r"^(?:A|B|AP|BP)_(?:ORDER|DMAX|DMIN|\d+_\d+)$")
+
+
+def _build_wcs(cards: dict[str, Any]) -> Any:
+    """Build an :class:`astropy.wcs.WCS` from sanitized header ``cards``,
+    tolerating real Seestar stacks (ticket 05): an RGB stack (``NAXIS=3``)
+    with SIP distortion keywords makes a plain ``WCS(cards)`` raise
+    ("SIP distortions only work in 2 dimensions"), so the build is retried
+    reduced to the first 2 axes (``naxis=2`` — the color axis dropped, SIP
+    kept in 2D), and finally with the SIP keywords stripped.
+
+    Raises :class:`PickingError` when no WCS can be built at all.
+    """
+    from astropy.wcs import WCS
+
+    errors: list[str] = []
+    no_sip = {k: v for k, v in cards.items() if not _SIP_KEY_RE.match(k)}
+    for attempt, kwargs in ((cards, {}), (cards, {"naxis": 2}), (no_sip, {"naxis": 2})):
+        try:
+            return WCS(attempt, **kwargs)  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001 — any astropy/wcslib failure
+            errors.append(str(exc).strip().splitlines()[0] if str(exc) else repr(exc))
+    raise PickingError(
+        "cannot build a WCS from the header: " + "; ".join(errors)
+    )
+
+
+def _wcs_from_header(header: Any, *, direction: str = "pixel to sky") -> Any:
+    """Build a usable 2D celestial :class:`astropy.wcs.WCS` from a FITS
+    ``header`` mapping.
 
     The mapping is first converted with
     :func:`seestar_controller.store.frames.header_to_dict` (sanitized plain
@@ -141,26 +181,33 @@ def _wcs_from_header(header: Any) -> Any:
     values must contain standard printable ASCII characters") on such a
     value. Sanitizing makes the WCS buildable from any real frame header.
 
+    The built WCS is then reduced to its 2D celestial subset
+    (``wcs.celestial`` — drops a color/Stokes axis of an RGB stack), so the
+    result always has exactly 2 celestial axes.
+
     Raises :class:`PickingError` when the header is not a mapping, the WCS
-    cannot be built, or the header carries no celestial WCS (blank ``CTYPE``
-    — ``WCS({})`` alone does not raise, it builds an identity WCS).
+    cannot be built, or the header carries no usable 2D celestial WCS (blank
+    ``CTYPE`` — ``WCS({})`` alone does not raise, it builds an identity WCS
+    whose ``.celestial`` subset has ``naxis == 0``).
     """
     if not isinstance(header, Mapping):
         raise PickingError(
             f"header must be a mapping of FITS cards, got {header!r}"
         )
-    from astropy.wcs import WCS
-
+    wcs = _build_wcs(header_to_dict(header))
     try:
-        wcs = WCS(header_to_dict(header))
+        celestial = wcs.celestial
     except Exception as exc:
-        raise PickingError(f"cannot build a WCS from the header: {exc}") from exc
-    if wcs.naxis < 2 or not any(str(ctype).strip() for ctype in wcs.wcs.ctype):
         raise PickingError(
-            "the FITS header has no WCS (no celestial CTYPE cards) — cannot "
-            "convert pixel coordinates to sky coordinates"
+            "the FITS header has no WCS (no celestial CTYPE cards) — plate-solve "
+            f"the frame first; cannot convert {direction} coordinates: {exc}"
+        ) from exc
+    if celestial.naxis != 2 or not all(str(ctype).strip() for ctype in celestial.wcs.ctype):
+        raise PickingError(
+            "the FITS header has no WCS (no celestial CTYPE cards) — plate-solve "
+            f"the frame first; cannot convert {direction} coordinates"
         )
-    return wcs
+    return celestial
 
 
 def pixel_to_sky(header: Mapping[str, Any] | None, x: float, y: float) -> J2000Coord:
@@ -169,12 +216,13 @@ def pixel_to_sky(header: Mapping[str, Any] | None, x: float, y: float) -> J2000C
 
     The FITS WCS is 1-based, so internally ``all_pix2world(x + 1, y + 1, 1)``
     is called — callers use 0-based pixels. Raises :class:`PickingError` when
-    ``x``/``y`` are not finite numbers, the header has no usable WCS, or the
-    WCS yields non-finite coordinates.
+    ``x``/``y`` are not finite numbers, the header has no usable 2D celestial
+    WCS (e.g. a raw Seestar sub without ``CTYPE`` cards), or the WCS yields
+    non-finite coordinates.
     """
     px = _finite_float(x, "x")
     py = _finite_float(y, "y")
-    wcs = _wcs_from_header(header)
+    wcs = _wcs_from_header(header, direction="pixel to sky")
     try:
         ra, dec = wcs.all_pix2world([px + 1.0], [py + 1.0], 1)  # 1-based origin
     except Exception as exc:
@@ -216,10 +264,11 @@ def sky_to_pixel(header: Mapping[str, Any] | None, coord: Any) -> tuple[float, f
     pixel ``(x, y)`` via the FITS WCS of ``header``.
 
     Internally ``all_world2pix(ra, dec, 1)`` (1-based) minus 1. Raises
-    :class:`PickingError` on a bad coord, a missing WCS, or non-finite output.
+    :class:`PickingError` on a bad coord, a missing WCS (e.g. a raw Seestar
+    sub — plate-solve the frame first), or non-finite output.
     """
     ra_deg, dec_deg = _ra_dec_deg(coord)
-    wcs = _wcs_from_header(header)
+    wcs = _wcs_from_header(header, direction="sky to pixel")
     try:
         px, py = wcs.all_world2pix([ra_deg], [dec_deg], 1)  # 1-based origin
     except Exception as exc:
@@ -232,6 +281,36 @@ def sky_to_pixel(header: Mapping[str, Any] | None, coord: Any) -> tuple[float, f
             f"x={x} y={y}"
         )
     return x, y
+
+
+def has_celestial_wcs(header: Mapping[str, Any] | None) -> bool:
+    """True when a usable 2D celestial WCS can be built from ``header``
+    (see :func:`_wcs_from_header` — RGB stacks are reduced to their celestial
+    subset, SIP handled). False for raw Seestar subs (no ``CTYPE`` cards) and
+    for non-mapping headers — never raises."""
+    try:
+        _wcs_from_header(header)
+    except PickingError:
+        return False
+    return True
+
+
+def try_pixel_to_sky(
+    header: Mapping[str, Any] | None, x: float, y: float
+) -> J2000Coord | None:
+    """The lenient variant of :func:`pixel_to_sky`: convert a 0-based pixel
+    ``(x, y)`` to a J2000 coord, returning **None** instead of raising when
+    the header has no usable 2D celestial WCS (a raw Seestar sub) or the
+    conversion fails / yields non-finite coordinates.
+
+    This is what :meth:`PickController.pick_at` uses: picking always works in
+    pixel space, the sky coord is attached only when the frame has a WCS.
+    """
+    try:
+        return pixel_to_sky(header, x, y)
+    except PickingError as exc:
+        logger.debug("no sky coord for pixel (%s, %s): %s", x, y, exc)
+        return None
 
 
 # --- picks + aperture ------------------------------------------------------------
@@ -293,7 +372,9 @@ class StarPickSpec:
       (``x`` = column, ``y`` = row; after snapping, a float centroid);
     - ``coord`` — the J2000 sky position
       (:class:`~seestar_controller.catalog.coords.J2000Coord`), or None when
-      the pick is pixel-only (only possible for picks loaded from the store);
+      the pick is pixel-only (ticket 05: a frame without a usable WCS — e.g.
+      a raw Seestar sub — is picked in pixel space only; also possible for
+      picks loaded from the store without sky coords);
     - ``label`` — the user-given label (e.g. ``"TIC 123"``, ``"comp A"``), or
       None when unnamed.
 
@@ -404,7 +485,8 @@ class PickController:
       the pick controller listens to it and adopts every newly opened stack's
       image as its current image (see :meth:`attach_viewer`).
 
-    Operations: :meth:`pick_at` (click -> snap -> WCS -> pick),
+    Operations: :meth:`pick_at` (click -> snap -> sky coord when the frame has
+    a WCS -> pick; always works in pixel space, ticket 05),
     :meth:`add_at_sky` (sky -> WCS pixel -> pick; ticket 02),
     :meth:`remove_pick`, :meth:`set_role`, :meth:`clear`,
     :meth:`set_aperture` / :meth:`set_aperture_params`,
@@ -574,13 +656,17 @@ class PickController:
     ) -> StarPickSpec:
         """Pick a star at image pixel ``(x, y)`` (0-based) with ``role``.
 
-        - the click must lie inside the current image and the image must have
-          a WCS header (else :class:`PickingError`);
+        - the click must lie inside the current image (else
+          :class:`PickingError`);
         - with ``snap=True`` (default) the click snaps to the local brightness
           centroid within a small window (see :func:`_snap_centroid`; the exact
           pixel is used when no source is found in the window);
         - the (snapped) pixel is converted to a J2000 coord via
-          :func:`pixel_to_sky`;
+          :func:`try_pixel_to_sky` **only when the frame has a usable 2D
+          celestial WCS** (RGB stacks: the WCS of the 2D celestial subset, SIP
+          handled — see :func:`_wcs_from_header`); without a WCS (a raw
+          Seestar sub) the pick is pixel-only (``coord=None``) — picking
+          ALWAYS works in pixel space (ticket 05);
         - the pick is added: re-picking ``"target"`` REPLACES the existing
           target pick, comps accumulate.
 
@@ -605,7 +691,7 @@ class PickController:
             sx, sy = _snap_centroid(data, px, py)
         else:
             sx, sy = px, py
-        coord = pixel_to_sky(self._image.header, sx, sy)
+        coord = try_pixel_to_sky(self._image.header, sx, sy)
         spec = StarPickSpec(role=role, x=sx, y=sy, coord=coord, label=label)
         return self._add_spec(spec)
 
@@ -623,7 +709,9 @@ class PickController:
         - the sky position (a :class:`~seestar_controller.catalog.coords.J2000Coord`,
           a ``(ra_deg, dec_deg)`` pair, or a duck-typed object) is converted to
           a 0-based image pixel via :func:`sky_to_pixel` against the current
-          image's WCS header;
+          image's WCS header — a frame WITHOUT a usable WCS (a raw Seestar
+          sub) raises :class:`PickingError` here ("plate-solve the frame
+          first"): a sky position cannot be mapped to a pixel without a WCS;
         - the pixel must lie inside the current image (else
           :class:`PickingError` — a catalog star outside the frame cannot be
           picked);

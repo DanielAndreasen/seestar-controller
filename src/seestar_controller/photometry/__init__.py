@@ -13,8 +13,11 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   :class:`~.picking.PickSession` (the frozen snapshot: image + picks +
   aperture), and :class:`~.picking.PickController` — the app-level shared
   controller: :meth:`~.picking.PickController.pick_at` (click -> optional snap
-  to the local brightness centroid -> WCS -> pick; one target with replace
-  semantics, comps multiple), :meth:`~.picking.PickController.add_at_sky`
+  to the local brightness centroid -> sky coord when the frame has a usable
+  2D celestial WCS -> pick; ALWAYS works in pixel space — frames without a
+  WCS, e.g. raw Seestar subs, get pixel-only picks with ``coord=None``, and
+  RGB stacks use the WCS of their 2D celestial subset; one target with
+  replace semantics, comps multiple), :meth:`~.picking.PickController.add_at_sky`
   (the inverse: sky -> pixel via the WCS -> pick, ticket 02),
   :meth:`~.picking.PickController.remove_pick` /
   :meth:`~.picking.PickController.set_role` / :meth:`~.picking.PickController.clear`,
@@ -122,8 +125,10 @@ from .picking import (
     PickListener,
     PickSession,
     StarPickSpec,
+    has_celestial_wcs,
     pixel_to_sky,
     sky_to_pixel,
+    try_pixel_to_sky,
 )
 from .run import (
     DB_CALL_TIMEOUT_S,
@@ -138,6 +143,7 @@ from .run import (
 from .suggest import (
     DEFAULT_COMP_SEARCH_RADIUS_DEG,
     MAX_COMP_SEARCH_RADIUS_DEG,
+    NO_WCS_HINT,
     CompSuggestion,
     LookupFn,
     SearchRunner,
@@ -174,6 +180,7 @@ __all__ = [
     "DEFAULT_SKY_OUT_PX",
     "MAG_ERR_COEFF",
     "MAX_COMP_SEARCH_RADIUS_DEG",
+    "NO_WCS_HINT",
     "ROLES",
     "ROLE_COMP",
     "ROLE_TARGET",
@@ -216,10 +223,12 @@ __all__ = [
     "ensemble_mag_err",
     "flux_err_to_mag_err",
     "flux_to_mag",
+    "has_celestial_wcs",
     "measure_frame",
     "measure_frame_data",
     "measure_project",
     "measure_star",
     "pixel_to_sky",
     "sky_to_pixel",
+    "try_pixel_to_sky",
 ]
