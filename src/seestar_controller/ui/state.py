@@ -18,12 +18,18 @@ What lives here:
 - the dark-theme flag (default :data:`DEFAULT_DARK_THEME` = ``True`` —
   night-time use must not blind the user);
 - the settings dict (``scope_ip``, ``key_path``, ``project_root``,
-  ``last_project``, ``photometry_comp_search_radius_deg``) with defaults +
+  ``last_project``, ``photometry_comp_search_radius_deg``, and the observing
+  site ``site_latitude`` / ``site_longitude`` / ``site_elevation_m`` /
+  ``site_timezone`` used by the visibility planner) with defaults +
   validation. ``project_root`` defaults to **unset** (``""`` — projects-view
   ticket 02): the project controller then falls back to the store default
   (:func:`seestar_controller.store.default_project_root`, i.e.
   ``SEESTAR_PROJECT_ROOT`` > ``~/SeestarProjects/``, created on demand), so a
-  fresh install never hard-errors on a not-yet-existing default root;
+  fresh install never hard-errors on a not-yet-existing default root. The
+  site keys likewise default to unset (``""`` — no sane default location;
+  ``site_timezone`` defaults to ``"UTC"``) and are persisted here but not yet
+  editable in the settings dialog (settings-file only for now — the
+  visibility-planner view ticket adds the dialog rows);
 - persistence: one JSON file at ``~/.config/seestar-controller/settings.json``
   (the app config dir — the same dir as the PEM key and the protocol log;
   re-declared here because this package must not import
@@ -44,7 +50,11 @@ On-disk shape (``schema_version`` :data:`SETTINGS_SCHEMA_VERSION`)::
         "key_path": "/home/.../.config/seestar-controller/key.pem",
         "project_root": "",                              # unset -> store default (projects-view 02)
         "last_project": "",                              # unset placeholder (projects-view 01)
-        "photometry_comp_search_radius_deg": "1.5"        # catalog-assist cone radius
+        "photometry_comp_search_radius_deg": "1.5",      # catalog-assist cone radius
+        "site_latitude": "",                             # unset -> no default location (visibility 01)
+        "site_longitude": "",                            # unset -> no default location (visibility 01)
+        "site_elevation_m": "",                          # unset -> 0 m (visibility 01)
+        "site_timezone": "UTC"                           # IANA name of the night date (visibility 01)
       }
     }
 
@@ -69,6 +79,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 #: Config dir of the app — the same dir as the PEM key and the protocol log
 #: (``seestar_controller.link.keys`` / ``link.protocol_log`` use the same
@@ -150,12 +161,19 @@ SETTINGS_KEYS: tuple[str, ...] = (
     "project_root",
     "last_project",
     "photometry_comp_search_radius_deg",
+    "site_latitude",
+    "site_longitude",
+    "site_elevation_m",
+    "site_timezone",
 )
 
 #: The settings keys the settings DIALOG edits (user-facing entry rows).
 #: ``last_project`` is app-managed (written by the project controller when a
 #: project is opened, see :mod:`.project_controller`) — it is persisted with
-#: the rest of the settings but not shown as an editable dialog row.
+#: the rest of the settings but not shown as an editable dialog row. The
+#: ``site_*`` keys (visibility planner, ticket 01) are persisted here too but
+#: not yet dialog-editable — settings-file only until the visibility-planner
+#: view ticket adds the rows.
 EDITABLE_SETTINGS_KEYS: tuple[str, ...] = (
     "scope_ip",
     "key_path",
@@ -171,17 +189,40 @@ DEFAULT_COMP_SEARCH_RADIUS_DEG = 1.5
 #: cone-search limit, ``catalog.standards.MAX_RADIUS_DEG``).
 MAX_COMP_SEARCH_RADIUS_DEG = 180.0
 
+#: Observing-site latitude bounds, in degrees (visibility planner ticket 01).
+SITE_LATITUDE_MIN_DEG = -90.0
+SITE_LATITUDE_MAX_DEG = 90.0
+
+#: Observing-site longitude bounds, in degrees (visibility planner ticket 01).
+SITE_LONGITUDE_MIN_DEG = -180.0
+SITE_LONGITUDE_MAX_DEG = 180.0
+
+#: Observing-site elevation bounds, in metres — below the Dead Sea shore to
+#: above Mt Everest (visibility planner ticket 01).
+SITE_ELEVATION_MIN_M = -500.0
+SITE_ELEVATION_MAX_M = 9000.0
+
+#: Default observing-site timezone (an IANA name) when unset is not allowed —
+#: the night date is expressed in this timezone (visibility planner 01).
+DEFAULT_SITE_TIMEZONE = "UTC"
+
 #: The default settings dict (``scope_ip`` empty = unset placeholder, see
 #: docs/wiki/assumptions.md). ``project_root`` is empty (unset) on a fresh
 #: install — the project controller falls back to the store default root
 #: (:data:`DEFAULT_PROJECT_ROOT` / ``SEESTAR_PROJECT_ROOT``), created on
-#: demand (projects-view ticket 02).
+#: demand (projects-view ticket 02). The ``site_*`` keys are empty (unset) on
+#: a fresh install — there is no sane default location — except
+#: ``site_timezone``, which defaults to UTC.
 DEFAULT_SETTINGS: dict[str, str] = {
     "scope_ip": "",
     "key_path": str(DEFAULT_KEY_PATH),
     "project_root": "",
     "last_project": "",
     "photometry_comp_search_radius_deg": f"{DEFAULT_COMP_SEARCH_RADIUS_DEG:g}",
+    "site_latitude": "",
+    "site_longitude": "",
+    "site_elevation_m": "",
+    "site_timezone": DEFAULT_SITE_TIMEZONE,
 }
 
 #: A scope address: an IPv4 address or a hostname (labels of letters, digits,
@@ -378,6 +419,91 @@ def validate_comp_search_radius(value: Any) -> str:
     return f"{radius:g}"
 
 
+def _validate_number_setting(
+    value: Any, name: str, *, minimum: float, maximum: float
+) -> str:
+    """Validate a numeric setting that may also be unset (``""``).
+
+    Accepts a string or a number (settings values are strings); bools rejected.
+    Empty/whitespace-only means "unset" and is normalized to ``""``. Otherwise
+    the value must be a finite number in ``[minimum, maximum]`` and is
+    normalized to its ``%g`` string form. Raises
+    :class:`SettingsValidationError` naming the value otherwise.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise SettingsValidationError(f"{name} must be a number, got {value!r}")
+    if isinstance(value, str) and not value.strip():
+        return ""  # empty = unset
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise SettingsValidationError(f"{name} must be a number, got {value!r}") from None
+    if not math.isfinite(number) or not minimum <= number <= maximum:
+        raise SettingsValidationError(
+            f"{name} must be in [{minimum:g}, {maximum:g}], got {value!r}"
+        )
+    return f"{number:g}"
+
+
+def validate_site_latitude(value: Any) -> str:
+    """Validate the ``site_latitude`` setting (visibility planner ticket 01):
+    unset (``""``) or a latitude in degrees ``[-90, 90]`` (string or number),
+    normalized to its ``%g`` string form. Raises
+    :class:`SettingsValidationError` otherwise. Public because the
+    settings-dialog layer (:mod:`.settings`) may reuse it.
+    """
+    return _validate_number_setting(
+        value, "site_latitude", minimum=SITE_LATITUDE_MIN_DEG, maximum=SITE_LATITUDE_MAX_DEG
+    )
+
+
+def validate_site_longitude(value: Any) -> str:
+    """Validate the ``site_longitude`` setting (visibility planner ticket 01):
+    unset (``""``) or a longitude in degrees ``[-180, 180]`` (east positive),
+    normalized to its ``%g`` string form. Raises
+    :class:`SettingsValidationError` otherwise.
+    """
+    return _validate_number_setting(
+        value, "site_longitude", minimum=SITE_LONGITUDE_MIN_DEG, maximum=SITE_LONGITUDE_MAX_DEG
+    )
+
+
+def validate_site_elevation_m(value: Any) -> str:
+    """Validate the ``site_elevation_m`` setting (visibility planner ticket 01):
+    unset (``""`` — the planner then uses 0 m) or an elevation in metres in
+    ``[-500, 9000]`` (below the Dead Sea shore to above Mt Everest), normalized
+    to its ``%g`` string form. Raises :class:`SettingsValidationError`
+    otherwise.
+    """
+    return _validate_number_setting(
+        value, "site_elevation_m", minimum=SITE_ELEVATION_MIN_M, maximum=SITE_ELEVATION_MAX_M
+    )
+
+
+def validate_site_timezone(value: Any) -> str:
+    """Validate the ``site_timezone`` setting (visibility planner ticket 01):
+    unset (``""`` — the planner then uses UTC) or a valid IANA timezone name
+    (``"UTC"`` always works, no tzdata needed; any other name must resolve
+    through :class:`zoneinfo.ZoneInfo` on this machine). Returns the stripped
+    name. Raises :class:`SettingsValidationError` otherwise.
+    """
+    name = "site_timezone"
+    if not isinstance(value, str) or isinstance(value, bool):
+        raise SettingsValidationError(f"{name} must be a string, got {value!r}")
+    tz = value.strip()
+    if not tz:
+        return ""  # empty = unset -> UTC at the planner
+    if tz == "UTC":
+        return tz
+    try:
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError, KeyError, OSError) as exc:
+        raise SettingsValidationError(
+            f"{name} {value!r} is not a valid IANA timezone name ({exc})"
+        ) from exc
+    return tz
+
+
 def _atomic_write_json(path: Path, obj: Any) -> Path:
     """Write ``obj`` as pretty JSON to ``path`` atomically.
 
@@ -545,7 +671,8 @@ class AppState:
     def settings(self) -> dict[str, str]:
         """A copy of the settings dict (``scope_ip``, ``key_path``,
         ``project_root``, ``last_project``,
-        ``photometry_comp_search_radius_deg``)."""
+        ``photometry_comp_search_radius_deg``, ``site_latitude``,
+        ``site_longitude``, ``site_elevation_m``, ``site_timezone``)."""
         return dict(self._settings)
 
     def get_setting(self, key: str) -> str:
@@ -567,7 +694,14 @@ class AppState:
           (a directory containing ``project.json``);
         - ``photometry_comp_search_radius_deg`` — a number of degrees in
           ``(0, MAX_COMP_SEARCH_RADIUS_DEG]`` (string or number), normalized
-          to its ``%g`` string form.
+          to its ``%g`` string form;
+        - ``site_latitude`` / ``site_longitude`` — unset (``""``) or a number
+          of degrees in ``[-90, 90]`` / ``[-180, 180]``, normalized to its
+          ``%g`` string form (the observing site, visibility planner 01);
+        - ``site_elevation_m`` — unset (``""``) or a number of metres in
+          ``[-500, 9000]``, normalized to its ``%g`` string form;
+        - ``site_timezone`` — unset (``""``) or a valid IANA timezone name
+          (``"UTC"`` needs no tzdata).
 
         Raises :class:`SettingsValidationError` for an unknown key or an
         invalid value.
@@ -582,6 +716,14 @@ class AppState:
             value = validate_last_project(value)
         elif key == "photometry_comp_search_radius_deg":
             value = validate_comp_search_radius(value)
+        elif key == "site_latitude":
+            value = validate_site_latitude(value)
+        elif key == "site_longitude":
+            value = validate_site_longitude(value)
+        elif key == "site_elevation_m":
+            value = validate_site_elevation_m(value)
+        elif key == "site_timezone":
+            value = validate_site_timezone(value)
         else:
             value = validate_path_setting(value, key)
         self._settings[key] = value
