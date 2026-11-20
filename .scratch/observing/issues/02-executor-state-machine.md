@@ -4,7 +4,7 @@
 
 **Blocked by:** seestar-link 04, project-store 02
 
-**Status:** implemented in 064d122
+**Status:** implemented in b15667c
 
 - [x] Executor walks the queue via the facade: goto → start stack → done → next
 - [x] State transitions are explicit and observable (for the UI to render)
