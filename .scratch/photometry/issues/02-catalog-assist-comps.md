@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, catalog 04
 
-**Status:** implemented in 910aaf5
+**Status:** implemented in e856f0b
 
 - [x] Target coords → list of nearby standard stars (coords + mag)
 - [x] Selecting a suggestion adds it as a comp pick
