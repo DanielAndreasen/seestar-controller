@@ -4,7 +4,7 @@
 
 **Blocked by:** ui-shell 01, catalog 01
 
-**Status:** implemented in 6046279
+**Status:** implemented in 4d7f3b4
 
 - [x] Queue entries hold name-or-coords, mosaic, exposure, gain
 - [x] Add by name resolves via catalog; add by RA/Dec validates input
