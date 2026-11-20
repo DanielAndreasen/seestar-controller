@@ -67,6 +67,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import numbers
 import os
 import sqlite3
 import tempfile
@@ -165,8 +166,48 @@ def _row_to_frame(row: sqlite3.Row | tuple[Any, ...]) -> Frame:
     )
 
 
+def sanitize_header_value(value: Any) -> Any:
+    """Sanitize one FITS header card value for use in a plain dict.
+
+    String values (including astropy's commentary-card wrapper
+    ``_HeaderCommentaryCards``, the ``str()`` of which joins consecutive
+    ``COMMENT``/``HISTORY`` cards with ``\\n``) are reduced to a plain
+    ``str`` of standard printable ASCII (chars 32..126): every control
+    character (e.g. that ``\\n``) and every non-ASCII character is replaced
+    with a space. Numbers, ``None`` and ``bytes`` pass through unchanged.
+
+    Real Seestar FITS files carry two consecutive ``COMMENT`` cards (the
+    FITS-standard paper citation); ``dict(astropy_header)`` joins them into
+    a single value containing ``\\n``, and re-inserting such a value into an
+    astropy :class:`~astropy.io.fits.Header` (e.g. via
+    :class:`astropy.wcs.WCS`) raises ``ValueError`` ("FITS header values
+    must contain standard printable ASCII characters"). Sanitizing keeps
+    the header usable everywhere downstream.
+    """
+    if value is None or isinstance(value, (bool, numbers.Number, bytes)):
+        return value
+    text = value if isinstance(value, str) else str(value)
+    return "".join(ch if 32 <= ord(ch) <= 126 else " " for ch in text)
+
+
+def header_to_dict(header: Any) -> dict[str, Any]:
+    """Convert a FITS header (an astropy :class:`~astropy.io.fits.Header` or
+    any mapping of cards) to a plain ``dict`` with sanitized values (see
+    :func:`sanitize_header_value`) — safe to re-insert into an astropy
+    Header or pass to :class:`astropy.wcs.WCS`.
+
+    Raises ``TypeError`` when ``header`` is not a mapping.
+    """
+    if not isinstance(header, Mapping):
+        raise TypeError(f"header must be a mapping of FITS cards, got {header!r}")
+    return {
+        str(key): sanitize_header_value(value) for key, value in dict(header).items()
+    }
+
+
 def _read_fits_header(fits_bytes: bytes) -> dict[str, Any]:
-    """Read the primary HDU header of ``fits_bytes`` (lazy astropy import).
+    """Read the primary HDU header of ``fits_bytes`` (lazy astropy import),
+    as a plain dict with sanitized values (see :func:`header_to_dict`).
 
     Raises :class:`FrameStoreError` when the bytes are not a readable FITS
     file.
@@ -175,7 +216,7 @@ def _read_fits_header(fits_bytes: bytes) -> dict[str, Any]:
 
     try:
         with pyfits.open(io.BytesIO(fits_bytes), memmap=False) as hdul:
-            return dict(hdul[0].header)
+            return header_to_dict(hdul[0].header)
     except Exception as exc:
         raise FrameStoreError(f"not a readable FITS file: {exc}") from exc
 
