@@ -45,6 +45,7 @@ include = [
     "src/seestar_controller/observing/observe_view.py",
     "src/seestar_controller/observing/queue_editor.py",
     "src/seestar_controller/observing/session_log_dialog.py",
+    "src/seestar_controller/observing/stale_session_dialog.py",
     "src/seestar_controller/photometry/results_view.py",
     "src/seestar_controller/photometry/star_picker.py",
     "src/seestar_controller/photometry/suggestions_panel.py",

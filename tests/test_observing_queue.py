@@ -82,7 +82,14 @@ PURE_OBSERVING_MODULES = ("__init__", "queue", "queue_controller")
 EXECUTOR_OBSERVING_MODULES = ("executor", "observe_controller", "capture")
 
 #: The widget observing modules — ``gi`` at module top, lazy-exported via PEP 562.
-WIDGET_OBSERVING_MODULES = ("queue_editor", "observe_view", "session_log_dialog")
+#: ``stale_session_dialog`` (ticket 05) is the resume/close offer shown when
+#: Start night hits a stale open session.
+WIDGET_OBSERVING_MODULES = (
+    "queue_editor",
+    "observe_view",
+    "session_log_dialog",
+    "stale_session_dialog",
+)
 
 COORD_A = J2000Coord(ra_deg=83.8215, dec_deg=-5.39114)  # ~ M 42 area
 COORD_B = J2000Coord(ra_deg=10.68, dec_deg=41.27)  # ~ M 31 area
