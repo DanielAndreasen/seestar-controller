@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** implemented in 6ec3e87
+**Status:** implemented in 9b80bb2
 
 - [x] Save star picks (role target/comp, x/y, RA/Dec, aperture radius, annulus) into the project
 - [x] Load picks on project open
