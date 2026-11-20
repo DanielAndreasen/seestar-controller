@@ -125,6 +125,17 @@ Photometry view, whose
 :class:`~seestar_controller.photometry.results_view.ResultsPanel` runs the
 measurements over a chosen session on a worker thread (progress shown) and
 shows the per-frame table + mag-vs-jd scatter plot with outlier flagging.
+
+Period-analysis (ticket 01): the application also owns a shared
+:class:`~seestar_controller.analysis.lightcurve.LightcurveController` — the
+lightcurve view's controller — following the shared viewer controller (its
+project is adopted, so the lightcurve follows the currently open project)
+with its ``invoke_on_main`` bound to :func:`GLib.idle_add`, like the other
+controllers. The window passes it to the Lightcurve view, whose
+:class:`~seestar_controller.analysis.lightcurve_view.LightcurveView` renders
+the mag-vs-JD plot (one color per session + legend, error bars, excluded
+points marked, inverted mag axis) with zoom/pan driven by the pure transform
+math.
 """
 
 from __future__ import annotations
@@ -138,6 +149,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
+from seestar_controller.analysis import LightcurveController  # noqa: E402
 from seestar_controller.enhance import EditorController, ViewerController  # noqa: E402
 from seestar_controller.observing import (  # noqa: E402
     ObserveController,
@@ -246,6 +258,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         picker_controller: PickController | None = None,
         suggest_controller: SuggestionController | None = None,
         run_controller: RunController | None = None,
+        lightcurve_controller: LightcurveController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -361,6 +374,19 @@ class SeestarWindow(Adw.ApplicationWindow):
                 picker_controller=self._picker_controller, invoke_on_main=_invoke_on_main
             )
         )
+        # Period-analysis ticket 01: one shared lightcurve controller
+        # following the shared viewer controller (the open project becomes the
+        # lightcurve's project); the Lightcurve view renders its snapshots.
+        # Its invoke_on_main is GLib.idle_add, so worker-thread store reads +
+        # notifications land on the main loop.
+        self._lightcurve_controller = (
+            lightcurve_controller
+            if lightcurve_controller is not None
+            else getattr(app, "lightcurve_controller", None)
+            or LightcurveController(
+                viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
+            )
+        )
 
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -409,6 +435,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     picker_controller=self._picker_controller,
                     suggest_controller=self._suggest_controller,
                     run_controller=self._run_controller,
+                    lightcurve_controller=self._lightcurve_controller,
                 ),
                 view.id,
                 view.title,
@@ -556,6 +583,13 @@ class SeestarWindow(Adw.ApplicationWindow):
         Photometry view's results panel binds to it)."""
         return self._run_controller
 
+    @property
+    def lightcurve_controller(self) -> LightcurveController:
+        """The shared lightcurve controller (period-analysis ticket 01 — the
+        Lightcurve view binds to it; it follows the viewer controller's
+        project)."""
+        return self._lightcurve_controller
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -689,6 +723,14 @@ class SeestarApplication(Adw.Application):
         # controller's.
         self.run_controller = RunController(
             picker_controller=self.picker_controller, invoke_on_main=_invoke_on_main
+        )
+        # Period-analysis ticket 01: the shared lightcurve controller following
+        # the shared viewer controller (the open project becomes the
+        # lightcurve's project); the window passes it to the Lightcurve view.
+        # Store reads are marshalled onto the GLib main loop like the other
+        # shared controllers'.
+        self.lightcurve_controller = LightcurveController(
+            viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
         )
         self.settings_controller.add_listener(self._on_settings_changed)
 

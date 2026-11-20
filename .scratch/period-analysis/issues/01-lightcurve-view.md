@@ -4,10 +4,10 @@
 
 **Blocked by:** ui-shell 01, project-store 05
 
-**Status:** ready-for-agent
+**Status:** implemented in 79013706b4b1793dd804547250163638c8ed108e
 
-- [ ] Lightcurve renders mag vs JD from project-store
-- [ ] Sessions visually distinguished (color per session)
-- [ ] Error bars shown per point
-- [ ] Zoom/pan works
-- [ ] Tests: view controller with temp project data; empty project handled
+- [x] Lightcurve renders mag vs JD from project-store
+- [x] Sessions visually distinguished (color per session)
+- [x] Error bars shown per point
+- [x] Zoom/pan works
+- [x] Tests: view controller with temp project data; empty project handled

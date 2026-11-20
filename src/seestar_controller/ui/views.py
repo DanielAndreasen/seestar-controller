@@ -10,8 +10,15 @@ dependency — it needs the system GTK headers to build)::
 
     sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
 
-The Lightcurve and Projects views are still :class:`_PlaceholderView`\\ s (a
-centered label); later tickets (period-analysis, projects) replace the
+The Lightcurve view (period-analysis ticket 01) carries the
+:class:`~seestar_controller.analysis.lightcurve_view.LightcurveView` widget —
+the mag-vs-JD plot of the current project's lightcurve (one color per
+session + legend, error bars, excluded points marked, inverted mag axis,
+zoom/pan) — driven by the app's shared
+:class:`~seestar_controller.analysis.lightcurve.LightcurveController`
+(following the shared viewer controller's project; passed in via
+:func:`build_view`). The **Projects** view is still a
+:class:`_PlaceholderView` (a centered label); later tickets replace the
 placeholder content. The
 **Observe** view (observing tickets 01 + 03) already carries the real
 content: the two-pane
@@ -60,6 +67,10 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Gtk  # noqa: E402
 
+from seestar_controller.analysis import LightcurveController  # noqa: E402
+from seestar_controller.analysis.lightcurve_view import (  # noqa: E402
+    LightcurveView as LightcurveViewWidget,
+)
 from seestar_controller.enhance import EditorController, ViewerController  # noqa: E402
 from seestar_controller.enhance.enhance_view import (  # noqa: E402
     EnhanceEditor as EnhanceEditorWidget,
@@ -400,10 +411,55 @@ class PhotometryView(_PlaceholderView):
 
 
 class LightcurveView(_PlaceholderView):
-    """Lightcurve view placeholder (plots come later)."""
+    """Lightcurve view (period-analysis ticket 01): wraps the
+    :class:`~seestar_controller.analysis.lightcurve_view.LightcurveView`
+    widget — the mag-vs-JD plot of the current project's lightcurve with one
+    color per session + legend, error bars per point, excluded points marked,
+    the inverted mag axis, and zoom (scroll) / pan (drag) / double-click
+    reset.
+
+    ``lightcurve_controller`` is the app's shared
+    :class:`~seestar_controller.analysis.lightcurve.LightcurveController`
+    (following the shared viewer controller's project — the currently open
+    project); the app window passes it via :func:`build_view`. When omitted,
+    the view creates its own, so it also constructs standalone.
+    """
 
     view_id = "lightcurve"
     title = "Lightcurve"
+
+    def __init__(
+        self,
+        lightcurve_controller: LightcurveController | None = None,
+        **kwargs,
+    ) -> None:
+        # set before super().__init__(): _build_content() runs inside it
+        self._lightcurve_controller = (
+            lightcurve_controller
+            if lightcurve_controller is not None
+            else LightcurveController()
+        )
+        # the inner widget handles its own padding
+        kwargs.setdefault("margin_top", 0)
+        kwargs.setdefault("margin_bottom", 0)
+        kwargs.setdefault("margin_start", 0)
+        kwargs.setdefault("margin_end", 0)
+        kwargs.setdefault("spacing", 0)
+        super().__init__(**kwargs)
+
+    def _build_content(self) -> None:
+        self._lightcurve_widget = LightcurveViewWidget(self._lightcurve_controller)
+        self.append(self._lightcurve_widget)
+
+    @property
+    def lightcurve_controller(self) -> LightcurveController:
+        """The shared pure-layer lightcurve controller driving this view."""
+        return self._lightcurve_controller
+
+    @property
+    def lightcurve_widget(self) -> LightcurveViewWidget:
+        """The lightcurve plot widget (mag vs JD, zoom/pan)."""
+        return self._lightcurve_widget
 
 
 class ProjectsView(_PlaceholderView):
@@ -436,6 +492,7 @@ def build_view(
     picker_controller: PickController | None = None,
     suggest_controller: SuggestionController | None = None,
     run_controller: RunController | None = None,
+    lightcurve_controller: LightcurveController | None = None,
     project: Any = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
@@ -445,10 +502,11 @@ def build_view(
     ``observe_controller`` / ``project`` are forwarded to the Observe view
     (observing tickets 01 + 03), ``viewer_controller`` /
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
-    and ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
+    ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
-    04) — the app window passes its shared controllers; the other views ignore
-    them.
+    04), and ``lightcurve_controller`` to the Lightcurve view (period-analysis
+    ticket 01) — the app window passes its shared controllers; the other
+    views ignore them.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
@@ -469,4 +527,6 @@ def build_view(
             suggest_controller=suggest_controller,
             run_controller=run_controller,
         )
+    if view_id == LightcurveView.view_id:
+        return LightcurveView(lightcurve_controller=lightcurve_controller)
     return VIEW_CLASSES[view_id]()
