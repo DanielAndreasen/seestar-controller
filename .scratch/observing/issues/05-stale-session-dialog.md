@@ -4,7 +4,7 @@
 
 **Blocked by:** None (observing 01-04, project-store done)
 
-**Status:** ready-for-agent
+**Status:** implemented in 9533c092 (merged)
 
 - [ ] Observe view / observe_controller catches SessionOpenError on start and shows the resume/close dialog (GLib main loop safe)
 - [ ] Resume path reattaches to the open session; close path calls close_session then starts fresh
