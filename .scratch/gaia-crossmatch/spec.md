@@ -1,6 +1,6 @@
 # Spec: gaia-crossmatch
 
-Status: needs-info
+Status: ready-for-agent (3 issues)
 
 ## Problem Statement
 
