@@ -4,7 +4,7 @@
 
 **Blocked by:** 03, 04
 
-**Status:** implemented in cc00607
+**Status:** implemented in 95145a0
 
 - [x] Network failure with cached entry → cached result
 - [x] Network failure without cache → actionable error, no traceback to the user
