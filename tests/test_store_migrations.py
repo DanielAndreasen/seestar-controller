@@ -269,7 +269,7 @@ def test_migrate_db_1_to_2_adds_aperture_columns_and_backfills(tmp_path):
         conn.execute(OLD_STARS_DDL)
         conn.execute("INSERT INTO stars (role, label, x, y) VALUES ('comp', 'A', 1.0, 2.0)")
         conn.execute("PRAGMA user_version=1")
-    assert migrate_db(conn) == SCHEMA_VERSION == 3
+    assert migrate_db(conn) == SCHEMA_VERSION == 4
     cols = [row[1] for row in conn.execute("PRAGMA table_info(stars)")]
     assert cols == [
         "id", "role", "label", "x", "y", "ra_deg", "dec_deg",
@@ -299,6 +299,95 @@ def test_migrate_db_1_to_2_is_noop_when_columns_already_present(tmp_path):
     ).fetchone()
     assert row == (5.0, 9.0, 13.0)  # untouched — no default backfill
     conn.close()
+
+
+# --- (b2) migration 3 -> 4: frame_quality table (frame-quality ticket 01) ----------
+
+
+def make_v3_project(root: Path) -> tuple[Path, str, int]:
+    """A v3 project: the current-build schema MINUS the ``frame_quality``
+    table, ``user_version=3`` and ``schema_version=3`` in project.json, with
+    one session + one frame row that must survive the migration."""
+    p = create_project("M 42", root=root)
+    sid = start_session(p, clock=frozen(T0))
+    frame_id = add_frame_row(p, sid, JD1, UTC1)
+    with p.db:
+        p.db.execute("DROP TABLE frame_quality")
+        p.db.execute("PRAGMA user_version=3")
+    p.config["schema_version"] = 3
+    p.save_config()
+    p.close()
+    return root / "m-42", sid, frame_id
+
+
+def test_open_migrates_v3_project_creating_frame_quality(root):
+    project_dir, sid, frame_id = make_v3_project(root)
+    # sanity: the db really is a v3 db without the frame_quality table
+    conn = sqlite3.connect(project_dir / DB_FILE)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert "frame_quality" not in table_names(conn)
+    conn.close()
+
+    with open_project(project_dir) as p:
+        assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert "frame_quality" in table_names(p.db)
+        cols = [row[1] for row in p.db.execute("PRAGMA table_info(frame_quality)")]
+        assert cols == [
+            "frame_id", "fwhm", "bg_median", "bg_std", "star_count",
+            "flagged", "flag_reasons", "scored_at",
+        ]
+        # the pre-existing rows are untouched
+        assert [f.id for f in list_frames(p)] == [frame_id]
+        assert get_open_session(p).id == sid  # ty: ignore[missing-union-attribute]
+        assert p.config["schema_version"] == SCHEMA_VERSION
+        # the migrated project is fully usable: quality records can be saved
+        from seestar_controller.store import save_frame_quality, session_quality
+
+        save_frame_quality(
+            p, frame_id, fwhm=3.5, bg_median=100.0, bg_std=5.0, star_count=10,
+            flagged=True, flag_reasons=("fwhm",),
+        )
+        q = session_quality(p, sid)
+        assert q.frame_count == 1 and q.flagged_count == 1
+        assert q.frames[0].flag_reasons == ("fwhm",)
+    on_disk = json.loads((project_dir / PROJECT_FILE).read_text(encoding="utf-8"))
+    assert on_disk["schema_version"] == SCHEMA_VERSION
+
+
+def test_migrate_db_3_to_4_creates_frame_quality_and_is_idempotent(tmp_path):
+    conn = sqlite3.connect(tmp_path / "db.sqlite")
+    initialize_db(conn)
+    with conn:
+        conn.execute("DROP TABLE frame_quality")
+        conn.execute("PRAGMA user_version=3")
+    assert "frame_quality" not in table_names(conn)
+    assert migrate_db(conn) == SCHEMA_VERSION == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert "frame_quality" in table_names(conn)
+    # re-running the 3 -> 4 step on a db that already has the table is a no-op
+    conn.execute("PRAGMA user_version=3")
+    assert migrate_db(conn) == SCHEMA_VERSION
+    assert "frame_quality" in table_names(conn)
+    conn.close()
+
+
+def test_keyboard_interrupt_mid_3_to_4_rolls_back_and_reopen_recovers(root):
+    project_dir, _sid, _frame_id = make_v3_project(root)
+    conn = sqlite3.connect(project_dir / DB_FILE)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    spy = KillSwitch(conn, dies_on("CREATE TABLE IF NOT EXISTS FRAME_QUALITY"))
+    with pytest.raises(KeyboardInterrupt):
+        migrate_db(spy)  # ty: ignore[invalid-argument-type]
+    conn.close()
+    # the migration rolled back completely: still v3, no table
+    conn = sqlite3.connect(project_dir / DB_FILE)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert "frame_quality" not in table_names(conn)
+    conn.close()
+    # reopening the project re-runs and completes the migration
+    with open_project(project_dir) as p:
+        assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert "frame_quality" in table_names(p.db)
 
 
 # --- (c) user_version / schema_version newer than this build ---------------------
@@ -541,8 +630,8 @@ def test_public_api_exports_migration_runner():
 
     assert callable(store.migrate_db)
     assert isinstance(store.MIGRATIONS, dict)
-    assert set(store.MIGRATIONS) == {0, 1, 2}
-    assert store.SCHEMA_VERSION == 3
+    assert set(store.MIGRATIONS) == {0, 1, 2, 3}
+    assert store.SCHEMA_VERSION == 4
     assert "migrate_db" in store.__all__
     assert "MIGRATIONS" in store.__all__
     assert issubclass(store.InvalidProjectError, store.ProjectError)

@@ -10,7 +10,8 @@ environment variable — same env-override pattern as ``SEESTAR_KEY_PATH`` /
 
     <root>/<slug>/
         project.json      settings, star picks, found period (see below)
-        db.sqlite         sessions / frames / stars / measurements (see .schema)
+        db.sqlite         sessions / frames / stars / measurements / presets /
+                          frame_quality (see .schema)
         subs/             sub-frame FITS files, per session: subs/<session>/
         stacks/           stacked FITS files, per session: stacks/<session>/
 
