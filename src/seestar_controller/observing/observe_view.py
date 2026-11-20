@@ -149,7 +149,8 @@ class ObserveView(Gtk.Box):
         self._queue_editor = QueueEditor(self._queue_controller)
         left.append(self._queue_editor)
 
-        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, wrap=True)
+        # Gtk.Box has no wrap property in GTK4; the buttons stay on one row.
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self._start_button = Gtk.Button(
             label="Start night", css_classes=["suggested-action"],
             tooltip_text="Start the queue against the connected scope",
