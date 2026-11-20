@@ -4,7 +4,7 @@
 
 **Blocked by:** seestar-link 01 (uv project scaffold)
 
-**Status:** implemented in f6a97ea
+**Status:** implemented in 429315c
 
 - [x] `create_project(name, root)` makes the directory layout and empty db
 - [x] `open_project(path)` loads an existing project, validates layout
