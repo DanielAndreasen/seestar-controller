@@ -154,6 +154,17 @@ periodogram (clickable top-N peaks), the manual period entry, and the
 phase-folded lightcurve; every selection is persisted into the project's
 ``project.json`` by the controller.
 
+Frame-quality (ticket 02): the application also owns a shared
+:class:`~seestar_controller.frame_quality.QualityController` — the
+session-quality trends controller — following the shared viewer controller
+(its project is adopted, so the quality trends follow the currently open
+project) with its ``invoke_on_main`` bound to :func:`GLib.idle_add`, like the
+other controllers. The window passes it to the Lightcurve view, whose
+:class:`~seestar_controller.frame_quality.quality_view.SessionQualityView`
+renders the session selector, the per-session summary card (median FWHM,
+rejected percent) and the three trend plots (FWHM / background / airmass vs
+time).
+
 Projects (projects-view tickets 01 + 02): the application owns a shared
 :class:`~seestar_controller.ui.project_controller.ProjectController` over the
 same :class:`~seestar_controller.ui.state.AppState` (project root from the
@@ -161,8 +172,8 @@ settings — unset falls back to the store default ``~/SeestarProjects``,
 created on demand; ``last_project`` persisted and restored on startup). The
 window passes it to the Projects view (list/create/open) and to the Observe
 view, and attaches it to the observe / viewer / picker / run / lightcurve /
-period controllers, so every current-project change is pushed to all of
-them via their ``set_project``. Creating a project in the Projects view
+period / quality controllers, so every current-project change is pushed to
+all of them via their ``set_project``. Creating a project in the Projects view
 therefore makes it current everywhere (unblocking Observe's "Start night"
 once the scope is connected) and persists it as ``last_project``; an
 unusable (e.g. unwritable) project root surfaces as an inline error with a
@@ -186,6 +197,7 @@ from seestar_controller.analysis import (
     PeriodController,
 )
 from seestar_controller.enhance import EditorController, ViewerController
+from seestar_controller.frame_quality import QualityController
 from seestar_controller.observing import (
     ObserveController,
     PlanQueueController,
@@ -312,6 +324,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         run_controller: RunController | None = None,
         lightcurve_controller: LightcurveController | None = None,
         period_controller: PeriodController | None = None,
+        quality_controller: QualityController | None = None,
         project_controller: ProjectController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
@@ -442,6 +455,18 @@ class SeestarWindow(Adw.ApplicationWindow):
             if period_controller is not None
             else _shared_from_app(app, "period_controller", lambda: PeriodController(self._lightcurve_controller, invoke_on_main=_invoke_on_main))
         )
+        # Frame-quality ticket 02: one shared quality controller following the
+        # shared viewer controller (the open project becomes the quality
+        # trends' project); the Lightcurve view's session-quality section
+        # renders its snapshots. Its invoke_on_main is GLib.idle_add, so
+        # worker-thread store reads + notifications land on the main loop.
+        self._quality_controller = (
+            quality_controller
+            if quality_controller is not None
+            else _shared_from_app(app, "quality_controller", lambda: QualityController(
+                viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
+            ))
+        )
         # Projects-view ticket 01: the shared project controller. When the app
         # owns one it is used (the app already attached its controllers to it);
         # otherwise (explicit argument, or a standalone window without an app
@@ -506,6 +531,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     run_controller=self._run_controller,
                     lightcurve_controller=self._lightcurve_controller,
                     period_controller=self._period_controller,
+                    quality_controller=self._quality_controller,
                     project_controller=self._project_controller,
                     project=self._project_controller.current,
                 ),
@@ -694,6 +720,13 @@ class SeestarWindow(Adw.ApplicationWindow):
         return self._period_controller
 
     @property
+    def quality_controller(self) -> QualityController:
+        """The shared quality controller (frame-quality ticket 02 — the
+        Lightcurve view's session-quality section binds to it; it follows the
+        viewer controller's project)."""
+        return self._quality_controller
+
+    @property
     def project_controller(self) -> ProjectController:
         """The shared project controller (projects-view ticket 01 — the
         Projects view lists/creates/opens through it; it is attached to the
@@ -722,6 +755,7 @@ class SeestarWindow(Adw.ApplicationWindow):
             run=self._run_controller,
             lightcurve=self._lightcurve_controller,
             period=self._period_controller,
+            quality=self._quality_controller,
         )
 
     def _on_row_selected(self, sidebar: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
@@ -863,6 +897,15 @@ class SeestarApplication(Adw.Application):
         self.period_controller = PeriodController(
             self.lightcurve_controller, invoke_on_main=_invoke_on_main
         )
+        # Frame-quality ticket 02: the shared quality controller following the
+        # shared viewer controller (the open project becomes the quality
+        # trends' project); the window passes it to the Lightcurve view's
+        # session-quality section. Store reads and notifications are
+        # marshalled onto the GLib main loop like the other shared
+        # controllers'.
+        self.quality_controller = QualityController(
+            viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
+        )
         # Projects-view ticket 01: the shared project controller over the same
         # state (project root from settings, last_project persisted). restore()
         # re-opens the last project when it still exists and clears a stale
@@ -872,7 +915,10 @@ class SeestarApplication(Adw.Application):
         # Ticket 02: an unset project_root falls back to the store default
         # (~/SeestarProjects, created on demand at create time); a changed
         # project_root re-lists the projects under the new root (see
-        # _on_settings_changed).
+        # _on_settings_changed). The attach list covers the observe / viewer /
+        # picker / run / lightcurve / period / quality controllers, so every
+        # current-project change is pushed to all of them via their
+        # ``set_project``.
         self.project_controller = ProjectController(self._state)
         self.project_controller.restore()
         self.project_controller.attach_controllers(
@@ -882,6 +928,7 @@ class SeestarApplication(Adw.Application):
             run=self.run_controller,
             lightcurve=self.lightcurve_controller,
             period=self.period_controller,
+            quality=self.quality_controller,
         )
         self.settings_controller.add_listener(self._on_settings_changed)
         self._last_project_root = self._state.get_setting("project_root")

@@ -23,7 +23,14 @@ the app's shared
 :class:`~seestar_controller.analysis.lightcurve.LightcurveController` and
 :class:`~seestar_controller.analysis.fold.PeriodController` (both following
 the shared viewer controller's project; passed in via
-:func:`build_view`). The **Projects** view (projects-view ticket 01) carries
+:func:`build_view`). Below the period panel it also carries the
+:class:`~seestar_controller.frame_quality.quality_view.SessionQualityView`
+widget (frame-quality ticket 02: the per-session quality trends — FWHM /
+background / airmass vs time plots + the summary card with the median FWHM and
+the rejected percent) — driven by the app's shared
+:class:`~seestar_controller.frame_quality.QualityController` (also following
+the shared viewer controller's project; passed in via :func:`build_view`).
+The **Projects** view (projects-view ticket 01) carries
 the real content: the list of projects under the configured project root
 (name / path / created-at, current project badged), a **New project** area
 (name entry + Create button + inline errors), and an **Open** button per row
@@ -104,6 +111,10 @@ from seestar_controller.analysis.period_view import (
 from seestar_controller.enhance import EditorController, ViewerController
 from seestar_controller.enhance.enhance_view import (
     EnhanceEditor as EnhanceEditorWidget,
+)
+from seestar_controller.frame_quality import QualityController
+from seestar_controller.frame_quality.quality_view import (
+    SessionQualityView as SessionQualityViewWidget,
 )
 from seestar_controller.observing import (
     ObserveController,
@@ -490,7 +501,8 @@ class PhotometryView(_PlaceholderView):
 
 
 class LightcurveView(_PlaceholderView):
-    """Lightcurve view (period-analysis tickets 01 + 03 + 04): wraps the
+    """Lightcurve view (period-analysis tickets 01 + 03 + 04, frame-quality
+    ticket 02): wraps the
     :class:`~seestar_controller.analysis.lightcurve_view.LightcurveView`
     widget — the mag-vs-JD plot of the current project's lightcurve with one
     color per session + legend, error bars per point, excluded points marked,
@@ -504,16 +516,24 @@ class LightcurveView(_PlaceholderView):
     carries the ticket-04 **Export CSV** / **Export folded CSV** buttons
     (async :class:`Gtk.FileDialog` save dialogs; the chosen path is
     marshalled back onto the main loop via the lightcurve controller's
-    ``invoke_on_main``) plus a status label for export results.
+    ``invoke_on_main``) plus a status label for export results. At the bottom
+    the view carries the
+    :class:`~seestar_controller.frame_quality.quality_view.SessionQualityView`
+    widget (frame-quality ticket 02): the session selector + Refresh, the
+    per-session summary card (median FWHM, rejected percent) and the three
+    quality-trend plots (FWHM / background / airmass vs time).
 
     ``lightcurve_controller`` is the app's shared
     :class:`~seestar_controller.analysis.lightcurve.LightcurveController`
     (following the shared viewer controller's project — the currently open
     project) and ``period_controller`` the app's shared
     :class:`~seestar_controller.analysis.fold.PeriodController` bound to that
-    same lightcurve controller (so both plots follow the open project); the
-    app window passes both via :func:`build_view`. When omitted, the view
-    creates its own, so it also constructs standalone.
+    same lightcurve controller (so both plots follow the open project), and
+    ``quality_controller`` the app's shared
+    :class:`~seestar_controller.frame_quality.QualityController` (frame-quality
+    ticket 02, also following the shared viewer controller's project); the
+    app window passes all three via :func:`build_view`. When omitted, the
+    view creates its own, so it also constructs standalone.
     """
 
     view_id = "lightcurve"
@@ -523,6 +543,7 @@ class LightcurveView(_PlaceholderView):
         self,
         lightcurve_controller: LightcurveController | None = None,
         period_controller: PeriodController | None = None,
+        quality_controller: QualityController | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -535,6 +556,11 @@ class LightcurveView(_PlaceholderView):
             period_controller
             if period_controller is not None
             else PeriodController(self._lightcurve_controller)
+        )
+        self._quality_controller = (
+            quality_controller
+            if quality_controller is not None
+            else QualityController()
         )
         super().__init__(**kwargs)
 
@@ -557,6 +583,9 @@ class LightcurveView(_PlaceholderView):
         self._content.append(self._lightcurve_widget)
         self._period_widget = PeriodViewWidget(self._period_controller)
         self._content.append(self._period_widget)
+        # frame-quality ticket 02: the session-quality trends section
+        self._quality_widget = SessionQualityViewWidget(self._quality_controller)
+        self._content.append(self._quality_widget)
 
     # -- ticket 04: CSV export ------------------------------------------------------------
 
@@ -659,6 +688,18 @@ class LightcurveView(_PlaceholderView):
         """The period-analysis widget (periodogram + manual entry + folded
         plot, tickets 03 + 04)."""
         return self._period_widget
+
+    @property
+    def quality_controller(self) -> QualityController:
+        """The shared pure-layer quality controller (frame-quality ticket 02)
+        driving the session-quality section of this view."""
+        return self._quality_controller
+
+    @property
+    def quality_widget(self) -> SessionQualityViewWidget:
+        """The session-quality widget (summary card + FWHM / background /
+        airmass trend plots, frame-quality ticket 02)."""
+        return self._quality_widget
 
     @property
     def export_csv_button(self) -> Gtk.Button:
@@ -994,6 +1035,7 @@ def build_view(
     run_controller: RunController | None = None,
     lightcurve_controller: LightcurveController | None = None,
     period_controller: PeriodController | None = None,
+    quality_controller: QualityController | None = None,
     project_controller: ProjectController | None = None,
     project: Any = None,
 ) -> _PlaceholderView:
@@ -1007,8 +1049,9 @@ def build_view(
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
     ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
-    04), ``lightcurve_controller`` / ``period_controller`` to the
-    Lightcurve view (period-analysis tickets 01 + 03 + 04), and
+    04), ``lightcurve_controller`` / ``period_controller`` /
+    ``quality_controller`` to the Lightcurve view (period-analysis tickets
+    01 + 03 + 04 and frame-quality ticket 02), and
     ``project_controller`` to the Projects view (projects-view ticket 01) —
     the app window passes its shared controllers; the other views ignore
     them.
@@ -1037,6 +1080,7 @@ def build_view(
         return LightcurveView(
             lightcurve_controller=lightcurve_controller,
             period_controller=period_controller,
+            quality_controller=quality_controller,
         )
     if view_id == ProjectsView.view_id:
         return ProjectsView(project_controller=project_controller)

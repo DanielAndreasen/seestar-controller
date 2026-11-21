@@ -1,4 +1,5 @@
-"""Frame-quality ticket 01 — pure metrics core + flagging + session scoring.
+"""Frame-quality tickets 01 + 02 — pure metrics core + flagging + session
+scoring + the quality-trends computation.
 
 Headless: no ``gi`` anywhere (the sandbox has no GTK, see
 docs/wiki/assumptions.md; a subprocess test enforces the boundary). No
@@ -17,7 +18,10 @@ frame, RGB reduction, the error cases, the pure flagging math
 (``robust_zscores`` / ``flag_outliers`` / ``flag_reasons``), ``score_session``
 end-to-end (scoring + flagging + persistence + the ``session_quality`` query
 API), skipped frames, stacks never scored, re-scoring upsert, and the package
-boundary (subprocess + source scan).
+boundary (subprocess + source scan). Ticket 02's pure trend computation
+(airmass series, series extraction, plot transforms, the quality controller)
+lives in tests/test_frame_quality_trends.py; the widget layer
+(``quality_view``) in tests/test_frame_quality_widgets.py.
 """
 
 import io
@@ -61,6 +65,15 @@ from seestar_controller.store.errors import QualityError as StoreQualityError
 
 #: Directory of the frame_quality package (source-scan audit).
 FRAME_QUALITY_PACKAGE_DIR = Path(frame_quality.__file__).resolve().parent
+
+#: The PURE modules of the package (no ``gi`` import — enforced by the source
+#: scan + the subprocess test below).
+PURE_FRAME_QUALITY_MODULES = ("metrics", "session", "trends")
+
+#: The WIDGET modules of the package (``import gi`` at module top, before the
+#: first ``from gi.repository`` line; lazy-exported via PEP 562
+#: ``_WIDGET_EXPORTS`` — never imported eagerly by the package ``__init__``).
+WIDGET_FRAME_QUALITY_MODULES = ("quality_view",)
 
 T0 = datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)
 
@@ -503,6 +516,8 @@ def test_frame_quality_package_imports_no_gi_no_link_no_ui():
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
         "assert 'seestar_controller.enhance' not in sys.modules, 'enhance imported eagerly';"
+        "assert 'seestar_controller.frame_quality.quality_view' not in sys.modules, 'widget module imported eagerly';"
+        "assert 'astropy' not in sys.modules, 'astropy imported eagerly';"
         "print('clean')"
     )
     result = subprocess.run(
@@ -515,14 +530,36 @@ def test_frame_quality_package_imports_no_gi_no_link_no_ui():
 def test_frame_quality_package_source_scan_no_gi_and_module_set():
     for path in sorted(FRAME_QUALITY_PACKAGE_DIR.glob("*.py")):
         source = path.read_text(encoding="utf-8")
-        assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE), (
-            f"{path.name} imports gi"
-        )
         assert not re.search(
             r"^\s*(import|from)\s+seestar_controller\.(link|ui|enhance)\b", source, re.MULTILINE
         ), f"{path.name} imports a widget/link package"
+        if path.stem in WIDGET_FRAME_QUALITY_MODULES:
+            # widget module: `import gi` at module top, BEFORE the first
+            # `from gi.repository` line (the gi-at-top convention)
+            lines = source.splitlines()
+            gi_import = next(
+                (i for i, line in enumerate(lines) if re.match(r"^\s*import gi\b", line)), None
+            )
+            assert gi_import is not None, f"{path.name} must import gi at module top"
+            first_repo = next(
+                (
+                    i
+                    for i, line in enumerate(lines)
+                    if re.match(r"^\s*from gi\.repository\b", line)
+                ),
+                None,
+            )
+            assert first_repo is not None, f"{path.name} must import from gi.repository"
+            assert gi_import < first_repo, f"{path.name}: import gi must precede gi.repository"
+        else:
+            assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE), (
+                f"{path.name} imports gi"
+            )
     modules = {path.stem for path in FRAME_QUALITY_PACKAGE_DIR.glob("*.py")}
-    assert modules == {"__init__", "metrics", "session"}
+    assert modules == {"__init__", *PURE_FRAME_QUALITY_MODULES, *WIDGET_FRAME_QUALITY_MODULES}
+    # the widget layer is lazy-exported (PEP 562), never imported eagerly
+    assert frame_quality._WIDGET_EXPORTS == {"SessionQualityView": "quality_view"}
+    assert "SessionQualityView" in frame_quality.__all__
 
 
 def test_frame_quality_public_api_is_exported():
@@ -550,13 +587,38 @@ def test_frame_quality_public_api_is_exported():
         "score_frame",
         "score_session",
         "session_quality",
+        # ticket 02: the pure trend layer + the lazy widget export
+        "DB_CALL_TIMEOUT_S",
+        "DEFAULT_OBSERVER",
+        "DEFAULT_TREND_WINDOW",
+        "MAX_AIRMASS",
+        "Observer",
+        "QualityController",
+        "QualitySnapshot",
+        "SessionQualityView",
+        "SessionTrends",
+        "TrendPoint",
+        "TrendWindow",
+        "TrendsError",
+        "airmass_series",
+        "full_trend_window",
+        "resolve_target_coords",
+        "screen_to_trend",
+        "session_trends",
+        "trend_to_screen",
     ):
         assert name in frame_quality.__all__, name
-        assert hasattr(frame_quality, name), name
+        if name in frame_quality._WIDGET_EXPORTS:
+            # lazy widget export: listed in __all__ + _WIDGET_EXPORTS, but NOT
+            # imported here (that would pull in gi — headless sandbox)
+            assert frame_quality._WIDGET_EXPORTS[name] == "quality_view"
+        else:
+            assert hasattr(frame_quality, name), name
     assert frame_quality.score_frame is score_frame
     assert frame_quality.score_session is score_session
     assert frame_quality.session_quality is session_quality
     assert issubclass(frame_quality.QualityError, ValueError)
+    assert issubclass(frame_quality.TrendsError, frame_quality.QualityError)
     # deliberately distinct from the store's QualityError
     assert not issubclass(frame_quality.QualityError, StoreQualityError)
     assert issubclass(StoreQualityError, Exception)
