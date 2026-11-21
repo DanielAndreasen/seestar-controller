@@ -116,9 +116,10 @@ class SolveController:
     - ``project`` — the store project (None = follow the attached viewer
       controller's project, see :meth:`attach_viewer`);
     - ``viewer_controller`` — an optional duck-typed viewer controller (the
-      shared enhance viewer controller — NOT imported here): its project and
-      its currently open stack are adopted whenever no explicit project is
-      set, so the solve panel follows the stack open in the image viewer;
+      shared enhance viewer controller — NOT imported here): its project is
+      adopted when no explicit ``project`` is given, and its currently open
+      stack is always adopted, so the solve panel follows the stack open in
+      the image viewer;
     - ``invoke_on_main`` — the marshalling callable for listener
       notifications AND for store calls made from a non-db thread (the app
       binds ``GLib.idle_add``; the default calls directly).
@@ -153,10 +154,14 @@ class SolveController:
         self._last_n_stars: int | None = None
         self._status: str | None = None
         self._error: str | None = None
-        if viewer_controller is not None:
-            self.attach_viewer(viewer_controller)
+        # set_project FIRST: it clears the stack state, so attaching the
+        # viewer afterwards (which adopts the viewer's open stack) must come
+        # last — the other order would wipe the just-adopted stack when both
+        # ``project`` and ``viewer_controller`` are given.
         if project is not None:
             self.set_project(project)
+        if viewer_controller is not None:
+            self.attach_viewer(viewer_controller)
 
     # -- project + viewer -----------------------------------------------------------
 

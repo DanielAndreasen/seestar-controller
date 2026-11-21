@@ -336,6 +336,25 @@ def _fake_result() -> SolveResult:
     )
 
 
+def test_solve_controller_with_project_and_viewer_keeps_the_open_stack(
+    project, plain_stack_frame
+):
+    """Regression: constructing with BOTH ``project=`` and
+    ``viewer_controller=`` must keep the viewer's open stack (set_project
+    clears the stack state, so it must run before attach_viewer adopts it)."""
+    frame = plain_stack_frame
+    viewer = FakeViewer(project, frame_id=frame.id)
+    controller = SolveController(project=project, viewer_controller=viewer)
+    snap = controller.snapshot
+    assert snap.project_name == "M 42"
+    assert snap.stack_frame_id == frame.id
+    assert snap.stack_label == "stack label"
+    # a later viewer change still updates the adopted stack
+    viewer.snapshot = SimpleNamespace(current=None)
+    viewer.emit()
+    assert controller.snapshot.stack_frame_id is None
+
+
 def test_solve_controller_follows_viewer_and_solves(project, plain_stack_frame, monkeypatch):
     frame = plain_stack_frame
     viewer = FakeViewer(project, frame_id=frame.id)
