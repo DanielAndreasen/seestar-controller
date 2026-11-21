@@ -4,7 +4,7 @@
 
 **Blocked by:** dependency-upgrade 01, 02
 
-**Status:** ready-for-agent
+**Status:** implemented in 3af6e31 (merged)
 
 - [ ] docs/wiki dated entry with version table + breakage notes
 - [ ] Clean-venv verification: `uv sync --fresh`, `uv run pytest -q`, `uv tool run ty check`, `uv tool run ruff check`, GUI launch, offline project open
