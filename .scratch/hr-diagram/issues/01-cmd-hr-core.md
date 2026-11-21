@@ -4,7 +4,7 @@
 
 **Blocked by:** gaia-crossmatch 01 (crossmatch table per stack — not yet ticketed; write gaia-crossmatch issues first or together with this)
 
-**Status:** ready-for-agent
+**Status:** implemented in 0c27429 (merged)
 
 - [ ] Pure `hr_diagram/` (or `analysis/hr.py`) package, no gi import (subprocess boundary test like photometry's)
 - [ ] `cmd_points(table)` and `hr_points(table, parallax_snr=5.0)` -> frozen point records (source_id, g, bp_rp, abs_g, member flag, errors)
