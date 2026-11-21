@@ -199,6 +199,7 @@ from seestar_controller.analysis import (
 from seestar_controller.enhance import EditorController, ViewerController
 from seestar_controller.frame_quality import QualityController
 from seestar_controller.gaia import CrossmatchController
+from seestar_controller.hr_diagram import HrDiagramController
 from seestar_controller.moving_objects import MoverController
 from seestar_controller.observing import (
     ObserveController,
@@ -330,6 +331,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         quality_controller: QualityController | None = None,
         mover_controller: MoverController | None = None,
         crossmatch_controller: CrossmatchController | None = None,
+        hr_diagram_controller: HrDiagramController | None = None,
         scan_controller: ScanController | None = None,
         project_controller: ProjectController | None = None,
     ) -> None:
@@ -499,6 +501,19 @@ class SeestarWindow(Adw.ApplicationWindow):
                 viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
             ))
         )
+        # Hr-diagram ticket 03: one shared H-R diagram controller following
+        # the shared viewer controller (the stack open in the image viewer
+        # becomes the diagram target when it is crossmatched); the H-R
+        # diagram view renders its snapshots. Its invoke_on_main is
+        # GLib.idle_add, so worker-thread store reads/writes + notifications
+        # land on the main loop.
+        self._hr_diagram_controller = (
+            hr_diagram_controller
+            if hr_diagram_controller is not None
+            else _shared_from_app(app, "hr_diagram_controller", lambda: HrDiagramController(
+                viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
+            ))
+        )
         # Variable-scan ticket 02: one shared scan controller following the
         # shared viewer controller (the open project becomes the scan
         # candidate view's project); the Photometry view's variable-scan
@@ -579,6 +594,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     quality_controller=self._quality_controller,
                     mover_controller=self._mover_controller,
                     crossmatch_controller=self._crossmatch_controller,
+                    hr_diagram_controller=self._hr_diagram_controller,
                     scan_controller=self._scan_controller,
                     project_controller=self._project_controller,
                     project=self._project_controller.current,
@@ -709,7 +725,7 @@ class SeestarWindow(Adw.ApplicationWindow):
 
     @property
     def view_stack(self) -> Adw.ViewStack:
-        """The view stack holding the five view pages."""
+        """The view stack holding the six view pages."""
         return self._stack
 
     @property
@@ -790,6 +806,13 @@ class SeestarWindow(Adw.ApplicationWindow):
         return self._crossmatch_controller
 
     @property
+    def hr_diagram_controller(self) -> HrDiagramController:
+        """The shared H-R diagram controller (hr-diagram ticket 03 — the
+        H-R diagram view binds to it; it follows the viewer controller's
+        project and open stack)."""
+        return self._hr_diagram_controller
+
+    @property
     def scan_controller(self) -> ScanController:
         """The shared variable-scan controller (variable-scan ticket 02 —
         the Photometry view's candidate panel binds to it; it follows the
@@ -828,6 +851,7 @@ class SeestarWindow(Adw.ApplicationWindow):
             quality=self._quality_controller,
             movers=self._mover_controller,
             crossmatch=self._crossmatch_controller,
+            hr_diagram=self._hr_diagram_controller,
             scan=self._scan_controller,
         )
 
@@ -997,6 +1021,15 @@ class SeestarApplication(Adw.Application):
         self.crossmatch_controller = CrossmatchController(
             viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
         )
+        # Hr-diagram ticket 03: the shared H-R diagram controller following
+        # the shared viewer controller (the stack open in the image viewer
+        # becomes the diagram target when it is crossmatched); the window
+        # passes it to the H-R diagram view. Store reads/writes and
+        # notifications are marshalled onto the GLib main loop like the other
+        # shared controllers'.
+        self.hr_diagram_controller = HrDiagramController(
+            viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
+        )
         # Variable-scan ticket 02: the shared scan controller following the
         # shared viewer controller (the open project becomes the candidate
         # view's project); the window passes it to the Photometry view's
@@ -1016,9 +1049,9 @@ class SeestarApplication(Adw.Application):
         # (~/SeestarProjects, created on demand at create time); a changed
         # project_root re-lists the projects under the new root (see
         # _on_settings_changed). The attach list covers the observe / viewer /
-        # picker / run / lightcurve / period / quality / movers / crossmatch
-        # controllers, so every current-project change is pushed to all of
-        # them via their ``set_project``.
+        # picker / run / lightcurve / period / quality / movers / crossmatch /
+        # hr_diagram controllers, so every current-project change is pushed to
+        # all of them via their ``set_project``.
         self.project_controller = ProjectController(self._state)
         self.project_controller.restore()
         self.project_controller.attach_controllers(
@@ -1031,6 +1064,7 @@ class SeestarApplication(Adw.Application):
             quality=self.quality_controller,
             movers=self.mover_controller,
             crossmatch=self.crossmatch_controller,
+            hr_diagram=self.hr_diagram_controller,
             scan=self.scan_controller,
         )
         self.settings_controller.add_listener(self._on_settings_changed)
