@@ -4,7 +4,7 @@
 
 **Blocked by:** dependency-upgrade 01, 02, 03
 
-**Status:** ready-for-agent
+**Status:** implemented in 157a1a0 (merged)
 
 - [ ] Dated docs/wiki entry: each candidate 3.14 feature -> adopted (with commit) or rejected (with reason)
 - [ ] Adopted changes are minimal and local; no new dependencies, no new config
