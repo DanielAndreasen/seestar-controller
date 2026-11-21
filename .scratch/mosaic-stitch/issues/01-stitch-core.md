@@ -4,7 +4,7 @@
 
 **Blocked by:** None for the core (astrometry spec is separate; use tile WCS if present, else scope-reported tile offsets from the session log if available)
 
-**Status:** ready-for-agent
+**Status:** implemented in 1c015c0 (merged 7585e3c)
 
 - [ ] Pure `mosaic/` package, no gi (subprocess boundary test); astropy lazy; reproject optional with fallback
 - [ ] `stitch_session(project, session_id) -> path` — collect tile stacks, read WCS per tile, common grid, reproject/shift, overlap blend (average/feather), write stitched FITS into the project (file-based, e.g. mosaics/<sid>.fits; no store schema bump)

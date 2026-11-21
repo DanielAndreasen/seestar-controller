@@ -1,6 +1,6 @@
 # Spec: mosaic-stitch
 
-Status: ready-for-agent (1 issue)
+Status: completed 2026-11-20 (issue 01 implemented in 1c015c0, merged 7585e3c)
 
 ## Problem Statement
 
