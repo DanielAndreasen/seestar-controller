@@ -4,7 +4,7 @@
 
 **Blocked by:** dependency-upgrade 01, 02, 03
 
-**Status:** ready-for-agent
+**Status:** implemented in ff3370f (merged)
 
 - [ ] `--durations` analysis + before/after timing recorded in docs/wiki (dated, with commit)
 - [ ] Parallel run (`-n auto`) verified reliable OR documented as optional with rationale; fast-loop marker strategy documented if used
