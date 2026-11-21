@@ -23,7 +23,9 @@ window passes both down via
   per :class:`~seestar_controller.enhance.fits_io.StackInfo`, selecting a row
   opens the stack via the viewer controller — the pick controller adopts the
   opened image automatically), a **Refresh** button, the **role selector**
-  (Target / Comp :class:`Gtk.DropDown`), the **aperture** spin buttons
+  (Target / Comp / Check :class:`Gtk.DropDown` — the check star is designated
+  here and persisted via store.stars on Save, check-star-plot ticket 02),
+  the **aperture** spin buttons
   (radius + sky-annulus inner/outer, bound to
   :meth:`~seestar_controller.photometry.picking.PickController.set_aperture_params`),
   the **picks list** with a **Remove selected** button, the
@@ -43,7 +45,7 @@ window passes both down via
   preview-vs-FITS downscale) and calls
   :meth:`~seestar_controller.photometry.picking.PickController.pick_at`; the
   overlay's draw function paints each pick's aperture circle + dashed sky
-  annulus + label (target green, comp blue).
+  annulus + label (target green, comp blue, check amber).
 
 The widget re-renders on every frozen
 :class:`~seestar_controller.photometry.picking.PickSession` and
@@ -67,6 +69,7 @@ from ..enhance.render import render_preview
 from ..enhance.viewer import texture_from_pil
 from ..enhance.viewer_controller import ViewerController, ViewerSnapshot
 from .picking import (
+    ROLE_CHECK,
     ROLE_COMP,
     ROLE_TARGET,
     PickController,
@@ -85,17 +88,25 @@ LEFT_PANE_POSITION = 320
 #: left pane scrolls instead of forcing the page/window minimum height up.
 LEFT_PANE_MIN_CONTENT_HEIGHT = 200
 
-#: Role selector entries: display label -> store role.
-ROLE_CHOICES: tuple[tuple[str, str], ...] = (("Target", ROLE_TARGET), ("Comp", ROLE_COMP))
+#: Role selector entries: display label -> store role (the check star is
+#: designated here — check-star-plot ticket 02; at most one check pick, with
+#: replace semantics like the target).
+ROLE_CHOICES: tuple[tuple[str, str], ...] = (
+    ("Target", ROLE_TARGET),
+    ("Comp", ROLE_COMP),
+    ("Check", ROLE_CHECK),
+)
 
 #: Aperture spin ranges: ``(lower, upper, step, digits)``.
 RADIUS_RANGE = (0.5, 50.0, 0.5, 1)
 SKY_IN_RANGE = (1.0, 100.0, 0.5, 1)
 SKY_OUT_RANGE = (1.0, 200.0, 0.5, 1)
 
-#: Overlay colors (RGBA): the target star is green, comps blue.
+#: Overlay colors (RGBA): the target star is green, comps blue, the check star
+#: amber (check-star-plot ticket 02).
 TARGET_COLOR = (0.30, 0.90, 0.45, 1.0)
 COMP_COLOR = (0.45, 0.70, 1.0, 1.0)
+CHECK_COLOR = (0.98, 0.72, 0.20, 1.0)
 
 #: One aperture mark in widget coordinates: ``(wx, wy, radius, sky_in, sky_out,
 #: role, label)`` — all radii in widget pixels.
@@ -197,7 +208,10 @@ class StarPickerView(Gtk.Box):
         left.append(self._refresh_button)
 
         picking_group = Adw.PreferencesGroup(title="Picking")
-        role_row = Adw.ActionRow(title="Role", subtitle="Role of the next clicked star")
+        role_row = Adw.ActionRow(
+            title="Role",
+            subtitle="Role of the next clicked star (Target / Comp / Check)",
+        )
         self._role_dropdown = Gtk.DropDown(
             model=Gtk.StringList.new([label for label, _role in ROLE_CHOICES]),
             selected=0,
@@ -245,7 +259,7 @@ class StarPickerView(Gtk.Box):
 
         self._save_button = Gtk.Button(
             label="Save picks",
-            tooltip_text="Save the picks (target + comps) into the current project",
+            tooltip_text="Save the picks (target + comps + check) into the current project",
         )
         self._save_button.connect("clicked", self._on_save_clicked)
         left.append(self._save_button)
@@ -364,7 +378,7 @@ class StarPickerView(Gtk.Box):
 
     @property
     def role_dropdown(self) -> Gtk.DropDown:
-        """The role selector (Target / Comp)."""
+        """The role selector (Target / Comp / Check)."""
         return self._role_dropdown
 
     @property
@@ -497,11 +511,16 @@ class StarPickerView(Gtk.Box):
 
     def _draw_overlay(self, area: Gtk.DrawingArea, cr: Any, width: int, height: int) -> None:
         """DrawingArea draw func: paint the aperture circle + dashed sky
-        annulus + label of every pick (target green, comp blue)."""
+        annulus + label of every pick (target green, comp blue, check amber)."""
         marks = self._compute_marks(width, height)
         self._last_marks = marks
         for wx, wy, radius, sky_in, sky_out, role, label in marks:
-            color = TARGET_COLOR if role == ROLE_TARGET else COMP_COLOR
+            if role == ROLE_TARGET:
+                color = TARGET_COLOR
+            elif role == ROLE_CHECK:
+                color = CHECK_COLOR
+            else:
+                color = COMP_COLOR
             cr.set_source_rgba(*color)
             cr.set_line_width(1.5)
             cr.arc(wx, wy, radius, 0.0, 2.0 * math.pi)
@@ -570,11 +589,13 @@ class StarPickerView(Gtk.Box):
             self._info_label.set_label("no stack open — pick a stack on the left")
             return
         target = next((p for p in snapshot.picks if p.role == ROLE_TARGET), None)
+        check = next((p for p in snapshot.picks if p.role == ROLE_CHECK), None)
         comps = sum(1 for p in snapshot.picks if p.role == ROLE_COMP)
         wcs_note = "" if has_celestial_wcs(image.header) else " — no WCS (pixel-only picks)"
         self._info_label.set_label(
             f"{image.width}x{image.height}{wcs_note} — {len(snapshot.picks)} pick(s): "
-            f"target {'set' if target is not None else '—'}, {comps} comp(s)"
+            f"target {'set' if target is not None else '—'}, "
+            f"check {'set' if check is not None else '—'}, {comps} comp(s)"
         )
 
     # -- signals ---------------------------------------------------------------------------
@@ -605,10 +626,12 @@ class StarPickerView(Gtk.Box):
             self._set_status(f"picked {spec.describe()}", error=False)
 
     def _next_label(self, role: str) -> str:
-        """The automatic label for the next pick: ``"Target"`` / ``"Comp A"``,
-        ``"Comp B"``, ..."""
+        """The automatic label for the next pick: ``"Target"`` / ``"Check"`` /
+        ``"Comp A"``, ``"Comp B"``, ..."""
         if role == ROLE_TARGET:
             return "Target"
+        if role == ROLE_CHECK:
+            return "Check"
         n = len(self._picker_controller.comps)
         letter = chr(ord("A") + min(n, 25))
         return f"Comp {letter}"

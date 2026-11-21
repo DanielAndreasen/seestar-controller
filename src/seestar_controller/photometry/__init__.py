@@ -77,14 +77,18 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   **nothing** from ``gi``.
 - **Widget layer** — :mod:`.star_picker` (:class:`~.star_picker.StarPickerView`,
   the Photometry view's image + click-to-pick + aperture overlay + role
-  selector + aperture spins + picks list + Save picks button),
+  selector (Target / Comp / Check — the check star is designated there and
+  persisted via store.stars on Save, check-star-plot ticket 02) + aperture
+  spins + picks list + Save picks button),
   :mod:`.suggestions_panel` (:class:`~.suggestions_panel.SuggestionsPanel`,
   the catalog-assist list next to the image: Search button, one row per
   suggestion with an Add button, clean error status), and
   :mod:`.results_view` (:class:`~.results_view.ResultsPanel`, ticket 04: the
   session chooser + Run button + progress, the per-frame measurements table
   with outlier checkboxes, and the mag-vs-jd scatter plot on a
-  :class:`Gtk.DrawingArea`). They import ``gi`` at
+  :class:`Gtk.DrawingArea` — with the check star's curve as a second series
+  and a target-minus-check toggle when the last run had a check star,
+  check-star-plot ticket 02). They import ``gi`` at
   module top and are re-exported here **lazily** (PEP 562 ``__getattr__``), so
   ``import seestar_controller.photometry`` never imports ``gi``.
 

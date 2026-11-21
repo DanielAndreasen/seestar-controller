@@ -47,6 +47,15 @@ point per lightcurve point, the Run button runs the session on a worker thread
 loop), a failed run shows a clean error status, and clicking a table row
 toggles the outlier exclusion (``set_excluded``) refreshing both the table
 and the plot.
+
+Check-star-plot ticket 02 (check-star series in the results view): the role
+selector gains a **Check** entry — clicking a star with it designates the
+check star (amber overlay mark, ``"Check"`` label, replace semantics), and
+Save picks persists it via store.stars (load order target -> check -> comps);
+and the results panel plots the check star's differential curve as a second
+series next to the target's (from the last run report's ``frame_results``)
+plus a **target − check** toggle for the target-minus-check curve, with the
+excluded flag carried over to the check series.
 """
 
 import io
@@ -111,12 +120,17 @@ def wcs_header() -> dict:
     return dict(w.to_header())
 
 
-def synthetic_image(size: int = 64, seed: int = 1) -> np.ndarray:
-    """A small synthetic stack image (background + Gaussian star peaks)."""
+def synthetic_image(
+    size: int = 64, seed: int = 1, *, extra_stars: tuple[tuple[int, int, float], ...] = ()
+) -> np.ndarray:
+    """A small synthetic stack image (background + Gaussian star peaks).
+    ``extra_stars`` appends more ``(cy, cx, peak)`` stars (used for the check
+    star, check-star-plot ticket 02)."""
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:size, 0:size]
     data = np.full((size, size), 10.0, dtype=np.float64)
-    for cy, cx, peak in ((30, 40, 8000.0), (16, 16, 5000.0), (50, 12, 3000.0)):
+    stars = ((30, 40, 8000.0), (16, 16, 5000.0), (50, 12, 3000.0)) + tuple(extra_stars)
+    for cy, cx, peak in stars:
         data = data + peak * np.exp(-(((yy - cy) ** 2 + (xx - cx) ** 2) / 8.0))
     data = data + rng.normal(0.0, 1.0, size=(size, size))
     return np.ascontiguousarray(data, dtype=np.float32)
@@ -643,3 +657,153 @@ def test_search_button_runs_lookup_on_worker_thread(picker, viewer_controller, s
     pump_main()  # the worker's listener notification was marshalled via idle_add
     assert len(panel.suggestion_rows()) == 2
     assert "2 standard(s)" in panel.status_label.get_label()
+
+
+# ---------------------------------------------------------------------------
+# Check-star-plot ticket 02: check-star role in the picker + check series in
+# the results view
+# ---------------------------------------------------------------------------
+
+#: The check star's position in the synthetic frames (cy, cx) = (48, 48) —
+#: well clear of every other star's aperture + sky annulus (nearest star is
+#: the target at (30, 40), ~19.7 px away; annulus outer is 12 px).
+CHECK_CY, CHECK_CX = 48, 48
+
+
+def test_role_dropdown_has_check_and_check_pick_persists(gtk, picker, viewer_controller, project):
+    viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
+    pump_main()
+    # the role selector offers Target / Comp / Check
+    model = picker.role_dropdown.get_model()
+    assert [model.get_item(i).get_string() for i in range(model.get_n_items())] == [
+        "Target",
+        "Comp",
+        "Check",
+    ]
+    # set the project FIRST (set_project loads the stored picks, replacing
+    # the session's), then pick target + comp + check via dropdown + clicks
+    picker.controller.set_project(project)
+    for index, (x, y) in ((0, (40, 30)), (1, (16, 16)), (2, (50, 12))):
+        picker.role_dropdown.set_selected(index)
+        wx, wy = picker.image_to_widget(x, y)
+        picker._on_pressed(None, 1, wx, wy)
+    picks = picker.controller.picks
+    assert [p.role for p in picks] == ["target", "comp", "check"]
+    check = picker.controller.check
+    assert check is not None and check.label == "Check"
+    assert check.x == pytest.approx(50.0, abs=1.0)  # snapped onto the star
+    # the overlay carries one mark per pick, the check one included
+    assert [m[5] for m in picker.pick_marks()] == ["target", "comp", "check"]
+    assert "check set" in picker._info_label.get_label()
+    # Save picks persists the check star via store.stars (load order:
+    # target -> check -> comps)
+    picker.save_button.emit("clicked")
+    pump_main()
+    stored = load_star_picks(project)
+    assert [p.role for p in stored] == ["target", "check", "comp"]
+    assert [p.label for p in stored] == ["Target", "Check", "Comp A"]
+    assert "saved 3" in picker._status_label.get_label()
+    # the project.json mirror carries the check pick too
+    assert project.config["star_picks"]["check"]["role"] == "check"
+    assert project.config["star_picks"]["check"]["label"] == "Check"
+
+
+def _sub_fits_with_check(i: int) -> bytes:
+    """A synthetic sub-frame FITS with a 4th (check) star at (48, 48)."""
+    seconds = i * 10
+    date_obs = f"2026-11-20T22:{seconds // 60:02d}:{seconds % 60:02d}.000"
+    return fits_bytes(
+        synthetic_image(64, seed=10 + i, extra_stars=((CHECK_CY, CHECK_CX, 3000.0),)),
+        date_obs=date_obs,
+    )
+
+
+def _store_subs_with_check(project, n: int = 4) -> str:
+    """Store ``n`` synthetic sub-frames (with the check star) in the project's
+    session and return the session id."""
+    session = list_sessions(project)[0].id
+    for i in range(n):
+        store_frame(project, session, KIND_SUB, _sub_fits_with_check(i))
+    return session
+
+
+def _save_widget_picks_with_check(project) -> None:
+    """Target + 2 comps + the check star at (48, 48) — the synthetic frames'
+    star positions (x=column, y=row)."""
+    save_star_picks(
+        project,
+        [
+            StarPick(role="target", label="Target", x=40.0, y=30.0, ra_deg=None,
+                     dec_deg=None, aperture_radius=4.0, sky_annulus_inner=8.0,
+                     sky_annulus_outer=12.0),
+            StarPick(role="comp", label="Comp A", x=16.0, y=16.0, ra_deg=None,
+                     dec_deg=None, aperture_radius=4.0, sky_annulus_inner=8.0,
+                     sky_annulus_outer=12.0),
+            StarPick(role="comp", label="Comp B", x=12.0, y=50.0, ra_deg=None,
+                     dec_deg=None, aperture_radius=4.0, sky_annulus_inner=8.0,
+                     sky_annulus_outer=12.0),
+            StarPick(role="check", label="Check", x=float(CHECK_CX), y=float(CHECK_CY),
+                     ra_deg=None, dec_deg=None, aperture_radius=4.0,
+                     sky_annulus_inner=8.0, sky_annulus_outer=12.0),
+        ],
+    )
+
+
+def test_results_panel_shows_check_series_and_tmc_toggle(gtk, project):
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs_with_check(project, n=4)
+    _save_widget_picks_with_check(project)
+    rc = RunController(project=project)
+    panel = ResultsPanel(run_controller=rc)
+    report = rc.run_session(session)  # main thread: rendered synchronously
+    assert len(report.measurements) == 4 and report.skipped == ()
+    assert len(report.check_points) == 4  # the run had a check star
+
+    # the target series is unchanged; the check series sits next to it
+    assert len(panel.plot_points()) == 4
+    check_points = panel.check_plot_points()
+    assert len(check_points) == 4
+    assert [p[0] for p in check_points] == [p[0] for p in report.check_points]  # jd
+    assert [p[1] for p in check_points] == [p[1] for p in report.check_points]  # check_mag
+    assert all(p[2] is not None and p[2] > 0.0 for p in check_points)  # check_mag_err
+    assert all(p[3] is False for p in check_points)  # excluded flag
+    # constant stars: the check differential mag is CONSTANT across frames
+    # (it is a differential mag — check.mag - ensemble — so its offset is not
+    # zero, but its frame-to-frame spread stays well within the errors)
+    check_mags = [p[1] for p in check_points]
+    assert max(check_mags) - min(check_mags) < 5.0 * (check_points[0][2] or 1.0)
+    # the target-minus-check series is available, hidden until the toggle
+    tmc_points = panel.tmc_plot_points()
+    assert len(tmc_points) == 4
+    assert [p[0] for p in tmc_points] == [p[0] for p in report.target_minus_check_points]
+    assert panel.show_target_minus_check() is False
+    assert panel.tmc_toggle.get_active() is False
+    panel.set_show_target_minus_check(True)  # same as clicking the toggle
+    assert panel.show_target_minus_check() is True
+    assert panel.tmc_toggle.get_active() is True
+    panel.tmc_toggle.set_active(False)
+    assert panel.show_target_minus_check() is False
+    # flagging a row as outlier flags the check/tmc points of that frame too
+    panel._on_row_activated(panel.list_box, panel.measurement_rows()[0])
+    assert panel.plot_points()[0][3] is True
+    assert panel.check_plot_points()[0][3] is True
+    assert panel.tmc_plot_points()[0][3] is True
+
+
+def test_results_panel_without_check_star_has_empty_check_series(gtk, project):
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs(project, n=3)  # no check star in the frames/picks
+    _save_widget_picks(project)
+    rc = RunController(project=project)
+    panel = ResultsPanel(run_controller=rc)
+    report = rc.run_session(session)
+    assert report.check_points == ()  # no check star picked
+    assert len(panel.plot_points()) == 3
+    assert panel.check_plot_points() == ()
+    assert panel.tmc_plot_points() == ()
+    # the toggle is harmless without a check star (nothing extra is drawn)
+    panel.set_show_target_minus_check(True)
+    assert panel.show_target_minus_check() is True
+    assert panel.tmc_plot_points() == ()
