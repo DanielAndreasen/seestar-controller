@@ -4,7 +4,7 @@
 
 **Blocked by:** gaia-crossmatch 01 (source list per stack — not yet ticketed), photometry 03/04 (done)
 
-**Status:** ready-for-agent
+**Status:** implemented in 13f4a97 (merged)
 
 - [ ] Pure `variable_scan/` package, no gi (subprocess boundary test); reuses photometry measure pipeline and store.frames/measurements
 - [ ] `scan_project(project, threshold=..., min_frames=...)` -> per-star lightcurves + ranking (MAD / median error), target/comps excluded, field-median fallback when no comps
