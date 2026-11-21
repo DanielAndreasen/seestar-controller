@@ -85,10 +85,18 @@ def test_gui_help_mentions_the_3_14_gi_fixes(capsys):
     with pytest.raises(SystemExit) as excinfo:
         parser.parse_args(["gui", "--help"])
     assert excinfo.value.code == 0
-    # argparse wraps help to the terminal width — normalize whitespace first
+    # argparse wraps help to the terminal width (break_on_hyphens=True splits
+    # tokens like "system-site-packages" into "system- site-packages"), so
+    # normalize whitespace and assert only hyphen-free substrings — those can
+    # never be split mid-token at any COLUMNS width.
     out = " ".join(capsys.readouterr().out.split())
-    assert "uv sync --extra gui" in out
-    assert "system-site-packages" in out
+    assert "PyGObject" in out
+    # fix A: system packages + system-site-packages venv
+    assert "uv venv" in out
+    assert "clear .venv" in out
+    # fix B: the optional gui extra
+    assert "uv sync" in out
+    assert "extra gui" in out
 
 
 def test_pygobject_is_optional_extra_never_hard_dependency():
