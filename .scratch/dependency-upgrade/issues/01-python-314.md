@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in 3c07d0f (merged)
 
 - [ ] `requires-python = ">=3.14,<3.15"` in pyproject.toml; `uv lock` + `uv sync` green
 - [ ] Any code/test fixes needed for 3.14 (no behavior change)
