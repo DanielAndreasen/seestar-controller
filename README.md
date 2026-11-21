@@ -7,7 +7,7 @@ and assumptions. Work is organised as specs + tickets under `.scratch/`.
 
 ## Development
 
-Python 3.12, managed with [uv](https://docs.astral.sh/uv/):
+Python 3.14, managed with [uv](https://docs.astral.sh/uv/):
 
 ```sh
 uv sync          # create the venv and install dependencies
