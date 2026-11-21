@@ -66,7 +66,9 @@ Typical flow::
   ``import seestar_controller.frame_quality`` never imports ``gi``.
 
 Ticket 01 covers the metrics core + flagging + storage; ticket 02 the
-quality-trends view; ticket 03 the photometry exclusion of flagged frames.
+quality-trends view; ticket 03 the photometry exclusion of flagged frames
+(:func:`flagged_frame_reasons` is the glue the photometry run consumes as its
+default excluded-frame set).
 """
 
 from seestar_controller.store.quality import (
@@ -97,6 +99,7 @@ from .session import (
     ScoredFrame,
     SessionScore,
     SkippedFrame,
+    flagged_frame_reasons,
     score_session,
 )
 from .trends import (
@@ -152,6 +155,7 @@ __all__ = [
     "airmass_series",
     "flag_outliers",
     "flag_reasons",
+    "flagged_frame_reasons",
     "frame_quality_for_frame",
     "full_trend_window",
     "resolve_target_coords",

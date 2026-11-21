@@ -24,6 +24,7 @@ outlier flagging reflected in the lightcurve), and the package boundary
 """
 
 import io
+import json
 import math
 import queue
 import re
@@ -48,11 +49,13 @@ from seestar_controller.photometry import (
 from seestar_controller.photometry import run as run_module
 from seestar_controller.photometry.run import (
     DB_CALL_TIMEOUT_S,
+    ExcludedFrame,
     RunController,
     RunError,
     RunProgress,
     RunReport,
     RunSnapshot,
+    format_exclusion_reasons,
 )
 from seestar_controller.store import (
     KIND_STACK,
@@ -65,6 +68,7 @@ from seestar_controller.store import (
     list_sessions,
     load_star_picks,
     measurements_for_frame,
+    save_frame_quality,
     save_star_picks,
     start_session,
     store_frame,
@@ -676,6 +680,219 @@ def test_set_excluded_error_paths(project):
     assert lightcurve(project)[0].excluded is False
 
 
+# --- frame-quality ticket 03: excluded frames (the session's flagged frames by default) -------------------
+
+
+def _flag_frame(project, frame_id: int, reasons: tuple[str, ...]) -> None:
+    """Persist a FLAGGED quality record for ``frame_id`` (the frame-quality
+    01/02 store API — what :func:`frame_quality.session_quality` reads back)."""
+    save_frame_quality(
+        project,
+        frame_id,
+        fwhm=3.5,
+        bg_median=BACKGROUND,
+        bg_std=NOISE,
+        star_count=10,
+        flagged=True,
+        flag_reasons=reasons,
+    )
+
+
+def test_run_excludes_flagged_frames_by_default(project):
+    session, frames, _inj = make_session(project, n=6)
+    store_picks(project)
+    _flag_frame(project, frames[1].id, ("fwhm",))
+    _flag_frame(project, frames[4].id, ("bg_std", "star_count"))
+    ctrl = RunController(project=project)
+    ticks: list[tuple[int, int, int]] = []
+    report = ctrl.run_session(session, lambda d, t, f: ticks.append((d, t, f.id)))
+    # exactly the flagged frames are excluded, in frame order, with their flag reasons
+    assert [e.frame_id for e in report.excluded] == [frames[1].id, frames[4].id]
+    assert report.excluded[0].reasons == ("fwhm",)
+    assert report.excluded[1].reasons == ("bg_std", "star_count")
+    assert report.excluded_count == 2
+    assert report.excluded_reasons == {"fwhm": 1, "bg_std": 1, "star_count": 1}
+    assert report.exclusion_summary == "2 frames excluded (bg_std×1, fwhm×1, star_count×1)"
+    # the other 4 frames were measured, nothing skipped, frames counts all 6
+    assert [m.frame_id for m in report.measurements] == [
+        frames[i].id for i in (0, 2, 3, 5)
+    ]
+    assert report.skipped == ()
+    assert report.frames == 6
+    # progress still advanced over ALL frames (excluded included): 1..6
+    assert [t[0] for t in ticks] == [1, 2, 3, 4, 5, 6]
+    assert ticks[-1][1] == 6
+    # the lightcurve has only the 4 measured frames; flagged frames have no rows
+    assert len(lightcurve(project)) == 4
+    assert measurements_for_frame(project, frames[1].id) == []
+    assert measurements_for_frame(project, frames[4].id) == []
+    # the exclusion is recorded in the project.json config (NOT a db schema change)
+    phot = project.config["photometry"]
+    assert phot["exclude_flagged_frames"] is True
+    last = phot["last_run"]
+    assert last["session_id"] == session
+    assert last["measured"] == 4
+    assert last["skipped"] == 0
+    assert last["excluded_count"] == 2
+    assert last["excluded"] == [
+        {"frame_id": frames[1].id, "reasons": ["fwhm"]},
+        {"frame_id": frames[4].id, "reasons": ["bg_std", "star_count"]},
+    ]
+    # ... and persisted to disk
+    persisted = json.loads(project.config_path.read_text(encoding="utf-8"))
+    assert persisted["photometry"]["exclude_flagged_frames"] is True
+    assert persisted["photometry"]["last_run"]["session_id"] == session
+    assert persisted["photometry"]["last_run"]["excluded_count"] == 2
+
+
+def test_run_excluded_frames_explicit_collection_overrides_the_default(project):
+    session, frames, _inj = make_session(project, n=4)
+    store_picks(project)
+    _flag_frame(project, frames[1].id, ("fwhm",))  # flagged, but overridden below
+    ctrl = RunController(project=project)
+    # an explicit collection excludes exactly those ids (no reasons) — the
+    # flagged frame is measured again because the default is overridden
+    report = ctrl.run_session(session, excluded_frames={frames[2].id})
+    assert [e.frame_id for e in report.excluded] == [frames[2].id]
+    assert report.excluded[0].reasons == ()
+    assert report.excluded_reasons == {"flagged": 1}
+    assert report.exclusion_summary == "1 frame excluded (flagged×1)"
+    assert [m.frame_id for m in report.measurements] == [
+        frames[i].id for i in (0, 1, 3)
+    ]
+    assert len(lightcurve(project)) == 3
+    phot = project.config["photometry"]
+    assert phot["exclude_flagged_frames"] is False
+    assert phot["last_run"]["excluded"] == [{"frame_id": frames[2].id, "reasons": []}]
+
+
+def test_run_excluded_frames_empty_collection_excludes_nothing(project):
+    session, frames, _inj = make_session(project, n=3)
+    store_picks(project)
+    _flag_frame(project, frames[0].id, ("fwhm",))
+    ctrl = RunController(project=project)
+    report = ctrl.run_session(session, excluded_frames=set())
+    assert report.excluded == ()
+    assert report.excluded_count == 0
+    assert report.exclusion_summary == "no frames excluded"
+    assert len(report.measurements) == 3  # even the flagged frame is measured
+    assert len(lightcurve(project)) == 3
+    assert project.config["photometry"]["exclude_flagged_frames"] is False
+    assert project.config["photometry"]["last_run"]["excluded_count"] == 0
+
+
+def test_run_excluded_frames_mapping_carries_reasons(project):
+    session, frames, _inj = make_session(project, n=3)
+    store_picks(project)
+    ctrl = RunController(project=project)
+    report = ctrl.run_session(
+        session, excluded_frames={frames[1].id: ["manual", "clouds"]}
+    )
+    assert report.excluded == (ExcludedFrame(frame_id=frames[1].id, reasons=("manual", "clouds")),)
+    assert report.excluded_reasons == {"manual": 1, "clouds": 1}
+    assert report.exclusion_summary == "1 frame excluded (clouds×1, manual×1)"
+    assert [m.frame_id for m in report.measurements] == [frames[0].id, frames[2].id]
+    assert project.config["photometry"]["last_run"]["excluded"] == [
+        {"frame_id": frames[1].id, "reasons": ["manual", "clouds"]}
+    ]
+
+
+def test_run_excluded_frames_are_skipped_before_measuring(project):
+    # an all-zero frame would FAIL measuring ("non-positive" flux -> skipped);
+    # flagged, it must land in `excluded` instead — proof the exclusion happens
+    # before any FITS read / store write
+    session = start_session(project, clock=frozen(T0))
+    good = store_frame(
+        project, session, KIND_SUB,
+        fits_bytes(frame_data(F0, seed=1), date_obs=date_obs_str(0)),
+    )
+    zero = store_frame(
+        project, session, KIND_SUB,
+        fits_bytes(np.zeros((SIZE, SIZE), dtype=np.float32), date_obs=date_obs_str(1)),
+    )
+    store_picks(project)
+    _flag_frame(project, zero.id, ("bg_std",))
+    ctrl = RunController(project=project)
+    report = ctrl.run_session(session)
+    assert [e.frame_id for e in report.excluded] == [zero.id]
+    assert report.excluded[0].reasons == ("bg_std",)
+    assert report.skipped == ()  # never reached the measuring stage
+    assert [m.frame_id for m in report.measurements] == [good.id]
+    assert report.frames == 2
+    assert measurements_for_frame(project, zero.id) == []
+    assert len(lightcurve(project)) == 1
+
+
+def test_run_excluded_frames_validation_errors(project):
+    session, _frames, _inj = make_session(project, n=2)
+    store_picks(project)
+    ctrl = RunController(project=project)
+    with pytest.raises(RunError, match="must be None, a collection of frame ids, or a mapping"):
+        ctrl.run_session(session, excluded_frames="abc")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    with pytest.raises(RunError, match="must be None, a collection of frame ids, or a mapping"):
+        ctrl.run_session(session, excluded_frames=123)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    with pytest.raises(RunError, match="excluded frame ids must be ints"):
+        ctrl.run_session(session, excluded_frames={True: ()})  # type: ignore[dict-item]
+    with pytest.raises(RunError, match="excluded frame ids must be ints"):
+        ctrl.run_session(session, excluded_frames=[1.5])  # type: ignore[list-item]  # ty: ignore[invalid-argument-type]
+    with pytest.raises(RunError, match="must be an iterable of strings"):
+        ctrl.run_session(session, excluded_frames={1: "fwhm"})  # type: ignore[dict-item]
+    with pytest.raises(RunError, match="only strings"):
+        ctrl.run_session(session, excluded_frames={1: [1]})  # type: ignore[dict-item]
+    # a failed validation leaves no run behind: the controller is idle again
+    assert ctrl.snapshot.running is False
+    assert ctrl.snapshot.report is None
+
+
+def test_run_without_quality_records_excludes_nothing(project):
+    session, frames, _inj = make_session(project, n=3)
+    store_picks(project)
+    # no save_frame_quality calls at all -> no flagged frames -> nothing excluded
+    ctrl = RunController(project=project)
+    report = ctrl.run_session(session)
+    assert report.excluded == ()
+    assert report.excluded_count == 0
+    assert report.excluded_reasons == {}
+    assert report.exclusion_summary == "no frames excluded"
+    assert len(report.measurements) == 3
+    assert report.frames == 3
+    assert project.config["photometry"]["exclude_flagged_frames"] is True
+    assert project.config["photometry"]["last_run"]["excluded_count"] == 0
+    assert project.config["photometry"]["last_run"]["excluded"] == []
+    assert len(lightcurve(project)) == 3
+    assert all(f.id in [m.frame_id for m in report.measurements] for f in frames)
+
+
+def test_format_exclusion_reasons_pure():
+    assert format_exclusion_reasons({}) == ""
+    assert format_exclusion_reasons({"fwhm": 2, "bg_std": 1}) == "bg_std×1, fwhm×2"
+    assert format_exclusion_reasons({"fwhm": 0, "bg_std": -1}) == ""  # zero/negative dropped
+    assert format_exclusion_reasons({"a": 3, "b": 1, "c": 2}) == "a×3, b×1, c×2"
+
+
+def test_excluded_frame_is_frozen_and_report_defaults():
+    e = ExcludedFrame(frame_id=7, reasons=("fwhm",))
+    assert (e.frame_id, e.reasons) == (7, ("fwhm",))
+    assert ExcludedFrame(frame_id=8).reasons == ()
+    with pytest.raises(Exception):  # noqa: B017
+        e.frame_id = 9  # type: ignore[misc]  # ty: ignore[invalid-assignment]
+    # RunReport defaults: no exclusion
+    report = RunReport(measurements=(), skipped=(), session_id="s1")
+    assert report.excluded == ()
+    assert report.excluded_count == 0
+    assert report.excluded_reasons == {}
+    assert report.exclusion_summary == "no frames excluded"
+    assert report.frames == 0
+    report2 = RunReport(
+        measurements=(), skipped=(), session_id="s1",
+        excluded=(ExcludedFrame(frame_id=1), ExcludedFrame(frame_id=2, reasons=("fwhm",))),
+    )
+    assert report2.frames == 2
+    assert report2.excluded_count == 2
+    assert report2.excluded_reasons == {"flagged": 1, "fwhm": 1}
+    assert report2.exclusion_summary == "2 frames excluded (flagged×1, fwhm×1)"
+
+
 # --- package boundary (subprocess + source scan) + public API ---------------------------------------------
 
 
@@ -727,6 +944,7 @@ def test_run_module_source_scan_no_gi_no_widget_import_and_package_module_set():
 def test_run_public_api_is_exported_from_package():
     for name in (
         "DB_CALL_TIMEOUT_S",
+        "ExcludedFrame",
         "ProgressCallback",
         "RunController",
         "RunError",
@@ -734,6 +952,7 @@ def test_run_public_api_is_exported_from_package():
         "RunProgress",
         "RunReport",
         "RunSnapshot",
+        "format_exclusion_reasons",
     ):
         assert name in photometry.__all__, name
         assert hasattr(photometry, name), name

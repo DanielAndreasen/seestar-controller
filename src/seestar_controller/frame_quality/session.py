@@ -12,6 +12,9 @@ astropy/photutils imports stay lazy inside :func:`.metrics.score_frame`).
   persist every metrics + flag record via
   :func:`seestar_controller.store.quality.save_frame_quality`, and return a
   :class:`SessionScore`;
+- :func:`flagged_frame_reasons` — the glue for photometry ticket 03: the
+  session's flagged frames as a ``frame_id -> flag_reasons`` map, the default
+  excluded-frame set of a photometry run over the session;
 - :class:`ScoredFrame` / :class:`SkippedFrame` / :class:`SessionScore` — the
   frozen result records.
 
@@ -53,7 +56,7 @@ from seestar_controller.store.frames import (
     read_frame_bytes,
 )
 from seestar_controller.store.project import Project, utc_now_iso
-from seestar_controller.store.quality import save_frame_quality
+from seestar_controller.store.quality import save_frame_quality, session_quality
 
 from .metrics import (
     DEFAULT_MAD_THRESHOLD,
@@ -230,3 +233,24 @@ def score_session(
         skipped=tuple(skipped),
         mad_threshold=float(mad_threshold),
     )
+
+
+def flagged_frame_reasons(project: Project, session_id: str) -> dict[int, tuple[str, ...]]:
+    """The glue for photometry ticket 03: the session's **flagged** (rejected)
+    frames as a map ``frame_id -> flag_reasons`` — the default excluded-frame
+    set of a photometry run over this session
+    (:meth:`seestar_controller.photometry.run.RunController.run_session` with
+    ``excluded_frames=None``).
+
+    Reads the persisted quality table via
+    :func:`seestar_controller.store.quality.session_quality` and keeps only the
+    ``flagged`` records, e.g. ``{17: ("fwhm",), 23: ("bg_std", "star_count")}``.
+    A session with no flagged frames yields ``{}``.
+
+    Raises :class:`~seestar_controller.store.errors.SessionNotFoundError` when
+    the project has no session with that id (a lookup, not a filter), and
+    :class:`~seestar_controller.store.errors.QualityError` for a corrupt record
+    row.
+    """
+    quality = session_quality(project, session_id)
+    return {f.frame_id: tuple(f.flag_reasons) for f in quality.flagged}

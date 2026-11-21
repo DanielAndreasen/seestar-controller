@@ -74,7 +74,12 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   :meth:`~.run.RunController.set_excluded` for outlier flagging) is exposed on
   every frozen :class:`~.run.RunSnapshot` handed to the listeners. Errors are
   :class:`~.run.RunError` (a :class:`~.picking.PhotometryError`). Also imports
-  **nothing** from ``gi``.
+  **nothing** from ``gi``. Frame-quality ticket 03: ``run_session`` takes an
+  optional ``excluded_frames`` set (default: the session's flagged frames via
+  :func:`seestar_controller.frame_quality.flagged_frame_reasons`) — excluded
+  frames are skipped before measuring and recorded as
+  :class:`~.run.ExcludedFrame`\\ s on the report (count + reasons, also
+  persisted into ``project.json``; see :func:`~.run.format_exclusion_reasons`).
 - **Widget layer** — :mod:`.star_picker` (:class:`~.star_picker.StarPickerView`,
   the Photometry view's image + click-to-pick + aperture overlay + role
   selector (Target / Comp / Check — the check star is designated there and
@@ -97,7 +102,7 @@ packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` (see the README).
 
 Ticket 01 covers star picking + persistence; ticket 02 catalog assist for
 comps; ticket 03 the aperture-photometry core; ticket 04 the run/results
-view.
+view; frame-quality ticket 03 the exclusion of flagged frames from runs.
 """
 
 from seestar_controller.store.stars import ROLE_CHECK, ROLE_COMP, ROLE_TARGET, ROLES
@@ -140,6 +145,7 @@ from .picking import (
 )
 from .run import (
     DB_CALL_TIMEOUT_S,
+    ExcludedFrame,
     ProgressCallback,
     RunController,
     RunError,
@@ -147,6 +153,7 @@ from .run import (
     RunProgress,
     RunReport,
     RunSnapshot,
+    format_exclusion_reasons,
 )
 from .suggest import (
     DEFAULT_COMP_SEARCH_RADIUS_DEG,
@@ -196,6 +203,7 @@ __all__ = [
     "SNAP_WINDOW_PX",
     "ApertureParams",
     "CompSuggestion",
+    "ExcludedFrame",
     "FrameMeasurement",
     "FrameSkippedError",
     "LookupFn",
@@ -232,6 +240,7 @@ __all__ = [
     "ensemble_mag_err",
     "flux_err_to_mag_err",
     "flux_to_mag",
+    "format_exclusion_reasons",
     "has_celestial_wcs",
     "measure_frame",
     "measure_frame_data",
