@@ -4,7 +4,7 @@
 
 **Blocked by:** hr-diagram 01, hr-diagram 02, gaia-crossmatch view (star positions on image)
 
-**Status:** ready-for-agent
+**Status:** implemented in 4ae1c0e (merged 7a0f582)
 
 - [ ] Widget `HrDiagramView` following analysis/lightcurve_view.py patterns (DrawingArea + matplotlib Agg render to PNG, PIL texture); CMD and H-R as switchable pages
 - [ ] Zoom/pan (re-render on zoom) + error-bar toggle; click-to-highlight both ways with the image viewer

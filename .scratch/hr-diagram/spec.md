@@ -1,6 +1,6 @@
 # Spec: hr-diagram
 
-Status: ready-for-agent (3 issues; blocked by gaia-crossmatch tickets, not yet written)
+Status: completed 2026-11-20 (01: 0c27429; 02: 376b9cd; 03: 4ae1c0e merged 7a0f582)
 
 ## Problem Statement
 
