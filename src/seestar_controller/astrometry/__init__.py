@@ -35,7 +35,25 @@ inside the functions that need them, and the local astrometry.net
   consumer of the ``frame_wcs`` store): :func:`~.drift.pointing_error`
   (requested queue-entry target vs. the solved WCS centers, arcsec) and
   :func:`~.drift.drift_series` (RA/Dec offset vs. frame time across the
-  session's solved frames, plus drift rates in arcsec/hour).
+  session's solved frames, plus drift rates in arcsec/hour);
+- :mod:`.annotate` / :mod:`.export` — the annotated PNG export (issue 03):
+  :func:`~.annotate.render_annotated_stack` /
+  :func:`~.annotate.annotated_png_bytes` render a stack tone-mapped with the
+  cross-match rows (matched stars ringed + labelled with their Gaia G
+  magnitude, unmatched flagged), the FOV rectangle with corner sky
+  coordinates, and a scale bar (PIL, the same path as the gaia overlay);
+  :func:`~.export.annotated_stack_png` / :func:`~.export.export_annotated_png`
+  do the same for a stored frame (atomic write);
+- :mod:`.plot` — the drift plot: :func:`~.plot.render_drift_png` renders a
+  :class:`~.drift.DriftSeries` to PNG bytes (matplotlib Agg, lazy);
+- :mod:`.controller` — the app-level controllers (issue 03):
+  :class:`~.controller.SolveController` (the image viewer's Solve action +
+  annotated export, following the shared viewer controller) and
+  :class:`~.controller.DriftController` (the session drift plot's data).
+
+The widget layer (:mod:`.view` — :class:`~.view.SolvePanel` /
+:class:`~.view.DriftPlotView`) imports ``gi`` at module top and is re-exported
+lazily (PEP 562 ``__getattr__``), never eagerly.
 
 Typical flow::
 
@@ -48,6 +66,23 @@ Typical flow::
     result.center_ra_deg, result.rms_arcsec
 """
 
+from .annotate import (
+    FOV_COLOR,
+    NICE_SCALE_BAR_ARCSEC,
+    SCALE_BAR_COLOR,
+    annotated_png_bytes,
+    format_scale_bar,
+    fov_corner_sky,
+    render_annotated_stack,
+    scale_bar_arcsec,
+)
+from .controller import (
+    DB_CALL_TIMEOUT_S,
+    DriftController,
+    DriftSnapshot,
+    SolveController,
+    SolveSnapshot,
+)
 from .drift import (
     DriftError,
     DriftPoint,
@@ -57,7 +92,20 @@ from .drift import (
     pointing_error,
     separation_arcsec,
 )
-from .errors import AstrometryError, SolveError
+from .errors import AstrometryError, ExportError, SolveError
+from .export import (
+    DEFAULT_EXPORT_MAX_SIZE,
+    annotated_stack_png,
+    default_export_name,
+    export_annotated_png,
+)
+from .plot import (
+    DEFAULT_DPI,
+    DEFAULT_HEIGHT_PX,
+    DEFAULT_WIDTH_PX,
+    MAX_RENDER_PX,
+    render_drift_png,
+)
 from .session import solve_project_frame, solve_session_frame
 from .solve import (
     ARCSEC_PER_DEG,
@@ -89,36 +137,76 @@ from .wcs import (
     write_wcs_to_fits,
 )
 
+_WIDGET_EXPORTS = {
+    "DriftPlotView": "view",
+    "SolvePanel": "view",
+}
+
+
+def __getattr__(name: str):
+    if name in _WIDGET_EXPORTS:
+        from importlib import import_module
+
+        module = import_module(f".{_WIDGET_EXPORTS[name]}", __name__)
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "ARCSEC_PER_DEG",
+    "DB_CALL_TIMEOUT_S",
+    "DEFAULT_DPI",
+    "DEFAULT_EXPORT_MAX_SIZE",
+    "DEFAULT_HEIGHT_PX",
     "DEFAULT_MATCH_RADIUS_ARCSEC",
     "DEFAULT_MIN_MATCHES",
     "DEFAULT_PIXEL_SCALE_ARCSEC",
     "DEFAULT_RMS_TOLERANCE_ARCSEC",
     "DEFAULT_SOLVE_FIELD_TIMEOUT_S",
+    "DEFAULT_WIDTH_PX",
     "FIRST_PASS_RADIUS_FACTOR",
+    "FOV_COLOR",
+    "MAX_RENDER_PX",
+    "NICE_SCALE_BAR_ARCSEC",
+    "SCALE_BAR_COLOR",
     "SOLVERS",
     "SOLVER_AUTO",
     "SOLVER_GAIA",
     "SOLVER_SOLVE_FIELD",
     "SOLVE_FIELD_BINARY",
     "AstrometryError",
+    "DriftController",
     "DriftError",
+    "DriftPlotView",
     "DriftPoint",
     "DriftSeries",
+    "DriftSnapshot",
+    "ExportError",
     "GaiaQuery",
     "PointingError",
+    "SolveController",
     "SolveError",
+    "SolvePanel",
     "SolveResult",
+    "SolveSnapshot",
     "StarMatch",
+    "annotated_png_bytes",
+    "annotated_stack_png",
     "cards_to_wcs",
+    "default_export_name",
     "drift_series",
+    "export_annotated_png",
+    "format_scale_bar",
+    "fov_corner_sky",
     "has_celestial_wcs",
     "header_center",
     "header_pixel_scale_arcsec",
     "pointing_error",
     "provisional_wcs_cards",
     "read_fits_bytes",
+    "render_annotated_stack",
+    "render_drift_png",
+    "scale_bar_arcsec",
     "separation_arcsec",
     "solve_fits_file",
     "solve_frame",

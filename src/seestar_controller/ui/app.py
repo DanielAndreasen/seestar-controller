@@ -196,6 +196,7 @@ from seestar_controller.analysis import (
     LightcurveController,
     PeriodController,
 )
+from seestar_controller.astrometry import DriftController, SolveController
 from seestar_controller.enhance import EditorController, ViewerController
 from seestar_controller.frame_quality import QualityController
 from seestar_controller.gaia import CrossmatchController
@@ -331,6 +332,8 @@ class SeestarWindow(Adw.ApplicationWindow):
         mover_controller: MoverController | None = None,
         crossmatch_controller: CrossmatchController | None = None,
         scan_controller: ScanController | None = None,
+        solve_controller: SolveController | None = None,
+        drift_controller: DriftController | None = None,
         project_controller: ProjectController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
@@ -512,6 +515,30 @@ class SeestarWindow(Adw.ApplicationWindow):
                 viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
             ))
         )
+        # Astrometry ticket 03: one shared solve controller following the
+        # shared viewer controller (the stack open in the image viewer is the
+        # solve/annotated-export target); the Enhance view's solve panel
+        # renders its snapshots and reports failures via show_toast. Its
+        # invoke_on_main is GLib.idle_add, so worker-thread store
+        # reads/writes + solver results land on the main loop.
+        self._solve_controller = (
+            solve_controller
+            if solve_controller is not None
+            else _shared_from_app(app, "solve_controller", lambda: SolveController(
+                viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
+            ))
+        )
+        # Astrometry ticket 03: one shared drift controller following the
+        # shared viewer controller (the open project's sessions become the
+        # drift-plot source); the Observe view's drift plot renders its
+        # snapshots.
+        self._drift_controller = (
+            drift_controller
+            if drift_controller is not None
+            else _shared_from_app(app, "drift_controller", lambda: DriftController(
+                viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
+            ))
+        )
         # Projects-view ticket 01: the shared project controller. When the app
         # owns one it is used (the app already attached its controllers to it);
         # otherwise (explicit argument, or a standalone window without an app
@@ -580,6 +607,9 @@ class SeestarWindow(Adw.ApplicationWindow):
                     mover_controller=self._mover_controller,
                     crossmatch_controller=self._crossmatch_controller,
                     scan_controller=self._scan_controller,
+                    solve_controller=self._solve_controller,
+                    drift_controller=self._drift_controller,
+                    show_toast=self._show_toast,
                     project_controller=self._project_controller,
                     project=self._project_controller.current,
                     app_state=state,
@@ -797,11 +827,34 @@ class SeestarWindow(Adw.ApplicationWindow):
         return self._scan_controller
 
     @property
+    def solve_controller(self) -> SolveController:
+        """The shared astrometry solve controller (astrometry ticket 03 —
+        the Enhance view's solve panel binds to it; it follows the viewer
+        controller's project and open stack)."""
+        return self._solve_controller
+
+    @property
+    def drift_controller(self) -> DriftController:
+        """The shared astrometry drift controller (astrometry ticket 03 —
+        the Observe view's drift plot binds to it; it follows the viewer
+        controller's project)."""
+        return self._drift_controller
+
+    @property
     def project_controller(self) -> ProjectController:
         """The shared project controller (projects-view ticket 01 — the
         Projects view lists/creates/opens through it; it is attached to the
         observe/viewer/picker/run/lightcurve/period controllers)."""
         return self._project_controller
+
+    def _show_toast(self, title: str) -> None:
+        """Surface a non-modal toast over the current view (astrometry ticket
+        03 — solve/export outcomes). The overlay is created late in the
+        constructor, so it is looked up lazily; before that (or in a window
+        without one) the toast is dropped."""
+        overlay = getattr(self, "_toast_overlay", None)
+        if overlay is not None:
+            overlay.add_toast(Adw.Toast(title=title, timeout=10))
 
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
@@ -1004,6 +1057,19 @@ class SeestarApplication(Adw.Application):
         # marshalled onto the GLib main loop like the other shared
         # controllers'.
         self.scan_controller = ScanController(
+            viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
+        )
+        # Astrometry ticket 03: the shared solve + drift controllers following
+        # the shared viewer controller (the stack open in the image viewer is
+        # the solve/annotated-export target; the open project's sessions are
+        # the drift-plot source); the window passes them to the Enhance
+        # view's solve panel and the Observe view's drift plot. Store
+        # reads/writes and notifications are marshalled onto the GLib main
+        # loop like the other shared controllers'.
+        self.solve_controller = SolveController(
+            viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
+        )
+        self.drift_controller = DriftController(
             viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
         )
         # Projects-view ticket 01: the shared project controller over the same
