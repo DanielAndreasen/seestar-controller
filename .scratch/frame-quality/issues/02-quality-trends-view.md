@@ -4,7 +4,7 @@
 
 **Blocked by:** frame-quality 01
 
-**Status:** ready-for-agent
+**Status:** implemented in fbc5578 (merged)
 
 - [ ] Pure trend computation: airmass from target coords + frame times (astropy AltAz), series extraction from stored metrics
 - [ ] Widget: session quality view/section (reuse the analysis plotting widgets from period-analysis lightcurve view) rendering the three trends + summary
