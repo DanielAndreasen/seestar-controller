@@ -198,6 +198,11 @@ def test_point_xy_and_abs_g_error():
         point_xy(HR, no_plx)
     assert abs_g_error(no_plx) is None
     assert abs_g_error(_point(parallax=0.0)) is None
+    assert abs_g_error(_point(parallax=-1.0)) is None
+    # non-finite parallax is not positive either -> None (no NaN leak)
+    assert abs_g_error(_point(parallax=float("nan"))) is None
+    assert abs_g_error(_point(parallax=float("inf"))) is None
+    assert abs_g_error(_point(parallax=float("-inf"))) is None
     with pytest.raises(HrError):
         point_xy("nope", p)
     with pytest.raises(TypeError):

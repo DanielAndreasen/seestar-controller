@@ -194,11 +194,11 @@ def absolute_g(g: float, parallax_mas: float | None) -> float | None:
     mas: ``M_G = G + 5 - 5*log10(1000/parallax_mas)`` (equivalently
     ``G + 5 + 5*log10(parallax_arcsec)``).
 
-    Returns ``None`` when ``parallax_mas`` is None or not positive (no
-    distance, no absolute magnitude).
+    Returns ``None`` when ``parallax_mas`` is None or not a positive finite
+    number (no distance, no absolute magnitude — NaN/inf are not positive).
     """
     g = float(g)
-    if parallax_mas is None or parallax_mas <= 0:
+    if parallax_mas is None or not (math.isfinite(parallax_mas) and parallax_mas > 0):
         return None
     return g + 5.0 - 5.0 * math.log10(1000.0 / parallax_mas)
 

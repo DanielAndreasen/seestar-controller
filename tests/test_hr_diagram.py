@@ -207,6 +207,10 @@ def test_absolute_g_matches_the_distance_modulus_formula():
     assert absolute_g(15.0, None) is None
     assert absolute_g(15.0, 0.0) is None
     assert absolute_g(15.0, -1.0) is None
+    # non-finite parallax is not positive either -> None (no NaN leak)
+    assert absolute_g(15.0, float("nan")) is None
+    assert absolute_g(15.0, float("inf")) is None
+    assert absolute_g(15.0, float("-inf")) is None
 
 
 def test_hr_points_abs_g_within_tolerance():

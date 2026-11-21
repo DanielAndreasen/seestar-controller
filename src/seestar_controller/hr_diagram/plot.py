@@ -145,10 +145,15 @@ def point_xy(kind: Any, point: HrPoint) -> tuple[float, float]:
 def abs_g_error(point: HrPoint) -> float | None:
     """The parallax-propagated magnitude uncertainty
     ``sigma_M = 5 * parallax_error / (ln(10) * parallax)`` of ``point``, or
-    None when the row has no positive parallax + error (no error bar)."""
+    None when the row has no positive finite parallax + error (no error bar —
+    NaN/inf parallax is not positive)."""
     parallax = point.parallax
     parallax_error = point.parallax_error
-    if parallax is None or parallax_error is None or parallax <= 0:
+    if (
+        parallax is None
+        or parallax_error is None
+        or not (math.isfinite(parallax) and parallax > 0)
+    ):
         return None
     return 5.0 * parallax_error / (math.log(10.0) * parallax)
 
