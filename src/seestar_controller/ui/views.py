@@ -38,7 +38,15 @@ the real content: the list of projects under the configured project root
 :class:`~seestar_controller.ui.project_controller.ProjectController` (passed
 in via :func:`build_view`; a fresh one over a default
 :class:`~seestar_controller.ui.state.AppState` is created when omitted, so
-the view also constructs standalone). The
+the view also constructs standalone). Offline-analysis ticket 02 adds the
+**stored-data browser** to the Projects view: below the project list, one row
+per session of the current project (id, open/closed, per-kind frame counts,
+plus **Stitch mosaic** and **Session report** action buttons) followed by one
+row per stored frame (kind, id, jd, exposure, target) — all read from the
+project store, so the whole browser works in offline mode with no scope
+connection; the two actions run on the main loop (via ``invoke_on_main``,
+like every other store call) and write their products back into the project
+(``mosaics/<session>.fits`` / ``reports/<session>.html``). The
 **Observe** view (observing tickets 01 + 03) already carries the real
 content: the two-pane
 :class:`~seestar_controller.observing.observe_view.ObserveView` widget — the
@@ -83,6 +91,7 @@ apply maximize on laptop screens (see the class docstring).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +140,7 @@ from seestar_controller.hr_diagram import HrDiagramController
 from seestar_controller.hr_diagram.view import (
     HrDiagramView as HrDiagramViewWidget,
 )
+from seestar_controller.mosaic import mosaic_path, stitch_session
 from seestar_controller.moving_objects import MoverController
 from seestar_controller.moving_objects.overlay_view import (
     MoverOverlayView as MoverOverlayWidget,
@@ -154,6 +164,8 @@ from seestar_controller.photometry.results_view import (
 from seestar_controller.photometry.star_picker import (
     StarPickerView as StarPickerWidget,
 )
+from seestar_controller.report import generate_report, report_path
+from seestar_controller.store import KINDS, list_frames, list_sessions
 from seestar_controller.store.csv_export import (
     CSV_FILE as LIGHTCURVE_CSV_FILE,
 )
@@ -179,6 +191,12 @@ from .state import VIEWS, AppState, view_by_id
 #: workarea makes the WM drop the maximize request, leaving the window
 #: smaller than the screen with controls off-screen).
 PAGE_MIN_CONTENT_HEIGHT = 240
+
+
+def _direct_invoke(callback: Callable[[], None]) -> None:
+    """The default ``invoke_on_main`` for standalone views: run the callback
+    directly (the app window binds ``GLib.idle_add`` instead)."""
+    callback()
 
 
 class _PlaceholderView(Gtk.Box):
@@ -1072,7 +1090,22 @@ class ProjectsView(_PlaceholderView):
       an inline status label for errors (duplicate / invalid name /
       unwritable root — the root errors carry a hint pointing to Settings),
       the same pattern as
-      :class:`~seestar_controller.observing.queue_editor.QueueEditor`.
+      :class:`~seestar_controller.observing.queue_editor.QueueEditor`;
+    - a **stored-data browser** (offline-analysis ticket 02): one row per
+      session of the current project — id, open/closed status, per-kind frame
+      counts, and **Stitch mosaic** / **Session report** buttons — followed
+      by one row per stored frame (kind, id, jd, exposure, target), all read
+      from the project store via :func:`~seestar_controller.store.list_sessions`
+      / :func:`~seestar_controller.store.list_frames`. The browser works in
+      offline mode exactly like in connected mode (no live session needed);
+      the two actions run on the main loop through ``invoke_on_main`` (the
+      store connection is main-thread-bound, like every analysis
+      controller's store call) and write their products back into the
+      project (:func:`~seestar_controller.mosaic.stitch_session` →
+      ``mosaics/<session>.fits``,
+      :func:`~seestar_controller.report.generate_report` →
+      ``reports/<session>.html``), reporting the outcome (or the error) in
+      the data status label.
 
     The view re-renders on every controller event (it registers as a
     listener), so changes from anywhere show up.
@@ -1082,7 +1115,11 @@ class ProjectsView(_PlaceholderView):
     title = "Projects"
 
     def __init__(
-        self, project_controller: ProjectController | None = None, **kwargs
+        self,
+        project_controller: ProjectController | None = None,
+        *,
+        invoke_on_main: Callable[[Callable[[], None]], Any] | None = None,
+        **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
         self._project_controller = (
@@ -1090,10 +1127,15 @@ class ProjectsView(_PlaceholderView):
             if project_controller is not None
             else ProjectController(AppState())
         )
+        #: marshals the stored-data actions onto the main loop (the app
+        #: window binds GLib.idle_add; standalone/tests call directly)
+        self._invoke_on_main = invoke_on_main or _direct_invoke
         #: per-row Open buttons, rebuilt with the list
         self._row_buttons: list[Gtk.Button] = []
         #: per-row "current" badges, rebuilt with the list
         self._row_badges: list[Gtk.Label] = []
+        #: per-session browser records, rebuilt with the sessions box
+        self._session_records: list[dict[str, Any]] = []
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
@@ -1141,6 +1183,23 @@ class ProjectsView(_PlaceholderView):
         self._content.append(buttons)
         self._status_label = Gtk.Label(label="", wrap=True, halign=Gtk.Align.CENTER)
         self._content.append(self._status_label)
+
+        # Offline-analysis ticket 02: the stored-data browser of the current
+        # project — a section label, one row per session (with the Stitch
+        # mosaic / Session report actions) plus one row per stored frame, and
+        # a status label for the action outcomes.
+        self._data_label = Gtk.Label(
+            label="", wrap=True, halign=Gtk.Align.START, xalign=0.0,
+            css_classes=["heading"],
+        )
+        self._content.append(self._data_label)
+        self._sessions_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self._sessions_box.add_css_class("boxed-list")
+        self._content.append(self._sessions_box)
+        self._data_status_label = Gtk.Label(
+            label="", wrap=True, halign=Gtk.Align.CENTER
+        )
+        self._content.append(self._data_status_label)
 
         self._project_controller.add_listener(self._on_project_event)
         self._rebuild()
@@ -1210,6 +1269,64 @@ class ProjectsView(_PlaceholderView):
         """Click the Open button of the row at ``index``."""
         self._row_buttons[index].emit("clicked")
 
+    # -- stored-data browser helpers (offline-analysis ticket 02; also used by
+    #    the widget tests) -------------------------------------------------------
+
+    @property
+    def data_label(self) -> Gtk.Label:
+        """The stored-data section label."""
+        return self._data_label
+
+    @property
+    def sessions_box(self) -> Gtk.ListBox:
+        """The sessions/frames browser list."""
+        return self._sessions_box
+
+    @property
+    def data_status_label(self) -> Gtk.Label:
+        """The status label for the Stitch mosaic / Session report actions."""
+        return self._data_status_label
+
+    def session_count(self) -> int:
+        """The number of session rows currently rendered in the browser."""
+        return len(self._session_records)
+
+    def session_id(self, index: int) -> str:
+        """The session id of the browser row at ``index``."""
+        return str(self._session_records[index]["session_id"])
+
+    def session_row_title(self, index: int) -> str:
+        """The title label of the session row at ``index``."""
+        return self._session_records[index]["title_label"].get_label()
+
+    def session_row_subtitle(self, index: int) -> str:
+        """The subtitle (started-at + frame counts) of the session row."""
+        return self._session_records[index]["subtitle_label"].get_label()
+
+    def frame_row_count(self, index: int) -> int:
+        """The number of frame rows listed under the session at ``index``."""
+        return len(self._session_records[index]["frame_labels"])
+
+    def frame_row_label(self, index: int, frame: int) -> str:
+        """The label of the ``frame``-th frame row under session ``index``."""
+        return self._session_records[index]["frame_labels"][frame]
+
+    def stitch_button(self, index: int) -> Gtk.Button:
+        """The Stitch mosaic button of the session at ``index``."""
+        return self._session_records[index]["stitch_button"]
+
+    def report_button(self, index: int) -> Gtk.Button:
+        """The Session report button of the session at ``index``."""
+        return self._session_records[index]["report_button"]
+
+    def click_stitch(self, index: int) -> None:
+        """Click the Stitch mosaic button of the session at ``index``."""
+        self.stitch_button(index).emit("clicked")
+
+    def click_report(self, index: int) -> None:
+        """Click the Session report button of the session at ``index``."""
+        self.report_button(index).emit("clicked")
+
     # -- rendering ------------------------------------------------------------------
 
     def _on_project_event(self, event: ProjectEvent) -> None:
@@ -1217,8 +1334,8 @@ class ProjectsView(_PlaceholderView):
         self._rebuild()
 
     def _rebuild(self) -> None:
-        """Re-render the banner, root line, and project list from the
-        controller."""
+        """Re-render the banner, root line, project list, and the stored-data
+        browser from the controller."""
         while (row := self._list_box.get_first_child()) is not None:
             self._list_box.remove(row)
         self._row_buttons = []
@@ -1238,6 +1355,116 @@ class ProjectsView(_PlaceholderView):
             )
             self._current_label.add_css_class("dim-label")
         self._render_root_label()
+        self._rebuild_data()
+
+    def _rebuild_data(self) -> None:
+        """Re-render the stored-data browser (sessions + frames) from the
+        current project's store (offline-analysis ticket 02)."""
+        while (row := self._sessions_box.get_first_child()) is not None:
+            self._sessions_box.remove(row)
+        self._session_records = []
+        current = self._project_controller.current
+        if current is None:
+            self._data_label.set_label(
+                "Stored data — open a project to browse its sessions & frames"
+            )
+            return
+        self._data_label.set_label(
+            f"Stored data — sessions & frames of {current.name} "
+            "(read from the project store; works offline)"
+        )
+        for session in list_sessions(current):
+            self._append_session(current, session)
+
+    def _append_session(self, project: Any, session: Any) -> None:
+        """Append one session row (id, status, frame counts, Stitch mosaic +
+        Session report buttons) plus one row per stored frame to the browser."""
+        frames = list_frames(project, session_id=session.id)
+        counts = {kind: 0 for kind in KINDS}
+        for frame in frames:
+            counts[frame.kind] = counts.get(frame.kind, 0) + 1
+        status = "open" if session.ended_at is None else "closed"
+        title = f"{session.id} — {status}"
+        subtitle = (
+            f"started {session.started_at} · {counts.get('sub', 0)} subs · "
+            f"{counts.get('stack', 0)} stacks · {counts.get('enhanced', 0)} enhanced"
+        )
+        box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=8,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=12,
+            margin_end=12,
+        )
+        labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+        title_label = Gtk.Label(label=title, xalign=0.0, valign=Gtk.Align.CENTER)
+        subtitle_label = Gtk.Label(
+            label=subtitle,
+            xalign=0.0,
+            valign=Gtk.Align.CENTER,
+            css_classes=["dim-label"],
+            ellipsize=3,  # Pango.EllipsizeMode.END
+        )
+        labels.append(title_label)
+        labels.append(subtitle_label)
+        box.append(labels)
+        stitch_button = Gtk.Button(
+            label="Stitch mosaic",
+            valign=Gtk.Align.CENTER,
+            tooltip_text=(
+                f"Stitch this session's tile stacks into "
+                f"{mosaic_path(project, session.id)} (from the stored frames)"
+            ),
+        )
+        stitch_button.connect(
+            "clicked", lambda _btn, sid=session.id: self._on_data_action("stitch", sid)
+        )
+        report_button = Gtk.Button(
+            label="Session report",
+            valign=Gtk.Align.CENTER,
+            tooltip_text=(
+                f"Generate the HTML session report at "
+                f"{report_path(project, session.id)} (from the stored data)"
+            ),
+        )
+        report_button.connect(
+            "clicked", lambda _btn, sid=session.id: self._on_data_action("report", sid)
+        )
+        box.append(stitch_button)
+        box.append(report_button)
+        self._sessions_box.append(Gtk.ListBoxRow(child=box, activatable=False))
+        frame_labels: list[str] = []
+        for frame in frames:
+            exposure = f"{frame.exposure:g} s" if frame.exposure is not None else "?"
+            target = frame.target or ""
+            label = (
+                f"    {frame.kind} #{frame.id} · jd {frame.jd:.5f} · "
+                f"{exposure} · {target}"
+            )
+            frame_labels.append(label)
+            self._sessions_box.append(
+                Gtk.ListBoxRow(
+                    child=Gtk.Label(
+                        label=label,
+                        xalign=0.0,
+                        halign=Gtk.Align.START,
+                        margin_start=24,
+                        css_classes=["dim-label"],
+                    ),
+                    activatable=False,
+                )
+            )
+        self._session_records.append(
+            {
+                "session_id": session.id,
+                "title_label": title_label,
+                "subtitle_label": subtitle_label,
+                "stitch_button": stitch_button,
+                "report_button": report_button,
+                "frame_labels": frame_labels,
+            }
+        )
 
     def _render_root_label(self) -> None:
         """Render the project-root line: the root in use, the "not set —
@@ -1343,6 +1570,54 @@ class ProjectsView(_PlaceholderView):
             return
         self._set_status(f"opened {project.name} ({project.path})", error=False)
 
+    # -- stored-data actions (offline-analysis ticket 02) ---------------------------
+
+    def _set_data_status(self, text: str, *, error: bool) -> None:
+        """Set the data status label (errors in red, success in green)."""
+        self._data_status_label.set_label(text)
+        for css_class in ("error", "success", "dim-label"):
+            self._data_status_label.remove_css_class(css_class)
+        if error:
+            self._data_status_label.add_css_class("error")
+        elif text:
+            self._data_status_label.add_css_class("success")
+        else:
+            self._data_status_label.add_css_class("dim-label")
+
+    def _on_data_action(self, kind: str, session_id: str) -> None:
+        """Stitch mosaic / Session report button (offline-analysis ticket 02):
+        run the action on the main loop via ``invoke_on_main`` — the store
+        connection is main-thread-bound, exactly like the analysis
+        controllers' store calls (the app binds ``GLib.idle_add``) — so the
+        action is GLib-main-loop safe and works offline (store only, no link
+        layer, no live session). Never raises."""
+        self._invoke_on_main(lambda: self._run_data_action(kind, session_id))
+
+    def _run_data_action(self, kind: str, session_id: str) -> None:
+        """Run one stored-data action on the current project and report the
+        outcome in the data status label; writes the product back into the
+        project (``mosaics/<session>.fits`` / ``reports/<session>.html``).
+        Never raises — failures are surfaced inline."""
+        project = self._project_controller.current
+        if project is None:
+            self._set_data_status("no project open", error=True)
+            return
+        try:
+            if kind == "stitch":
+                path = stitch_session(project, session_id)
+                self._set_data_status(
+                    f"stitched mosaic of {session_id} → {path}", error=False
+                )
+            else:
+                path = generate_report(project, session_id)
+                self._set_data_status(
+                    f"session report of {session_id} → {path}", error=False
+                )
+        except Exception as exc:  # noqa: BLE001 - surfaced inline, never raised
+            self._set_data_status(
+                f"{kind} of {session_id} failed: {exc}", error=True
+            )
+
 
 #: view id -> widget class (one entry per pure-layer view).
 VIEW_CLASSES: dict[str, type[_PlaceholderView]] = {
@@ -1381,6 +1656,7 @@ def build_view(
     project_controller: ProjectController | None = None,
     project: Any = None,
     app_state: AppState | None = None,
+    invoke_on_main: Callable[[Callable[[], None]], Any] | None = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
 
@@ -1410,7 +1686,10 @@ def build_view(
     03), and
     ``project_controller`` to the Projects view (projects-view ticket 01) —
     the app window passes its shared controllers; the other views ignore
-    them.
+    them. ``invoke_on_main`` is forwarded to the Projects view's stored-data
+    actions (offline-analysis ticket 02 — the app window binds
+    ``GLib.idle_add``, so the Stitch mosaic / Session report actions run on
+    the GLib main loop like every other store call).
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
@@ -1448,5 +1727,7 @@ def build_view(
     if view_id == HrDiagramView.view_id:
         return HrDiagramView(hr_diagram_controller=hr_diagram_controller)
     if view_id == ProjectsView.view_id:
-        return ProjectsView(project_controller=project_controller)
+        return ProjectsView(
+            project_controller=project_controller, invoke_on_main=invoke_on_main
+        )
     return VIEW_CLASSES[view_id]()
