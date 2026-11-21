@@ -4,7 +4,7 @@
 
 **Blocked by:** gaia-crossmatch 01, gaia-crossmatch 02
 
-**Status:** ready-for-agent
+**Status:** implemented in 4f4b1fc (merged)
 
 - [ ] Overlay rendering in the image-enhance viewer path (PIL draw over the tone-mapped image -> texture): matched stars labeled with G mag, unmatched with a distinct marker
 - [ ] Controls for match radius + G limit; re-query on change (cache-first)
