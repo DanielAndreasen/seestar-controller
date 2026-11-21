@@ -85,3 +85,9 @@ class WcsStoreError(ProjectError):
     the frame FK does not exist, a value is invalid (non-numeric/non-finite
     center or RMS, a negative star count, a bad solver name, non-JSON-able
     WCS cards), or a stored row is corrupt."""
+
+
+class IsochroneStoreError(ProjectError):
+    """The project's isochrone overlay parameters could not be saved or read
+    (see :mod:`.isochrone`): a parameter value is invalid (non-numeric,
+    non-finite, or out of range), or the stored row is corrupt."""

@@ -287,7 +287,7 @@ def test_migrate_db_1_to_2_adds_aperture_columns_and_backfills(tmp_path):
         conn.execute(OLD_STARS_DDL)
         conn.execute("INSERT INTO stars (role, label, x, y) VALUES ('comp', 'A', 1.0, 2.0)")
         conn.execute("PRAGMA user_version=1")
-    assert migrate_db(conn) == SCHEMA_VERSION == 8
+    assert migrate_db(conn) == SCHEMA_VERSION == 9
     cols = [row[1] for row in conn.execute("PRAGMA table_info(stars)")]
     assert cols == [
         "id", "role", "label", "x", "y", "ra_deg", "dec_deg",
@@ -379,8 +379,8 @@ def test_migrate_db_3_to_4_creates_frame_quality_and_is_idempotent(tmp_path):
         conn.execute("DROP TABLE frame_quality")
         conn.execute("PRAGMA user_version=3")
     assert "frame_quality" not in table_names(conn)
-    assert migrate_db(conn) == SCHEMA_VERSION == 8
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert migrate_db(conn) == SCHEMA_VERSION == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
     assert "frame_quality" in table_names(conn)
     # re-running the 3 -> 4 step on a db that already has the table is a no-op
     conn.execute("PRAGMA user_version=3")
@@ -498,8 +498,8 @@ def test_migrate_db_4_to_5_rebuilds_stars_and_is_idempotent(tmp_path):
         )
         conn.execute("PRAGMA user_version=4")
     assert "'check'" not in stars_table_sql(conn)
-    assert migrate_db(conn) == SCHEMA_VERSION == 8
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert migrate_db(conn) == SCHEMA_VERSION == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
     assert "'check'" in stars_table_sql(conn)
     row = conn.execute("SELECT role, label, x, y, aperture_radius FROM stars").fetchone()
     assert row == ("target", "T", 1.0, 2.0, 4.0)  # the row is preserved
@@ -772,8 +772,8 @@ def test_public_api_exports_migration_runner():
 
     assert callable(store.migrate_db)
     assert isinstance(store.MIGRATIONS, dict)
-    assert set(store.MIGRATIONS) == {0, 1, 2, 3, 4, 5, 6, 7}
-    assert store.SCHEMA_VERSION == 8
+    assert set(store.MIGRATIONS) == {0, 1, 2, 3, 4, 5, 6, 7, 8}
+    assert store.SCHEMA_VERSION == 9
     assert "migrate_db" in store.__all__
     assert "MIGRATIONS" in store.__all__
     assert issubclass(store.InvalidProjectError, store.ProjectError)

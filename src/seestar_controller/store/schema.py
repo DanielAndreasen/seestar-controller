@@ -139,7 +139,7 @@ from collections.abc import Callable
 from .errors import InvalidProjectError
 
 #: The schema version this build writes and supports.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 #: The tables every project database must have (checked on open).
 SCHEMA_TABLES = ("sessions", "frames", "stars", "measurements")
@@ -422,6 +422,23 @@ CREATE TABLE IF NOT EXISTS frame_wcs (
 )
 """
 
+#: The ``isochrone_params`` table DDL (v9, hr-diagram ticket 02): the chosen
+#: PARSEC isochrone overlay parameters of the PROJECT — a SINGLETON row
+#: (``id`` is fixed to 1 by the CHECK), so the table holds at most one row:
+#: ``age`` (``log10(age/yr)``, the PARSEC convention), ``feh`` ([Fe/H]) and
+#: ``dist_mod`` (the distance modulus in mag), plus ``updated_at`` (UTC
+#: ISO-8601). There is no frame FK — the parameters belong to the project as
+#: a whole, not to one frame.
+_ISOCHRONE_PARAMS_DDL = """
+CREATE TABLE IF NOT EXISTS isochrone_params (
+    id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+    age REAL NOT NULL,
+    feh REAL NOT NULL,
+    dist_mod REAL NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
 
 def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
     """Migration step 2 -> 3 (image-enhance ticket 04): create the
@@ -516,6 +533,7 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
         _SCAN_RESULTS_SCANNED_AT_INDEX_DDL,
     ),
     7: (_FRAME_WCS_DDL,),  # v7 -> v8: frame_wcs table (astrometry ticket 01)
+    8: (_ISOCHRONE_PARAMS_DDL,),  # v8 -> v9: isochrone_params table (hr-diagram 02)
 }
 
 

@@ -444,7 +444,7 @@ def test_open_migrates_v7_project_creating_frame_wcs(root):
     conn.close()
 
     with open_project(project_dir) as p:
-        assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 8
+        assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 9
         assert "frame_wcs" in table_names(p.db)
         cols = [row[1] for row in p.db.execute("PRAGMA table_info(frame_wcs)")]
         assert cols == [
@@ -471,8 +471,8 @@ def test_migrate_db_6_to_7_creates_frame_wcs_and_is_idempotent(tmp_path):
         conn.execute("DROP TABLE frame_wcs")
         conn.execute("PRAGMA user_version=7")
     assert "frame_wcs" not in table_names(conn)
-    assert migrate_db(conn) == SCHEMA_VERSION == 8
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert migrate_db(conn) == SCHEMA_VERSION == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
     assert "frame_wcs" in table_names(conn)
     # re-running the 7 -> 8 step on a db that already has the table is a no-op
     conn.execute("PRAGMA user_version=7")
@@ -482,10 +482,10 @@ def test_migrate_db_6_to_7_creates_frame_wcs_and_is_idempotent(tmp_path):
 
 
 def test_fresh_project_is_v8_with_frame_wcs(project):
-    assert SCHEMA_VERSION == 8
-    assert project.db.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert SCHEMA_VERSION == 9
+    assert project.db.execute("PRAGMA user_version").fetchone()[0] == 9
     assert "frame_wcs" in table_names(project.db)
-    assert project.config["schema_version"] == 8
+    assert project.config["schema_version"] == 9
 
 
 # --- the project glue: solve_session_frame / solve_project_frame ---------------------------

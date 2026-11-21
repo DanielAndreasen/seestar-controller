@@ -309,7 +309,7 @@ def test_public_api_exports_quality_module():
     assert store.save_frame_quality is save_frame_quality
     assert store.session_quality is session_quality
     # the schema carries the v4 table
-    assert store.SCHEMA_VERSION == 8
+    assert store.SCHEMA_VERSION == 9
     conn = sqlite3.connect(":memory:")
     store.initialize_db(conn)
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
