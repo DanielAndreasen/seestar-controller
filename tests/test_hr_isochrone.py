@@ -530,10 +530,14 @@ import seestar_controller.hr_diagram as hr
 from seestar_controller.hr_diagram import isochrone
 
 assert "gi" not in sys.modules, "GTK imported"
-assert "subprocess" not in sys.modules, "subprocess imported"
 assert "seestar_controller.link" not in sys.modules, "link imported"
 assert "seestar_controller.ui" not in sys.modules, "ui imported"
-assert "seestar_controller.store" not in sys.modules, "store imported"
+# ticket 03 added the store-boundary controller module, imported eagerly by
+# the package __init__ (the same role as gaia.overlay) — so the STORE (and
+# its transitive imports) now come in with the package; the isochrone module
+# itself stays pure (the source scan in test_hr_diagram.py enforces that),
+# and the widget module stays lazy:
+assert "seestar_controller.hr_diagram.view" not in sys.modules, "widget module imported"
 
 def boom(url, params, *, timeout):
     raise RuntimeError("network must not be touched")

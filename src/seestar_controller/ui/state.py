@@ -10,8 +10,8 @@ at module top and is never imported by this module or by the package
 
 What lives here:
 
-- the five views as an ordered list of :class:`View` (id, title) —
-  Observe, Enhance, Photometry, Lightcurve, Projects — and navigation:
+- the six views as an ordered list of :class:`View` (id, title) —
+  Observe, Enhance, Photometry, Lightcurve, H-R diagram, Projects — and navigation:
   :meth:`AppState.select_view` validates the id and raises
   :class:`UnknownViewError` on anything else;
 - window geometry (width/height/x/y) with validation;
@@ -123,12 +123,13 @@ class View:
     title: str
 
 
-#: The five views, in sidebar order.
+#: The six views, in sidebar order.
 VIEWS: tuple[View, ...] = (
     View("observe", "Observe"),
     View("enhance", "Enhance"),
     View("photometry", "Photometry"),
     View("lightcurve", "Lightcurve"),
+    View("hr-diagram", "H-R diagram"),
     View("projects", "Projects"),
 )
 
@@ -573,7 +574,7 @@ class AppState:
 
     @property
     def views(self) -> tuple[View, ...]:
-        """The five views, in sidebar order."""
+        """The six views, in sidebar order."""
         return VIEWS
 
     @property

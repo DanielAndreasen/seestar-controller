@@ -36,8 +36,17 @@ from seestar_controller.hr_diagram import (
 #: Directory of the hr_diagram package (source-scan audit).
 HR_PACKAGE_DIR = Path(hr.__file__).resolve().parent
 
-#: The PURE hr_diagram modules — no ``gi``, no subprocess (subprocess-enforced).
-PURE_HR_MODULES = ("__init__", "core", "export", "isochrone")
+#: The PURE hr_diagram modules — no ``gi``, no subprocess, no store import
+#: (subprocess-enforced).
+PURE_HR_MODULES = ("__init__", "core", "export", "isochrone", "plot")
+
+#: The STORE-BOUNDARY modules — no ``gi``, no subprocess, but they DO import
+#: :mod:`seestar_controller.store` (the same role as gaia.overlay).
+STORE_HR_MODULES = ("controller",)
+
+#: The WIDGET modules — ``gi`` at module top, before any ``from gi.repository``
+#: import; exported lazily by the package ``__init__`` (PEP 562).
+WIDGET_HR_MODULES = ("view",)
 
 
 # --- synthetic cross-match table: injected cluster main sequence + field stars ----------------
@@ -440,11 +449,13 @@ from pathlib import Path
 import seestar_controller.hr_diagram as hr
 import seestar_controller.hr_diagram.core
 import seestar_controller.hr_diagram.export
+import seestar_controller.hr_diagram.plot
+import seestar_controller.hr_diagram.controller
 
 assert "gi" not in sys.modules, "GTK imported"
 assert "seestar_controller.link" not in sys.modules, "link imported"
 assert "seestar_controller.ui" not in sys.modules, "ui imported"
-assert "seestar_controller.store" not in sys.modules, "store imported"
+assert "seestar_controller.hr_diagram.view" not in sys.modules, "widget module imported eagerly"
 
 def row(sid, g, color, plx, plx_err, pmra, pmdec):
     bp, rp = g + color / 2.0, g - color / 2.0
@@ -479,7 +490,7 @@ print("clean")
 
 def test_every_hr_diagram_module_is_pure_and_the_public_api_is_exported():
     modules = {path.stem for path in HR_PACKAGE_DIR.glob("*.py")}
-    assert modules == {"__init__", *PURE_HR_MODULES}
+    assert modules == {"__init__", *PURE_HR_MODULES, *STORE_HR_MODULES, *WIDGET_HR_MODULES}
     for name in PURE_HR_MODULES:
         source = (HR_PACKAGE_DIR / f"{name}.py").read_text(encoding="utf-8")
         assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE), (
@@ -488,22 +499,56 @@ def test_every_hr_diagram_module_is_pure_and_the_public_api_is_exported():
         assert not re.search(
             r"^\s*(import subprocess|from subprocess)\b", source, re.MULTILINE
         ), f"hr_diagram module {name} shells out"
-        # the package imports NOTHING from seestar_controller (duck-typed table)
+        # the pure modules import NOTHING from seestar_controller (duck-typed table)
         for match in re.finditer(
             r"^\s*(?:from|import)\s+(seestar_controller[\w.]*)", source, re.MULTILINE
         ):
             assert match.group(1).startswith("seestar_controller.hr_diagram"), (
                 f"hr_diagram module {name} imports {match.group(1)}"
             )
+    for name in STORE_HR_MODULES:
+        source = (HR_PACKAGE_DIR / f"{name}.py").read_text(encoding="utf-8")
+        assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE), (
+            f"hr_diagram module {name} imports gi"
+        )
+        assert not re.search(
+            r"^\s*(import subprocess|from subprocess)\b", source, re.MULTILINE
+        ), f"hr_diagram module {name} shells out"
+        # the store-boundary module may import the store + its siblings only
+        for match in re.finditer(
+            r"^\s*(?:from|import)\s+(seestar_controller[\w.]*)", source, re.MULTILINE
+        ):
+            assert match.group(1).startswith(
+                ("seestar_controller.hr_diagram", "seestar_controller.store")
+            ), f"hr_diagram module {name} imports {match.group(1)}"
+    for name in WIDGET_HR_MODULES:
+        source = (HR_PACKAGE_DIR / f"{name}.py").read_text(encoding="utf-8")
+        gi_line = re.search(r"^\s*import gi\b", source, re.MULTILINE)
+        assert gi_line is not None, f"hr_diagram widget module {name} must import gi at top"
+        first_repo = re.search(r"^\s*from gi\.repository", source, re.MULTILINE)
+        assert first_repo is not None, f"hr_diagram widget module {name} must use gi.repository"
+        assert gi_line.start() < first_repo.start(), (
+            f"hr_diagram widget module {name}: 'import gi' must come before 'from gi.repository'"
+        )
     for name in hr.__all__:
+        if name in hr._WIDGET_EXPORTS:
+            continue  # lazy widget export: importing it needs gi (headless here)
         assert hasattr(hr, name), f"hr_diagram.__all__ name {name} missing"
+    assert hr._WIDGET_EXPORTS == {"HrDiagramView": "view"}
     assert set(hr.__all__) == {
-        "CSV_HEADER", "DEFAULT_PARALLAX_SNR", "DEFAULT_SIGMA_CLIP", "MAD_TO_SIGMA",
-        "MIN_MEMBERSHIP_SAMPLE", "PARSEC_ISOCHRONE_URL", "ExportError", "HrError",
+        "CMD", "CSV_HEADER", "DB_CALL_TIMEOUT_S", "DEFAULT_PARALLAX_SNR",
+        "DEFAULT_SIGMA_CLIP", "HR", "KINDS", "MAD_TO_SIGMA",
+        "MIN_MEMBERSHIP_SAMPLE", "PARSEC_ISOCHRONE_URL", "DiagramGeometry",
+        "DiagramModel", "DiagramWindow", "ExportError", "HrDiagramController",
+        "HrDiagramListener", "HrDiagramSnapshot", "HrDiagramView", "HrError",
         "HrPoint", "IsochroneError", "IsochroneFetchError", "IsochronePoint",
-        "Membership", "absolute_g", "cmd_points", "export_table_csv",
-        "fallback_isochrone", "fetch_isochrone_json", "hr_points", "isochrone",
-        "membership_filter",
+        "Membership", "absolute_g", "abs_g_error", "cmd_points",
+        "data_to_screen", "export_table_csv", "fallback_isochrone",
+        "fetch_isochrone_json", "full_window", "hr_points", "isochrone",
+        "load_stack_image", "membership_filter", "nearest_point_by_pixel",
+        "pan_window", "point_at", "point_xy", "render_diagram_png",
+        "render_stack_png", "screen_to_data", "stack_image_scale",
+        "tonemap_gray", "zoom_window_at",
     }
     assert hr.DEFAULT_PARALLAX_SNR == 5.0
 

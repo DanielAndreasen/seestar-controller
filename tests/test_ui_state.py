@@ -79,18 +79,21 @@ def state(settings_file):
 # --- views + navigation ----------------------------------------------------------
 
 
-def test_views_are_the_five_in_sidebar_order():
-    assert VIEW_IDS == ("observe", "enhance", "photometry", "lightcurve", "projects")
+def test_views_are_the_six_in_sidebar_order():
+    assert VIEW_IDS == (
+        "observe", "enhance", "photometry", "lightcurve", "hr-diagram", "projects",
+    )
     assert [v.id for v in VIEWS] == list(VIEW_IDS)
     assert [v.title for v in VIEWS] == [
         "Observe",
         "Enhance",
         "Photometry",
         "Lightcurve",
+        "H-R diagram",
         "Projects",
     ]
     assert all(isinstance(v, View) for v in VIEWS)
-    assert len({v.id for v in VIEWS}) == 5
+    assert len({v.id for v in VIEWS}) == 6
 
 
 def test_default_view_is_observe(state):

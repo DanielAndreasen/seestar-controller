@@ -120,6 +120,10 @@ from seestar_controller.gaia import CrossmatchController
 from seestar_controller.gaia.overlay_view import (
     CrossmatchOverlayView as CrossmatchOverlayWidget,
 )
+from seestar_controller.hr_diagram import HrDiagramController
+from seestar_controller.hr_diagram.view import (
+    HrDiagramView as HrDiagramViewWidget,
+)
 from seestar_controller.moving_objects import MoverController
 from seestar_controller.moving_objects.overlay_view import (
     MoverOverlayView as MoverOverlayWidget,
@@ -838,6 +842,52 @@ class LightcurveView(_PlaceholderView):
         return self._export_folded_csv_button
 
 
+class HrDiagramView(_PlaceholderView):
+    """H-R diagram view (hr-diagram ticket 03): wraps the
+    :class:`~seestar_controller.hr_diagram.view.HrDiagramView` widget — the
+    apparent CMD and H-R diagram of the selected crossmatched stack's stars
+    (switchable pages, isochrone overlay from the stored isochrone params,
+    zoom/pan, error-bar toggle, click a point to highlight the star on the
+    stack image and vice versa, export plot PNG + table CSV).
+
+    ``hr_diagram_controller`` is the app's shared
+    :class:`~seestar_controller.hr_diagram.HrDiagramController` (following
+    the shared viewer controller's project — the currently open project);
+    the app window passes it via :func:`build_view`. When omitted, the view
+    creates its own, so it also constructs standalone.
+    """
+
+    view_id = "hr-diagram"
+    title = "H-R diagram"
+
+    def __init__(
+        self,
+        hr_diagram_controller: HrDiagramController | None = None,
+        **kwargs,
+    ) -> None:
+        # set before super().__init__(): _build_content() runs inside it
+        self._hr_diagram_controller = (
+            hr_diagram_controller
+            if hr_diagram_controller is not None
+            else HrDiagramController()
+        )
+        super().__init__(**kwargs)
+
+    def _build_content(self) -> None:
+        self._hr_diagram_widget = HrDiagramViewWidget(self._hr_diagram_controller)
+        self._content.append(self._hr_diagram_widget)
+
+    @property
+    def hr_diagram_controller(self) -> HrDiagramController:
+        """The shared pure-layer H-R diagram controller driving this view."""
+        return self._hr_diagram_controller
+
+    @property
+    def hr_diagram_widget(self) -> HrDiagramViewWidget:
+        """The H-R diagram widget (CMD / H-R pages + stack image)."""
+        return self._hr_diagram_widget
+
+
 class ProjectsView(_PlaceholderView):
     """Projects view (projects-view ticket 01): list / create / open the
     projects under the configured project root, wired as the app's current
@@ -1144,7 +1194,8 @@ VIEW_CLASSES: dict[str, type[_PlaceholderView]] = {
         (VIEWS[1], EnhanceView),
         (VIEWS[2], PhotometryView),
         (VIEWS[3], LightcurveView),
-        (VIEWS[4], ProjectsView),
+        (VIEWS[4], HrDiagramView),
+        (VIEWS[5], ProjectsView),
     )
 }
 
@@ -1162,6 +1213,7 @@ def build_view(
     lightcurve_controller: LightcurveController | None = None,
     period_controller: PeriodController | None = None,
     quality_controller: QualityController | None = None,
+    hr_diagram_controller: HrDiagramController | None = None,
     mover_controller: MoverController | None = None,
     scan_controller: ScanController | None = None,
     crossmatch_controller: CrossmatchController | None = None,
@@ -1188,7 +1240,9 @@ def build_view(
     ``lightcurve_controller`` /
     ``period_controller`` /
     ``quality_controller`` to the Lightcurve view (period-analysis tickets
-    01 + 03 + 04 and frame-quality ticket 02), and
+    01 + 03 + 04 and frame-quality ticket 02),
+    ``hr_diagram_controller`` to the H-R diagram view (hr-diagram ticket
+    03), and
     ``project_controller`` to the Projects view (projects-view ticket 01) —
     the app window passes its shared controllers; the other views ignore
     them.
@@ -1223,6 +1277,8 @@ def build_view(
             period_controller=period_controller,
             quality_controller=quality_controller,
         )
+    if view_id == HrDiagramView.view_id:
+        return HrDiagramView(hr_diagram_controller=hr_diagram_controller)
     if view_id == ProjectsView.view_id:
         return ProjectsView(project_controller=project_controller)
     return VIEW_CLASSES[view_id]()
