@@ -10,9 +10,19 @@ Subcommands:
 - ``seestar-controller key-path`` — print the resolved PEM key path.
 - ``seestar-controller gui`` — launch the GTK4/libadwaita desktop app
   (``seestar_controller.ui.app``). The ``gi`` import happens lazily inside
-  this subcommand, so the CLI works on machines without GTK; on the desktop
-  the system packages ``python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`` are needed
-  (PyGObject is not a pip dependency).
+  this subcommand, so the CLI works on machines without GTK. Since the
+  Python 3.14 bump the system PyGObject (cp312-only) no longer loads in the
+  3.14 venv; get a working ``gi`` for 3.14 via one of (see
+  docs/wiki/dependency-upgrade.md, issue-06 entry, 2026-11-21):
+
+  - system python3 is 3.14: ``sudo apt install python3-gi gir1.2-gtk-4.0
+    gir1.2-adw-1`` then ``uv venv --system-site-packages --clear .venv &&
+    uv sync``;
+  - otherwise: ``sudo apt install build-essential pkg-config
+    libgirepository-2.0-dev libcairo2-dev`` then ``uv sync --extra gui``
+    (builds PyGObject from source into the venv; there is no cp314 wheel on
+    PyPI). PyGObject is never a hard dependency, so headless ``uv sync`` is
+    unaffected.
 
 Also runnable as ``uv run python -m seestar_controller ...``.
 """
@@ -73,8 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="launch the GTK4/libadwaita desktop app",
         description=(
             "Launch the GTK4/libadwaita desktop app (seestar_controller.ui.app). "
-            "Requires the system packages python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 "
-            "on the desktop machine (PyGObject is not a pip dependency)."
+            "Needs a PyGObject (gi) built for the venv's Python 3.14: either the "
+            "system packages python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 on a 3.14 "
+            "system python + `uv venv --system-site-packages --clear .venv && "
+            "uv sync`, or `uv sync --extra gui` (source build; no cp314 wheel on "
+            "PyPI). PyGObject is never a hard dependency — see "
+            "docs/wiki/dependency-upgrade.md (issue-06 entry, 2026-11-21)."
         ),
     )
     return parser
@@ -106,23 +120,45 @@ def _cmd_extract_key(args: argparse.Namespace) -> int:
     return 0
 
 
+def _gui_missing_gi_message(exc: BaseException) -> str:
+    """Clean, actionable error for `gui` when no 3.14-built PyGObject is found.
+
+    Names the chosen fix (docs/wiki/dependency-upgrade.md, issue-06 entry,
+    2026-11-21): system packages on a 3.14 system python + system-site-packages
+    venv, else the `gui` extra which builds PyGObject from source into the venv
+    (no cp314 wheel exists on PyPI).
+    """
+    return (
+        "error: the GUI needs PyGObject (`gi`) built for this venv's Python "
+        "3.14 — the system PyGObject is cp312-only and cannot load here "
+        f"({exc}). Fix, cheapest first (docs/wiki/dependency-upgrade.md, "
+        "issue-06 entry, 2026-11-21):\n"
+        "  A) system python3 is 3.14:\n"
+        "       sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1\n"
+        "       uv venv --system-site-packages --clear .venv && uv sync\n"
+        "  B) otherwise (no cp314 wheel on PyPI — PyGObject is sdist-only):\n"
+        "       sudo apt install build-essential pkg-config "
+        "libgirepository-2.0-dev libcairo2-dev\n"
+        "       uv sync --extra gui\n"
+        "     (equivalently: uv pip install --python .venv/bin/python "
+        "pygobject pycairo)\n"
+        "PyGObject is never a hard dependency, so headless `uv sync` and the "
+        "rest of the CLI are unaffected."
+    )
+
+
 def _cmd_gui() -> int:
     """Launch the GTK4/libadwaita GUI.
 
     The ``gi`` import happens here (lazily), so the rest of the CLI works on
-    machines without GTK — headless sandboxes, CI. Without the system GTK
-    packages this fails cleanly with an actionable message instead of a
+    machines without GTK — headless sandboxes, CI. Without a 3.14-built
+    PyGObject this fails cleanly with an actionable message instead of a
     traceback.
     """
     try:
         from .ui.app import main as gui_main
     except (ImportError, ValueError) as exc:
-        print(
-            "error: the GUI needs the system GTK packages — install "
-            "`python3-gi gir1.2-gtk-4.0 gir1.2-adw-1` on the desktop machine "
-            f"(PyGObject is not a pip dependency): {exc}",
-            file=sys.stderr,
-        )
+        print(_gui_missing_gi_message(exc), file=sys.stderr)
         return 1
     return gui_main()
 

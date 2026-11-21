@@ -17,6 +17,24 @@ dependencies = [
 [project.scripts]
 seestar-controller = "seestar_controller.cli:main"
 
+[project.optional-dependencies]
+# GUI path only — NEVER a hard dependency, so headless installs (`uv sync`)
+# keep working unchanged. PyGObject has no cp314 wheel on PyPI (sdist-only as
+# of 2026-11-21), so this extra builds PyGObject from source against the venv's
+# Python 3.14 and needs the system build deps installed first:
+#   sudo apt install build-essential pkg-config libgirepository-2.0-dev libcairo2-dev
+# then:
+#   uv sync --extra gui
+# (equivalently: uv pip install --python .venv/bin/python pygobject pycairo).
+# Cheaper alternative when the system python3 IS 3.14: install the distro
+# packages python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 and recreate the venv with
+# `uv venv --system-site-packages --clear .venv && uv sync` (no extra needed).
+# See docs/wiki/dependency-upgrade.md, issue-06 entry (2026-11-21).
+gui = [
+    "pygobject>=3.50",
+    "pycairo>=1.27",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
