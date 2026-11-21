@@ -768,8 +768,11 @@ def test_results_panel_shows_check_series_and_tmc_toggle(gtk, project):
     assert [p[1] for p in check_points] == [p[1] for p in report.check_points]  # check_mag
     assert all(p[2] is not None and p[2] > 0.0 for p in check_points)  # check_mag_err
     assert all(p[3] is False for p in check_points)  # excluded flag
-    # constant stars: the check differential mag stays ~0 within errors
-    assert all(abs(p[1]) < 5.0 * (p[2] or 1.0) for p in check_points)
+    # constant stars: the check differential mag is CONSTANT across frames
+    # (it is a differential mag — check.mag - ensemble — so its offset is not
+    # zero, but its frame-to-frame spread stays well within the errors)
+    check_mags = [p[1] for p in check_points]
+    assert max(check_mags) - min(check_mags) < 5.0 * (check_points[0][2] or 1.0)
     # the target-minus-check series is available, hidden until the toggle
     tmc_points = panel.tmc_plot_points()
     assert len(tmc_points) == 4
