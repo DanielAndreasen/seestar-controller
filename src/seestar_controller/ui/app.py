@@ -508,6 +508,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     period_controller=self._period_controller,
                     project_controller=self._project_controller,
                     project=self._project_controller.current,
+                    app_state=state,
                 ),
                 view.id,
                 view.title,

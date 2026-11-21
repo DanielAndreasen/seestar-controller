@@ -7,6 +7,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "astropy>=8.0.3",
     "cryptography>=50.0.2",
+    "matplotlib>=3.11.2",
     "numpy>=2.5.5",
     "photutils>=3.1.1",
     "pillow>=13.0.0",
@@ -55,11 +56,13 @@ include = [
     "src/seestar_controller/ui/settings_dialog.py",
     "src/seestar_controller/ui/toast.py",
     "src/seestar_controller/ui/views.py",
+    "src/seestar_controller/visibility/timeline_view.py",
     "tests/test_analysis_widgets.py",
     "tests/test_enhance_widgets.py",
     "tests/test_observing_widgets.py",
     "tests/test_photometry_widgets.py",
     "tests/test_ui_widgets.py",
+    "tests/test_visibility_widgets.py",
 ]
 [tool.ty.overrides.rules]
 import-not-found = "ignore"
