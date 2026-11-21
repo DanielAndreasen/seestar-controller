@@ -179,11 +179,27 @@ once the scope is connected) and persists it as ``last_project``; an
 unusable (e.g. unwritable) project root surfaces as an inline error with a
 hint pointing to Settings, and a changed ``project_root`` re-lists the
 projects under the new root.
+
+Offline mode (offline-analysis ticket 01): the application owns a shared
+:class:`~seestar_controller.ui.mode.ModeController` (``offline`` vs
+``connected``, default ``connected``), bound to the connection controller (a
+successful connect returns to ``connected``) and to the project controller (a
+normal project open/create returns to ``connected``). The window's
+``win.open-offline`` action ("Open project (offline)…" in the app menu) opens a
+project directory from the store via
+:meth:`SeestarWindow.open_project_offline` — WITHOUT starting the link layer
+or any session — and switches to offline mode: an :class:`Adw.Banner` above
+the header bar is revealed and every scope-dependent action is gated
+(insensitive with the offline tooltip): the header Connect/Disconnect button
+(:meth:`~seestar_controller.ui.connection_panel.ConnectionPanel.set_scope_gated`)
+and the Observe view's night controls + live preview
+(:meth:`~seestar_controller.ui.views.ObserveView.set_scope_gated`).
 """
 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import gi
 
@@ -209,10 +225,13 @@ from seestar_controller.photometry import (
     RunController,
     SuggestionController,
 )
+from seestar_controller.store import Project
+from seestar_controller.store.errors import ProjectError
 from seestar_controller.variable_scan import ScanController
 
 from .connection import ConnectionController
 from .connection_panel import ConnectionPanel
+from .mode import OFFLINE_BANNER_TITLE, AppMode, ModeController
 from .notification_log import NotificationLogDialog
 from .notifications import NotificationBus, NotificationController
 from .project_controller import ProjectController
@@ -226,7 +245,7 @@ from .state import (
     load_state,
 )
 from .toast import NotificationToasts
-from .views import build_view
+from .views import ObserveView, ProjectsView, build_view
 
 #: GApplication id.
 APP_ID = "io.github.seestar-controller"
@@ -332,6 +351,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         crossmatch_controller: CrossmatchController | None = None,
         scan_controller: ScanController | None = None,
         project_controller: ProjectController | None = None,
+        mode_controller: ModeController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
         self._state = state
@@ -526,8 +546,26 @@ class SeestarWindow(Adw.ApplicationWindow):
         else:
             self._project_controller = ProjectController(state)
             self._attach_project_followers()
+        # Offline-analysis ticket 01: the shared mode controller (offline vs
+        # connected). When the app owns one it is used (the app already bound
+        # it to the connection + project controllers); otherwise (explicit
+        # argument, or a standalone window without an app controller) a fresh
+        # one is created and bound here.
+        if mode_controller is not None:
+            self._mode_controller = mode_controller
+        elif getattr(app, "mode_controller", None) is not None:
+            self._mode_controller = app.mode_controller
+        else:
+            self._mode_controller = ModeController()
+            self._mode_controller.attach_connection(self._connection_controller)
+            self._mode_controller.attach_project_controller(self._project_controller)
 
         toolbar_view = Adw.ToolbarView()
+        # Offline-analysis ticket 01: the offline banner, revealed only in
+        # offline mode (top bar above the header bar — the first top bar
+        # added is the topmost).
+        self._offline_banner = Adw.Banner(title=OFFLINE_BANNER_TITLE, revealed=False)
+        toolbar_view.add_top_bar(self._offline_banner)
         header = Adw.HeaderBar()
         header.set_title_widget(Gtk.Label(label=APP_NAME))
         # Connection panel (ticket 03): connect button + status, left side.
@@ -551,7 +589,14 @@ class SeestarWindow(Adw.ApplicationWindow):
         settings_action = Gio.SimpleAction.new("settings", None)
         settings_action.connect("activate", self._on_settings_action)
         self.add_action(settings_action)
+        # Offline-analysis ticket 01: the "Open project (offline)…" action —
+        # opens a project directory from the store WITHOUT starting the link
+        # layer (see open_project_offline).
+        open_offline_action = Gio.SimpleAction.new("open-offline", None)
+        open_offline_action.connect("activate", self._on_open_offline_action)
+        self.add_action(open_offline_action)
         menu = Gio.Menu()
+        menu.append("Open project (offline)…", "win.open-offline")
         menu.append("Settings", "win.settings")
         self._settings_button = Gtk.MenuButton(
             menu_model=menu,
@@ -651,6 +696,11 @@ class SeestarWindow(Adw.ApplicationWindow):
         # ticket 03's connect reads the same controller).
         self._settings_controller.add_listener(self._on_settings_changed)
         self._on_settings_changed(self._settings_controller.values)
+
+        # Offline-analysis ticket 01: render the current mode (banner +
+        # gated scope actions) and re-render on every mode change.
+        self._mode_controller.add_listener(self._on_mode_changed)
+        self._on_mode_changed(self._mode_controller.mode)
 
         self.connect("close-request", self._on_close_request)
 
@@ -803,6 +853,41 @@ class SeestarWindow(Adw.ApplicationWindow):
         observe/viewer/picker/run/lightcurve/period controllers)."""
         return self._project_controller
 
+    @property
+    def mode_controller(self) -> ModeController:
+        """The shared mode controller (offline-analysis ticket 01 — offline
+        vs connected; the window renders the banner + gating from it)."""
+        return self._mode_controller
+
+    @property
+    def mode(self) -> AppMode:
+        """The current window mode (offline-analysis ticket 01)."""
+        return self._mode_controller.mode
+
+    @property
+    def offline_banner(self) -> Adw.Banner:
+        """The offline-mode banner (revealed only in offline mode)."""
+        return self._offline_banner
+
+    def open_project_offline(self, path: str | Path) -> Project:
+        """Open the project at ``path`` from the project store WITHOUT
+        starting the link layer or any session (offline-analysis ticket 01),
+        and switch the window to offline mode (banner revealed, scope actions
+        gated). Returns the opened project.
+
+        This is pure store access through the shared project controller — the
+        connection controller / link layer is never touched (no device
+        factory call, no session). Store errors
+        (:class:`~seestar_controller.store.errors.ProjectError`,
+        ``ValueError``, ``OSError``) propagate and leave the mode unchanged.
+        """
+        project = self._mode_controller.open_project_offline(
+            self._project_controller, path
+        )
+        # show the opened project's data (the Projects view lists it as current)
+        self.select_view(ProjectsView.view_id)
+        return project
+
     def select_view(self, view_id: str) -> None:
         """Select a view: highlight its sidebar row (which switches the stack
         page and updates the state via the row-selected handler)."""
@@ -849,6 +934,42 @@ class SeestarWindow(Adw.ApplicationWindow):
         self._notification_log_dialog = NotificationLogDialog(self._notification_bus)
         self._notification_log_dialog.present(self)
 
+    def _on_open_offline_action(self, *_args) -> None:
+        """The ``win.open-offline`` action handler: ask for a project
+        directory and open it offline (store only — the link layer is never
+        started; see :meth:`open_project_offline`)."""
+        dialog = Gtk.FileDialog(title="Open project (offline)")
+        dialog.select_folder(self, None, self._on_open_offline_dialog_finished)
+
+    def _on_open_offline_dialog_finished(self, dialog, result) -> None:
+        """File-dialog callback: open the chosen directory offline; a
+        cancelled dialog or a store error is a no-op / a toast."""
+        try:
+            file = dialog.select_folder_finish(result)
+        except Exception:  # noqa: BLE001 - cancelled dialog raises GLib.Error
+            return
+        if file is None:
+            return
+        path = file.get_path()
+        if not path:
+            return
+        try:
+            self.open_project_offline(path)
+        except (ProjectError, ValueError, OSError) as exc:
+            self._toast_overlay.add_toast(Adw.Toast(title=f"Cannot open offline: {exc}"))
+
+    def _on_mode_changed(self, mode: AppMode) -> None:
+        """Mode listener (offline-analysis ticket 01): offline -> reveal the
+        banner and gate every scope-dependent action (the header
+        Connect/Disconnect button, the Observe view's night controls + live
+        preview); connected -> hide the banner and ungate."""
+        offline = mode == AppMode.OFFLINE
+        self._offline_banner.set_revealed(offline)
+        self._connection_panel.set_scope_gated(offline)
+        observe_page = self._stack.get_child_by_name(ObserveView.view_id)
+        if isinstance(observe_page, ObserveView):
+            observe_page.set_scope_gated(offline)
+
     def _on_settings_changed(self, values: dict[str, str]) -> None:
         """Observer: settings changed -> reflect the scope IP in the header
         and keep the photometry comp-search radius in sync (ticket 02)."""
@@ -893,6 +1014,12 @@ class SeestarApplication(Adw.Application):
         self.connection_controller = ConnectionController(
             self.settings_controller, invoke_on_main=_invoke_on_main
         )
+        # Offline-analysis ticket 01: the shared mode controller (offline vs
+        # connected, default connected); a successful connect switches the
+        # mode back to connected. The project-controller binding happens
+        # below, once the project controller exists.
+        self.mode_controller = ModeController()
+        self.mode_controller.attach_connection(self.connection_controller)
         # Ticket 04: the shared notification bus + the controller translating
         # connection snapshots and device events into notifications (the
         # window's toast overlay + log dialog read from this bus).
@@ -1033,6 +1160,9 @@ class SeestarApplication(Adw.Application):
             crossmatch=self.crossmatch_controller,
             scan=self.scan_controller,
         )
+        # Offline-analysis ticket 01: a normal project open/create (anything
+        # but the guarded offline open) switches the mode back to connected.
+        self.mode_controller.attach_project_controller(self.project_controller)
         self.settings_controller.add_listener(self._on_settings_changed)
         self._last_project_root = self._state.get_setting("project_root")
 
@@ -1051,6 +1181,12 @@ class SeestarApplication(Adw.Application):
     def state(self) -> AppState:
         """The pure-layer app state (loaded from the settings file)."""
         return self._state
+
+    @property
+    def mode(self) -> AppMode:
+        """The current app mode (offline-analysis ticket 01 — offline vs
+        connected, via the shared :attr:`mode_controller`)."""
+        return self.mode_controller.mode
 
     def do_startup(self) -> None:
         # Chain up explicitly to the nearest parent vfunc: on PyGObject,

@@ -41,6 +41,12 @@ controller's ``invoke_on_main`` to ``GLib.idle_add``, so :meth:`refresh`
 always runs on the main thread. Errors surface through the listener
 notifications for now — ticket 04 wires the notification bus (banners) on
 top of them.
+
+Offline mode (offline-analysis ticket 01): :meth:`set_scope_gated` gates the
+Connect/Disconnect button — while gated (offline mode) the button is
+insensitive with the offline tooltip regardless of the connection status, and
+:meth:`refresh` re-applies the gate on every snapshot, so the button can never
+be clicked in offline mode.
 """
 
 from __future__ import annotations
@@ -59,6 +65,7 @@ from .connection import (
     ConnectionStatus,
     describe_scope_state,
 )
+from .mode import OFFLINE_SCOPE_TOOLTIP
 
 #: Button label / icon per connection status.
 _BUTTON_CONTENT: dict[ConnectionStatus, tuple[str, str]] = {
@@ -83,6 +90,9 @@ class ConnectionPanel(Gtk.Box):
         kwargs.setdefault("valign", Gtk.Align.CENTER)
         super().__init__(**kwargs)
         self._controller = controller
+        #: offline-analysis ticket 01: while gated (offline mode) the
+        #: Connect/Disconnect button is insensitive with the offline tooltip
+        self._scope_gated = False
 
         self._button = Gtk.Button()
         self._button_content = Adw.ButtonContent()
@@ -113,6 +123,21 @@ class ConnectionPanel(Gtk.Box):
         """The status label (state text + scope state when connected)."""
         return self._status_label
 
+    @property
+    def scope_gated(self) -> bool:
+        """Whether the panel is gated by offline mode (offline-analysis
+        ticket 01): the Connect/Disconnect button is insensitive with the
+        offline tooltip."""
+        return self._scope_gated
+
+    def set_scope_gated(self, gated: bool) -> None:
+        """Gate/ungate the Connect/Disconnect button (offline-analysis ticket
+        01): in offline mode the button is insensitive and carries the
+        offline tooltip, whatever the connection status; ungating re-renders
+        from the current snapshot."""
+        self._scope_gated = bool(gated)
+        self.refresh(self._controller.snapshot)
+
     def refresh(self, snapshot: ConnectionSnapshot) -> None:
         """Re-render the panel from a :class:`~.connection.ConnectionSnapshot`
         (the controller listener callback — always on the main thread)."""
@@ -141,6 +166,10 @@ class ConnectionPanel(Gtk.Box):
             if status == ConnectionStatus.CONNECTED
             else label
         )
+        # offline-analysis ticket 01: the offline gate wins over the status
+        if self._scope_gated:
+            self._button.set_sensitive(False)
+            self._button.set_tooltip_text(OFFLINE_SCOPE_TOOLTIP)
 
         if status == ConnectionStatus.DISCONNECTED:
             text = "Disconnected"

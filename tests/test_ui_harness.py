@@ -39,6 +39,7 @@ PURE_UI_MODULES = (
     "connection",
     "notifications",
     "project_controller",
+    "mode",
 )
 
 #: The widget ui modules — ``gi`` at module top, lazy-exported via PEP 562.
