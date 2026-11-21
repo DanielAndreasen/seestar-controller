@@ -78,3 +78,10 @@ class CrossmatchError(ProjectError):
     :mod:`.crossmatch`): the frame FK does not exist, a row value is invalid
     (non-numeric/non-finite coordinates or magnitudes, a bad ``source_id``,
     a negative separation), or a stored row is corrupt."""
+
+
+class WcsStoreError(ProjectError):
+    """A per-frame solved WCS could not be saved or read (see :mod:`.wcs`):
+    the frame FK does not exist, a value is invalid (non-numeric/non-finite
+    center or RMS, a negative star count, a bad solver name, non-JSON-able
+    WCS cards), or a stored row is corrupt."""

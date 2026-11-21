@@ -76,6 +76,14 @@ Pure Python, no GTK, no link (module boundary per
   the :class:`~.crossmatch.CrossmatchRecord` row (frame FK, detected x/y +
   RA/Dec, matched flag, Gaia source_id, G/BP/RP, parallax + error,
   pmra/pmdec + errors, separation), and :class:`~.errors.CrossmatchError`
+- :mod:`.wcs` — persisted solved WCS per frame (astrometry ticket 01):
+  :func:`~.wcs.save_frame_wcs` (validated upsert of one frame's WCS record in
+  one db transaction), :func:`~.wcs.load_frame_wcs` (None when the frame has
+  none), :func:`~.wcs.list_solved_frames` (the solved frames, optionally of
+  one session, ordered by ``jd``), the :class:`~.wcs.FrameWcs` record (frame
+  FK + joined session_id, solver, solved_at, rms_arcsec, n_stars, center
+  RA/Dec, the WCS as a dict of FITS cards, :meth:`~.wcs.FrameWcs.to_wcs`),
+  and :class:`~.errors.WcsStoreError`
 - :mod:`.csv_export` — CSV export: :func:`~.csv_export.export_csv` (atomic
   write of ``lightcurve.csv`` with header :data:`~.csv_export.CSV_HEADER`,
   excluded points omitted unless ``include_excluded=True``), the default
@@ -108,6 +116,7 @@ from .errors import (
     SessionNotFoundError,
     SessionOpenError,
     StarPickError,
+    WcsStoreError,
 )
 from .frames import (
     ENHANCED_DIR,
@@ -182,6 +191,7 @@ from .stars import (
     normalize_role,
     save_star_picks,
 )
+from .wcs import FrameWcs, list_solved_frames, load_frame_wcs, save_frame_wcs
 
 __all__ = [
     "CSV_FILE",
@@ -215,6 +225,7 @@ __all__ = [
     "Frame",
     "FrameQuality",
     "FrameStoreError",
+    "FrameWcs",
     "InvalidProjectError",
     "Measurement",
     "MeasurementError",
@@ -233,6 +244,7 @@ __all__ = [
     "SessionQuality",
     "StarPick",
     "StarPickError",
+    "WcsStoreError",
     "add_measurement",
     "close_session",
     "create_project",
@@ -249,7 +261,9 @@ __all__ = [
     "list_presets",
     "list_projects",
     "list_sessions",
+    "list_solved_frames",
     "load_crossmatch",
+    "load_frame_wcs",
     "load_preset",
     "load_star_picks",
     "measurements_for_frame",
@@ -260,6 +274,7 @@ __all__ = [
     "read_frame_bytes",
     "save_crossmatch",
     "save_frame_quality",
+    "save_frame_wcs",
     "save_preset",
     "save_star_picks",
     "session_quality",

@@ -482,10 +482,10 @@ def test_editor_persistence_methods_require_open_stack(project):
 
 
 def test_fresh_db_is_v6_with_presets_table(project):
-    assert store.SCHEMA_VERSION == 6
-    assert set(store.MIGRATIONS) == {0, 1, 2, 3, 4, 5}
-    assert project.db.execute("PRAGMA user_version").fetchone()[0] == 6
-    assert project.config["schema_version"] == 6
+    assert store.SCHEMA_VERSION == 7
+    assert set(store.MIGRATIONS) == {0, 1, 2, 3, 4, 5, 6}
+    assert project.db.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert project.config["schema_version"] == 7
     tables = {
         row[0]
         for row in project.db.execute(
@@ -551,10 +551,10 @@ def test_old_v2_db_migrates_to_v6_preserving_rows(project, stored_stacks, tmp_pa
 
     reopened = open_project(project.path)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 6
-        assert reopened.config["schema_version"] == 6
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert reopened.config["schema_version"] == 7
         on_disk = json.loads(reopened.config_path.read_text(encoding="utf-8"))
-        assert on_disk["schema_version"] == 6  # mirrored into project.json
+        assert on_disk["schema_version"] == 7  # mirrored into project.json
         tables = {
             row[0]
             for row in reopened.db.execute(
