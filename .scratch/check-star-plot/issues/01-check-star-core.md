@@ -6,7 +6,7 @@
 
 **Status:** implemented in cad0b2e (merged)
 
-- [ ] Pure change in photometry (picking/measure/run), no gi; role vocabulary extended in store/stars.py (ROLE_CHECK) with migration-free storage (picks table role column)
+- [ ] Pure change in photometry (picking/measure/run), no gi; role vocabulary extended in store/stars.py (ROLE_CHECK), stored in the same role column via the v4→v5 CHECK-widening migration
 - [ ] `measure_frame_data` / run report expose per-frame check differential mag + err and target-minus-check; ensemble math provably excludes the check
 - [ ] Check-star choice persisted per project (store.stars save/load round-trip)
 - [ ] Tests: synthetic cloud-dimming frames -> target & check co-move, target-minus-check flat within errors; ensemble excludes check; persistence round-trip; no-gi boundary
