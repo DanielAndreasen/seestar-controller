@@ -4,7 +4,7 @@
 
 **Blocked by:** gaia-crossmatch 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 221cbed (merged)
 
 - [ ] DB schema bump + migration (project-store 07 pattern); store API `save_crossmatch(project, frame_id, rows)` / `load_crossmatch(project, frame_id)` / `list_crossmatched_stacks(project)`
 - [ ] Rows carry detected x/y, RA/Dec, Gaia source_id, G/BP/RP, parallax + error, pmra/pmdec + errors, matched flag
