@@ -51,6 +51,13 @@ One project database holds the whole observing campaign (GLOSSARY.md):
   the ``candidate_rank`` within the run, the frame count (``n_frames``),
   and the scan parameters (``threshold``, ``min_frames``) plus the run time
   (``scanned_at``).
+- ``frame_wcs`` — the persisted solved WCS of a frame (astrometry ticket 01,
+  see :mod:`.wcs`): the frame id (INTEGER primary key, cascade-deleted with
+  the frame), the solver that produced it (``solve-field`` or ``gaia``), the
+  solve time (UTC ISO-8601), the match RMS in arcsec (nullable) and star
+  count, the solved field center (``center_ra_deg``/``center_dec_deg``,
+  J2000 degrees), and the full WCS as a JSON dict of FITS cards
+  (``cards_json``) so the exact WCS can be rebuilt without the FITS file.
 
 All writes go through SQLite transactions (``with conn:``); the database runs
 in WAL mode (``PRAGMA journal_mode=WAL``, set once by :func:`initialize_db`,
@@ -113,6 +120,12 @@ Migration history:
   ``stack_frame_id`` FK with ``ON DELETE CASCADE`` — deleting the stack
   deletes its scan rows) plus its ``stack_frame_id`` and ``scanned_at``
   indexes. ``IF NOT EXISTS`` keeps the step idempotent, exactly like 5 -> 6.
+- **7 -> 8** — astrometry ticket 01: create the ``frame_wcs`` table (the
+  persisted solved WCS of a frame: ``frame_id`` INTEGER primary key with
+  ``ON DELETE CASCADE``, ``solver``, ``solved_at``, nullable ``rms_arcsec``,
+  ``n_stars``, ``center_ra_deg``/``center_dec_deg``, and the full WCS as a
+  JSON ``cards_json``). ``IF NOT EXISTS`` keeps the step idempotent, exactly
+  like 3 -> 4.
 
 :func:`initialize_db` creates the current schema by running the migrations
 on a fresh db (0 -> 1 -> ... -> :data:`SCHEMA_VERSION`).
@@ -126,7 +139,7 @@ from collections.abc import Callable
 from .errors import InvalidProjectError
 
 #: The schema version this build writes and supports.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 #: The tables every project database must have (checked on open).
 SCHEMA_TABLES = ("sessions", "frames", "stars", "measurements")
@@ -387,6 +400,29 @@ _SCAN_RESULTS_SCANNED_AT_INDEX_DDL = (
     "ON scan_results (scanned_at)"
 )
 
+#: The ``frame_wcs`` table DDL (v8, astrometry ticket 01): the persisted solved
+#: WCS of ONE frame — ``frame_id`` (INTEGER primary key, REFERENCES frames ON
+#: DELETE CASCADE, so the record is cascade-deleted with its frame), the
+#: ``solver`` that produced it (``solve-field`` or ``gaia``), ``solved_at``
+#: (UTC ISO-8601), the match ``rms_arcsec`` (nullable — None when the solver
+#: reported no RMS), ``n_stars`` (the matched star count), the solved field
+#: center (``center_ra_deg``/``center_dec_deg``, J2000 degrees), and the full
+#: WCS as a JSON dict of FITS cards (``cards_json``) so the exact WCS can be
+#: rebuilt without the FITS file.
+_FRAME_WCS_DDL = """
+CREATE TABLE IF NOT EXISTS frame_wcs (
+    frame_id INTEGER PRIMARY KEY NOT NULL REFERENCES frames (id) ON DELETE CASCADE,
+    solver TEXT NOT NULL,
+    solved_at TEXT NOT NULL,
+    rms_arcsec REAL,
+    n_stars INTEGER NOT NULL CHECK (n_stars >= 0),
+    center_ra_deg REAL NOT NULL,
+    center_dec_deg REAL NOT NULL,
+    cards_json TEXT NOT NULL
+)
+"""
+
+
 def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
     """Migration step 2 -> 3 (image-enhance ticket 04): create the
     ``presets`` table and widen the ``frames.kind`` CHECK to allow
@@ -479,6 +515,7 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
         _SCAN_RESULTS_STACK_INDEX_DDL,
         _SCAN_RESULTS_SCANNED_AT_INDEX_DDL,
     ),
+    7: (_FRAME_WCS_DDL,),  # v7 -> v8: frame_wcs table (astrometry ticket 01)
 }
 
 

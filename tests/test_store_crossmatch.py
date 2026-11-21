@@ -408,7 +408,7 @@ def test_open_migrates_v5_project_creating_crossmatch(root):
     conn.close()
 
     with open_project(project_dir) as p:
-        assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 7
+        assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 8
         assert "crossmatch" in table_names(p.db)
         cols = [row[1] for row in p.db.execute("PRAGMA table_info(crossmatch)")]
         assert cols == [
@@ -440,8 +440,8 @@ def test_migrate_db_5_to_6_creates_crossmatch_and_is_idempotent(tmp_path):
         conn.execute("DROP TABLE crossmatch")
         conn.execute("PRAGMA user_version=5")
     assert "crossmatch" not in table_names(conn)
-    assert migrate_db(conn) == SCHEMA_VERSION == 7
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert migrate_db(conn) == SCHEMA_VERSION == 8
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
     assert "crossmatch" in table_names(conn)
     # re-running the 5 -> 6 step on a db that already has the table is a no-op
     conn.execute("PRAGMA user_version=5")
@@ -499,8 +499,8 @@ def test_public_api_exports_crossmatch():
     assert store.save_crossmatch is save_crossmatch
     assert store.load_crossmatch is load_crossmatch
     assert store.list_crossmatched_stacks is list_crossmatched_stacks
-    assert store.SCHEMA_VERSION == 7
-    assert set(store.MIGRATIONS) == {0, 1, 2, 3, 4, 5, 6}
+    assert store.SCHEMA_VERSION == 8
+    assert set(store.MIGRATIONS) == {0, 1, 2, 3, 4, 5, 6, 7}
     conn = sqlite3.connect(":memory:")
     store.initialize_db(conn)
     assert "crossmatch" in table_names(conn)

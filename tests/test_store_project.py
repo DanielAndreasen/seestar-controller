@@ -88,7 +88,7 @@ def test_create_returns_open_project(root):
 
 def test_project_json_contents_and_schema_version(project):
     config = json.loads(project.config_path.read_text(encoding="utf-8"))
-    assert config["schema_version"] == SCHEMA_VERSION == 7
+    assert config["schema_version"] == SCHEMA_VERSION == 8
     assert config["name"] == "M 42"
     assert config["slug"] == "m-42"
     # placeholders per spec: target / star picks / period
@@ -416,7 +416,7 @@ def test_open_missing_required_key_raises_invalid(root):
         open_project(project_dir)
 
 
-@pytest.mark.parametrize("version", [0, 8, 999, "1", 1.5, None, True])
+@pytest.mark.parametrize("version", [0, 9, 999, "1", 1.5, None, True])
 def test_open_unsupported_schema_version_raises_invalid(root, version):
     project_dir = root / "m-42"
     project_dir.mkdir(parents=True)
@@ -495,7 +495,7 @@ def test_open_db_missing_tables_raises_invalid(root):
 def test_open_user_version_mismatch_raises_invalid(root):
     p = create_project("M 42", root=root)
     with p.db:
-        p.db.execute("PRAGMA user_version=8")
+        p.db.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
     p.close()
     with pytest.raises(InvalidProjectError, match="user_version"):
         open_project(root / "m-42")
@@ -612,4 +612,4 @@ def test_public_api_is_exported_from_package():
     assert callable(store.slugify)
     assert isinstance(store.Project, type)
     assert isinstance(store.ProjectSummary, type)
-    assert store.SCHEMA_VERSION == 7
+    assert store.SCHEMA_VERSION == 8

@@ -549,10 +549,10 @@ def test_migration_6_to_7_in_memory():
     conn = sqlite3.connect(":memory:")
     try:
         initialize_db(conn)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 8
         conn.execute("DROP TABLE scan_results")
         conn.execute("PRAGMA user_version=6")
-        assert migrate_db(conn) == 7
+        assert migrate_db(conn) == SCHEMA_VERSION
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({SCAN_RESULTS_TABLE})")]
         assert cols == [
             "id", "scanned_at", "stack_frame_id", "source_id", "ra_deg", "dec_deg",
@@ -577,7 +577,7 @@ def test_migration_6_to_7_in_memory():
         # idempotent: re-running the migration on a v6 db that already has the
         # table (IF NOT EXISTS) succeeds
         conn.execute("PRAGMA user_version=6")
-        assert migrate_db(conn) == 7
+        assert migrate_db(conn) == SCHEMA_VERSION
     finally:
         conn.close()
 
@@ -598,7 +598,7 @@ def test_reopen_migrates_v6_db_to_v7_and_preserves_rows(root):
     project.close()
     reopened = open_project(root / slug)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 7 == SCHEMA_VERSION
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         tables = {
             r[0]
             for r in reopened.db.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -607,16 +607,16 @@ def test_reopen_migrates_v6_db_to_v7_and_preserves_rows(root):
         # existing rows preserved
         assert [f.id for f in list_frames(reopened)] == [frame.id]
         # the new version is mirrored into project.json
-        assert reopened.config["schema_version"] == 7
+        assert reopened.config["schema_version"] == 8
         on_disk = json.loads((root / slug / "project.json").read_text(encoding="utf-8"))
-        assert on_disk["schema_version"] == 7
+        assert on_disk["schema_version"] == 8
         # idempotent re-open after another downgrade (table already exists)
         reopened.db.execute("PRAGMA user_version=6")
     finally:
         reopened.close()
     again = open_project(root / slug)
     try:
-        assert again.db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert again.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert [f.id for f in list_frames(again)] == [frame.id]
     finally:
         again.close()
