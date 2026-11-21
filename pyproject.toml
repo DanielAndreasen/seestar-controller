@@ -61,6 +61,7 @@ include = [
     "src/seestar_controller/ui/settings_dialog.py",
     "src/seestar_controller/ui/toast.py",
     "src/seestar_controller/ui/views.py",
+    "src/seestar_controller/variable_scan/view.py",
     "src/seestar_controller/visibility/timeline_view.py",
     "tests/test_analysis_widgets.py",
     "tests/test_enhance_widgets.py",
@@ -71,6 +72,7 @@ include = [
     "tests/test_photometry_widgets.py",
     "tests/test_report_widgets.py",
     "tests/test_ui_widgets.py",
+    "tests/test_variable_scan_view_widgets.py",
     "tests/test_visibility_widgets.py",
 ]
 [tool.ty.overrides.rules]
