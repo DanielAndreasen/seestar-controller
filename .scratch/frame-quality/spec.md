@@ -1,6 +1,6 @@
 # Spec: frame-quality
 
-Status: ready-for-agent (3 issues)
+Status: completed 2026-11-20 (01: 82ee1a9; 02: fbc5578; 03: 6637761)
 
 ## Problem Statement
 
