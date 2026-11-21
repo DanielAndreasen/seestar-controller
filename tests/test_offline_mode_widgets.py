@@ -65,10 +65,14 @@ def gtk():
 
 @pytest.fixture()
 def app(gtk, tmp_path):
-    """A SeestarApplication with its settings file in tmp_path."""
+    """A SeestarApplication with its settings file in tmp_path and a scope IP
+    set (pattern: tests/test_ui_widgets.py — without it ``connect()`` lands in
+    the "scope IP is not set" error state)."""
     from seestar_controller.ui.app import SeestarApplication
 
-    return SeestarApplication(settings_path=str(tmp_path / "settings.json"))
+    application = SeestarApplication(settings_path=str(tmp_path / "settings.json"))
+    application.state.set_setting("scope_ip", "192.168.1.50")
+    return application
 
 
 @pytest.fixture()
@@ -130,6 +134,9 @@ def test_open_project_offline_gates_everything_and_never_touches_link(app, gtk, 
     from seestar_controller.ui.app import SeestarWindow
 
     project = create_project("M 42", root=project_root)
+    # the project was created on disk behind the controller's back — re-list
+    # so the Projects view renders the row (open_project does not re-list)
+    app.project_controller.refresh()
     window = SeestarWindow(app, app.state)
 
     opened = window.open_project_offline(project.path)
@@ -194,6 +201,9 @@ def test_normal_project_open_ungates_and_restores(app, gtk, project_root):
 
     first = create_project("M 42", root=project_root)
     create_project("M 31", root=project_root)
+    # re-list so the Projects view has both rows to click (open_project does
+    # not re-list the controller's project tuple)
+    app.project_controller.refresh()
     window = SeestarWindow(app, app.state)
     window.open_project_offline(first.path)
     assert window.mode == AppMode.OFFLINE

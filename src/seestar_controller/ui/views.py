@@ -299,6 +299,9 @@ class ObserveView(_PlaceholderView):
         self._scope_gated = False
         self._gated_base: dict[Gtk.Button, bool] = {}
         self._gated_tooltips: dict[Gtk.Button, str | None] = {}
+        self._gated_preview_hidden = False
+        self._gated_preview_visible = True
+        self._gated_preview_label = ""
         super().__init__(**kwargs)
         if self._project_controller is not None:
             self._project_controller.add_listener(self._on_project_event)
@@ -392,8 +395,10 @@ class ObserveView(_PlaceholderView):
         """Gate/ungate the scope-dependent controls (offline-analysis ticket
         01): while gated (offline mode) the night-control buttons are
         insensitive with the offline tooltip and the live preview is hidden;
-        ungating restores the remembered base sensitivity/tooltips and the
-        preview."""
+        ungating restores exactly the widgets gating changed (the remembered
+        base sensitivity/tooltips and the preview) and leaves untouched
+        widgets alone, so the observe widget's own state-driven rendering is
+        never clobbered."""
         self._scope_gated = bool(gated)
         self._apply_scope_gating()
 
@@ -404,28 +409,38 @@ class ObserveView(_PlaceholderView):
             self._apply_scope_gating()
 
     def _apply_scope_gating(self) -> None:
-        """Apply the current gating to the night-control buttons + preview,
-        remembering the base sensitivity/tooltip to restore on ungate."""
+        """Apply the current gating to the night-control buttons + preview.
+
+        While gating, the base sensitivity/tooltip (and the preview's
+        visibility/label) are remembered exactly once — re-applying the gate
+        after an observe-state change must not overwrite the remembered base
+        with the gated values. While ungating, only widgets present in the
+        remembered maps are restored; untouched widgets keep whatever the
+        observe widget's own state-driven rendering last set."""
         widget = self._observe_widget
         for button in self._scope_buttons():
             if self._scope_gated:
-                self._gated_base[button] = button.get_sensitive()
+                if button not in self._gated_base:
+                    self._gated_base[button] = button.get_sensitive()
                 if button not in self._gated_tooltips:
                     self._gated_tooltips[button] = button.get_tooltip_text()
                 button.set_sensitive(False)
                 button.set_tooltip_text(OFFLINE_SCOPE_TOOLTIP)
-            else:
-                base = self._gated_base.pop(button, True)
-                tooltip = self._gated_tooltips.pop(button, None)
-                button.set_sensitive(base)
-                if tooltip is not None:
-                    button.set_tooltip_text(tooltip)
+            elif button in self._gated_base:
+                button.set_sensitive(self._gated_base.pop(button))
+                if button in self._gated_tooltips:
+                    button.set_tooltip_text(self._gated_tooltips.pop(button))
         if self._scope_gated:
+            if not self._gated_preview_hidden:
+                self._gated_preview_hidden = True
+                self._gated_preview_visible = widget.picture.get_visible()
+                self._gated_preview_label = widget.preview_label.get_label()
             widget.picture.set_visible(False)
             widget.preview_label.set_label(OFFLINE_PREVIEW_LABEL)
-        else:
-            widget.picture.set_visible(True)
-            widget.preview_label.set_label("")
+        elif self._gated_preview_hidden:
+            self._gated_preview_hidden = False
+            widget.picture.set_visible(self._gated_preview_visible)
+            widget.preview_label.set_label(self._gated_preview_label)
 
 
 class EnhanceView(_PlaceholderView):
