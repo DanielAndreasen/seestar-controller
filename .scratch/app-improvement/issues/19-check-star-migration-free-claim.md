@@ -6,11 +6,13 @@ Evidence: `.scratch/check-star-plot/issues/01-check-star-core.md` says the role 
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in a537b5d (pending review)
 
-- [ ] The issue checkbox is reworded to "stored in the same role column via the v4→v5 CHECK-widening migration"
-- [ ] No code changes; docs-only ticket
+- [x] The issue checkbox is reworded to "stored in the same role column via the v4→v5 CHECK-widening migration"
+- [x] No code changes; docs-only ticket
 
 ## Comments
 
 Audit finding (kind: incorrect-spec-claim, severity: low).
+
+Implemented in a537b5d: reworded the acceptance line in `.scratch/check-star-plot/issues/01-check-star-core.md` from "migration-free storage (picks table role column)" to "stored in the same role column via the v4→v5 CHECK-widening migration", matching `src/seestar_controller/store/schema.py` (4 -> 5 rebuilds the `stars` table to widen the role CHECK). Docs-only; no code changed, so no targeted tests named. `uv tool run ty check` -> All checks passed! `uv tool run ruff check` -> All checks passed!
