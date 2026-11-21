@@ -4,7 +4,7 @@
 
 **Blocked by:** dependency-upgrade 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 9a3fa47 (merged as 8233ee5)
 
 - [ ] `uv lock --upgrade` green; each library at latest stable compatible with py3.14
 - [ ] Breaking-change fixes in src/ and tests/ (no workarounds, no behavior change)
