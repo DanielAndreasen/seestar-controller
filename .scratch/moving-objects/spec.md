@@ -1,6 +1,6 @@
 # Spec: moving-objects
 
-Status: ready-for-agent (2 issues)
+Status: completed 2026-11-20 (01 e754922, 02 b243dbd)
 
 ## Problem Statement
 
