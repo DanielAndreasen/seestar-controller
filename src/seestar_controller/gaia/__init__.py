@@ -2,11 +2,13 @@
 
 Pure-Python package (module boundary per ``.scratch/gaia-crossmatch/spec.md``):
 **no GTK imports, no :mod:`seestar_controller.link` imports** — a subprocess
-test enforces the boundary. Nothing here imports the widget layer, the store
-schema, or the enhance pipeline; the only seestar imports are the pure
+test enforces the boundary. Nothing here imports the widget layer or the
+enhance pipeline; the only seestar imports are the pure
 :mod:`seestar_controller.catalog` (coordinate math + the
 :class:`~seestar_controller.catalog.cache.QueryCache` cache pattern, reused
-read-only) and :func:`seestar_controller.store.frames.header_to_dict`.
+read-only), :func:`seestar_controller.store.frames.header_to_dict`, and —
+for the issue-02 persistence glue only — the pure
+:mod:`seestar_controller.store` (which itself imports neither GTK nor link).
 
 Pipeline (issue 01 of gaia-crossmatch — detection + query + cache; storing
 the table into the project is issue 02):
@@ -29,6 +31,13 @@ the table into the project is issue 02):
 stack. The single HTTP boundary is :func:`~.query.fetch_gaia_tap_json` —
 tests mock it, so no test ever touches the network.
 
+Issue 02 adds the persistence glue (:mod:`.persistence`): the cross-match
+table of a stack is stored in the project db (``crossmatch`` table, schema
+v6) via the pure :mod:`seestar_controller.store`, so repeat views are instant
+and offline-capable — :func:`~.persistence.save_crossmatch`,
+:func:`~.persistence.load_crossmatch`,
+:func:`~.persistence.list_crossmatched_stacks`.
+
 Modules:
 
 - :mod:`.errors` — the error taxonomy (:class:`~.errors.GaiaError` base,
@@ -42,7 +51,10 @@ Modules:
   :func:`~.query.query_gaia`, :func:`~.query.query_gaia_cached`,
   :func:`~.query.gaia_cache_key`, :func:`~.query.default_cache_dir`;
 - :mod:`.matching` — :class:`~.matching.CrossmatchRow`,
-  :func:`~.matching.crossmatch`, :func:`~.matching.crossmatch_stack`.
+  :func:`~.matching.crossmatch`, :func:`~.matching.crossmatch_stack`;
+- :mod:`.persistence` — the project-store glue of issue 02:
+  :func:`~.persistence.save_crossmatch`, :func:`~.persistence.load_crossmatch`,
+  :func:`~.persistence.list_crossmatched_stacks`.
 """
 
 from .detect import (
@@ -69,6 +81,11 @@ from .matching import (
     CrossmatchRow,
     crossmatch,
     crossmatch_stack,
+)
+from .persistence import (
+    list_crossmatched_stacks,
+    load_crossmatch,
+    save_crossmatch,
 )
 from .query import (
     ARCSEC_PER_DEG,
@@ -129,8 +146,11 @@ __all__ = [
     "fetch_gaia_tap_json",
     "field_center_and_radius",
     "gaia_cache_key",
+    "list_crossmatched_stacks",
+    "load_crossmatch",
     "parse_gaia_response",
     "pixel_to_sky",
     "query_gaia",
     "query_gaia_cached",
+    "save_crossmatch",
 ]

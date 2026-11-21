@@ -21,6 +21,7 @@ def test_gaia_package_imports_no_gi_no_link_no_ui_no_enhance():
         "import seestar_controller.gaia.detect;"
         "import seestar_controller.gaia.query;"
         "import seestar_controller.gaia.matching;"
+        "import seestar_controller.gaia.persistence;"
         "import seestar_controller.gaia.errors;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
@@ -51,7 +52,7 @@ def test_gaia_modules_source_scan_no_gi_import():
 
 def test_gaia_package_module_set():
     modules = {path.stem for path in GAIA_PACKAGE_DIR.glob("*.py")}
-    assert modules == {"__init__", "errors", "detect", "query", "matching"}
+    assert modules == {"__init__", "errors", "detect", "query", "matching", "persistence"}
 
 
 def test_gaia_public_api_is_exported_from_package():
