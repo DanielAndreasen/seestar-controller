@@ -1,6 +1,6 @@
 # Dependency upgrade record — Python 3.12 → 3.14 + latest libraries
 
-Dated 2026-11-21. Spec `dependency-upgrade` (3 issues) completed 2026-11-21; this page is the durable record. Commits: issue 01 implemented `3c07d0f` (merged `bed5056`), issue 02 implemented `9a3fa47` (merged `8233ee5`), issue 03 (this record + verification) on branch `wt/dependency-upgrade-03`. Verified tree: main @ `390f885`.
+Dated 2026-11-21. Spec `dependency-upgrade` (issues 01–04) completed 2026-11-21; this page is the durable record. Commits: issue 01 implemented `3c07d0f` (merged `bed5056`), issue 02 implemented `9a3fa47` (merged `8233ee5`), issue 03 (this record + verification) on branch `wt/dependency-upgrade-03`, issue 04 (Python 3.14 feature evaluation, section below) on branch `wt/dependency-upgrade-04`. Verified tree: main @ `390f885`.
 
 ## What changed
 
@@ -41,3 +41,20 @@ Done in a **scratch copy** (`git archive 390f885` → `/tmp`, never in a checkou
 - `uv lock --upgrade --dry-run`: **No lockfile changes detected**.
 
 A new contributor can therefore clone, `uv sync`, run the suite, and launch the GUI on the new versions.
+
+## Python 3.14 feature evaluation — issue 04 (dated 2026-11-21, branch `wt/dependency-upgrade-04`)
+
+Evaluated every headline CPython 3.14 language/runtime feature against this codebase on the 3.14.7 venv (each feature probed live: `compression.zstd`, `concurrent.interpreters`, `t"..."` t-strings, lazy `__annotations__`, `pathlib.Path.copy/move/copy_into` all present and working). Hard rule applied: no new abstraction, no new config, no new dependency, no user-visible behavior change. **Result: zero code changes — no candidate was a complexity-free win.** Adopted-vs-rejected, per feature:
+
+| 3.14 feature | verdict | reason |
+|---|---|---|
+| t-strings (PEP 750) | **rejected** | The only interpolation sites are report HTML (f-strings + manual `html.escape` via `_esc` in `report/html.py`) and SQL (f-strings interpolate only constant table/column identifiers; all values are `?` parameters — `store/*.py`). A t-string would produce a `string.templatelib.Template` that the render functions would have to render — a new abstraction across `report/html.py`, not strictly simpler or safer than the current explicit `_esc`. |
+| Deferred annotation evaluation (PEP 649/749) | **automatic — nothing to adopt** | 3.14 makes all annotations lazy by default; `from __future__ import annotations` (141 files) is now a no-op. No `typing.get_type_hints` / `annotationlib` introspection exists in `src/`. Removing the future imports would be a 141-file diff — not a small local change, so left as-is (still valid, no warning). |
+| `compression.zstd` (PEP 784) | **rejected — no call site** | `src/` contains no compression at all (no gzip/zlib/bz2/lzma; the only zlib use is test-side PDF stream inspection in `tests/test_report_pdf.py`). There is nothing to swap; adding zstd anywhere would be new behavior, not a swap. |
+| `concurrent.interpreters` (PEP 734) | **rejected** | Would need a new concurrency abstraction. All worker-thread marshalling in the app is GLib-main-loop-bound (`invoke_on_main` / `GLib.idle_add` in the controllers), which subinterpreters do not compose with without new config. |
+| Free-threaded (GIL-free) build | **rejected** | Requires a separate build/CI configuration (config surface) and PyGObject/GTK are not free-threaded-safe; the app is GLib-bound, so the free-threaded build buys nothing here. |
+| Startup / experimental JIT interpreter improvements | **nothing to adopt in code** | Interpreter-level; the 3.14 JIT is off by default and enabling it needs a launch flag — config surface, rejected. Startup wins apply automatically to `uv run` invocations. |
+| Security hardening (3.14 stdlib defaults: tarfile `data` filter, ssl defaults, etc.) | **nothing to adopt — no call sites** | `src/` has no `tarfile`, `pickle`, `marshal`, `eval`/`exec` usage. Auth/crypto is `cryptography` (RSA) + `secrets.token_hex` + `hashlib.sha256` for cache keys (`link/auth.py`, `link/keys.py`, `link/mock_scope.py`, `catalog/cache.py`, `hr_diagram/isochrone.py`) — all already current primitives; 3.14's hardening needs no code change. |
+| `pathlib.Path.copy/move/copy_into` (3.14 stdlib addition, checked as a bonus) | **rejected — no call site** | No `shutil.copy*/move` anywhere in `src/` (only `shutil.which` in `astrometry/solve.py`, which has no 3.14 equivalent). The atomic-write helpers (`link/frames.py::atomic_write_bytes`, the temp+fsync+`os.replace` patterns in `astrometry/`, `analysis/export.py`) already use the right primitive; `Path.move` would not add the fsync. |
+
+Verification on this branch (main @ `e205aef` + this entry): `uv tool run ty check` and `uv tool run ruff check` clean; full suite `uv run pytest -q` green except the known pre-existing failures identical on main (gi-gated widget suites skip under the 3.14 venv — system gi is cpython-312-only, see assumptions.md 2026-11-21 entry). No `pyproject.toml`/`uv.lock` change was needed (nothing adopted), so none was made.
