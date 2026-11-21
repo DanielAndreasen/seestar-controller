@@ -4,7 +4,7 @@
 
 **Blocked by:** gaia-crossmatch 01 + 02 (Gaia reference for the fallback solver)
 
-**Status:** ready-for-agent
+**Status:** implemented in 8f671c1 (merged 4da4d51)
 
 - [ ] Pure `astrometry/` package, no gi (subprocess boundary test)
 - [ ] `solve_frame(fits_path or data+header)` -> WCS; solve-field subprocess if binary found (shutil.which), else Gaia pattern match via gaia-crossmatch; WCS written into the FITS header (astropy) + stored in project DB per frame
