@@ -23,6 +23,13 @@ class InvalidProjectError(ProjectError):
     ``schema_version``)."""
 
 
+class ProjectOpenError(ProjectError):
+    """The project is currently open — a live :class:`~.project.Project`
+    handle from :func:`~.project.open_project` (not yet closed) exists, so
+    :func:`~.project.delete_project` refuses and the project is left
+    untouched. Close the project first."""
+
+
 class SessionOpenError(ProjectError):
     """A session is already open in the project; starting another one while
     one is open is rejected (see :mod:`.sessions`)."""

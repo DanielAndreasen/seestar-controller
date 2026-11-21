@@ -1088,8 +1088,10 @@ class ProjectsView(_PlaceholderView):
       not writable, projects-view ticket 02);
     - a :class:`Gtk.ListBox` of the projects (name, path, created-at from the
       :class:`~seestar_controller.store.ProjectSummary`), one row each with
-      an **Open** button; the current project's row carries a "current"
-      badge;
+      an **Open** button and a destructive **Delete** button (app-improvement
+      ticket 16: deletes the project through the controller — refused while
+      the project is open, the current project is closed first); the current
+      project's row carries a "current" badge;
     - a **New project** area: a name :class:`Adw.EntryRow` + a **Create
       project** button (creates via the controller and opens the new project
       — it becomes current; a missing project root is created on demand) +
@@ -1158,6 +1160,8 @@ class ProjectsView(_PlaceholderView):
         self._show_view = show_view
         #: per-row Open buttons, rebuilt with the list
         self._row_buttons: list[Gtk.Button] = []
+        #: per-row Delete buttons, rebuilt with the list (app-improvement 16)
+        self._row_delete_buttons: list[Gtk.Button] = []
         #: per-row "current" badges, rebuilt with the list
         self._row_badges: list[Gtk.Label] = []
         #: per-session browser records, rebuilt with the sessions box
@@ -1301,6 +1305,14 @@ class ProjectsView(_PlaceholderView):
         """Click the Open button of the row at ``index``."""
         self._row_buttons[index].emit("clicked")
 
+    def delete_button(self, index: int) -> Gtk.Button:
+        """The Delete button of the row at ``index`` (app-improvement 16)."""
+        return self._row_delete_buttons[index]
+
+    def click_delete(self, index: int) -> None:
+        """Click the Delete button of the row at ``index``."""
+        self._row_delete_buttons[index].emit("clicked")
+
     # -- stored-data browser helpers (offline-analysis ticket 02; also used by
     #    the widget tests) -------------------------------------------------------
 
@@ -1391,6 +1403,7 @@ class ProjectsView(_PlaceholderView):
         while (row := self._list_box.get_first_child()) is not None:
             self._list_box.remove(row)
         self._row_buttons = []
+        self._row_delete_buttons = []
         self._row_badges = []
         current = self._project_controller.current
         for summary in self._project_controller.projects:
@@ -1602,6 +1615,22 @@ class ProjectsView(_PlaceholderView):
         open_button.connect("clicked", lambda _btn, path=summary.path: self._on_open_clicked(path))
         box.append(open_button)
         self._row_buttons.append(open_button)
+        # app-improvement ticket 16: delete the project (and all its data);
+        # refused while the project is open (the current one is closed first)
+        delete_button = Gtk.Button(
+            label="Delete",
+            valign=Gtk.Align.CENTER,
+            css_classes=["destructive-action"],
+            tooltip_text=(
+                f"Delete {summary.name} and all its data "
+                "(refused while the project is open)"
+            ),
+        )
+        delete_button.connect(
+            "clicked", lambda _btn, path=summary.path: self._on_delete_clicked(path)
+        )
+        box.append(delete_button)
+        self._row_delete_buttons.append(delete_button)
         self._row_badges.append(badge)
         return Gtk.ListBoxRow(child=box, activatable=False)
 
@@ -1644,6 +1673,19 @@ class ProjectsView(_PlaceholderView):
             self._set_status(str(exc), error=True)
             return
         self._set_status(f"opened {project.name} ({project.path})", error=False)
+
+    def _on_delete_clicked(self, path) -> None:
+        """Delete button (app-improvement ticket 16): delete the project at
+        ``path`` through the controller — the store refuses while the
+        project is open, and deleting the current project closes it first and
+        clears ``last_project``; inline error on failure. The list re-renders
+        via the controller event on success."""
+        try:
+            deleted = self._project_controller.delete_project(path)
+        except (ProjectError, ValueError, OSError) as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._set_status(f"deleted {deleted}", error=False)
 
     # -- stored-data actions (offline-analysis ticket 02) ---------------------------
 

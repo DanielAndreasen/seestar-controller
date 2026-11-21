@@ -762,6 +762,61 @@ def test_projects_view_inline_error_when_open_fails(gtk, project_state):
     assert controller.current is not None  # unchanged
 
 
+def test_projects_view_delete_button_deletes_the_current_project(gtk, project_state):
+    from seestar_controller.ui.project_controller import ProjectController
+    from seestar_controller.ui.views import build_view
+
+    controller = ProjectController(project_state)
+    view = build_view("projects", project_controller=controller)
+    view.name_entry.set_text("M 42")
+    view.create_button.emit("clicked")
+    assert view.row_count() == 1
+    assert view.is_current_row(0)
+
+    # deleting the current project closes it first, clears last_project, and
+    # re-renders the list (via the controller event)
+    view.click_delete(0)
+    assert view.row_count() == 0
+    assert controller.current is None
+    assert project_state.get_setting("last_project") == ""
+    assert "No project open" in view.current_label.get_label()
+    assert view.status_label.has_css_class("success")
+    assert "deleted" in view.status_label.get_label()
+
+
+def test_projects_view_delete_button_refuses_an_open_project_and_deletes_a_closed_one(
+    gtk, project_state
+):
+    from pathlib import Path
+
+    from seestar_controller.store import create_project
+    from seestar_controller.ui.project_controller import ProjectController
+    from seestar_controller.ui.views import build_view
+
+    root = Path(project_state.get_setting("project_root"))
+    kept_open = create_project("Kept Open", root=root)  # this test keeps the handle open
+    closed = create_project("Closed", root=root)
+    closed.close()  # not open anymore -> deletable
+    controller = ProjectController(project_state)
+    view = build_view("projects", project_controller=controller)
+    controller.refresh()
+    assert view.row_count() == 2
+    index_by_label = {view.row_label(i): i for i in range(view.row_count())}
+
+    # the still-open project is refused, inline, and stays listed
+    view.click_delete(index_by_label["Kept Open"])
+    assert view.status_label.has_css_class("error")
+    assert "open" in view.status_label.get_label()
+    assert view.row_count() == 2
+
+    # the closed one deletes cleanly
+    view.click_delete(index_by_label["Closed"])
+    assert view.status_label.has_css_class("success")
+    assert view.row_count() == 1
+    assert view.row_label(0) == "Kept Open"
+    kept_open.close()
+
+
 def test_projects_view_constructs_standalone_and_refreshes_on_events(gtk, tmp_path, monkeypatch):
     from seestar_controller.ui.views import ProjectsView, build_view
 

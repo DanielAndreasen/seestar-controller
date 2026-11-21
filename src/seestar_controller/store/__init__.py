@@ -6,7 +6,8 @@ Pure Python, no GTK, no link (module boundary per
 - :mod:`.errors` — the error hierarchy: :class:`~.errors.ProjectError` base,
   with :class:`~.errors.ProjectExistsError`,
   :class:`~.errors.ProjectNotFoundError`, :class:`~.errors.InvalidProjectError`,
-  and the session errors :class:`~.errors.SessionOpenError`,
+  :class:`~.errors.ProjectOpenError`, and the session errors
+  :class:`~.errors.SessionOpenError`,
   :class:`~.errors.SessionNotFoundError`,
   :class:`~.errors.SessionAlreadyClosedError`, plus
   :class:`~.errors.FrameStoreError`
@@ -15,8 +16,10 @@ Pure Python, no GTK, no link (module boundary per
   (WAL mode, one transaction per migration), and the migration runner
   :func:`~.schema.migrate_db` with :data:`~.schema.MIGRATIONS` (from-version ->
   SQL steps; ``open_project`` migrates older dbs and rejects newer ones)
-- :mod:`.project` — create/open/list: :func:`~.project.create_project`,
+- :mod:`.project` — create/open/list/delete: :func:`~.project.create_project`,
   :func:`~.project.open_project`, :func:`~.project.list_projects`,
+  :func:`~.project.delete_project` (removes the whole project directory;
+  refuses with :class:`~.errors.ProjectOpenError` while the project is open),
   :func:`~.project.slugify`, the :class:`~.project.Project` handle (``.path``,
   ``.name``, ``.config``, ``.db``, atomic ``save_config()``) and
   :class:`~.project.ProjectSummary`, plus the project-root resolution
@@ -118,6 +121,7 @@ from .errors import (
     ProjectError,
     ProjectExistsError,
     ProjectNotFoundError,
+    ProjectOpenError,
     QualityError,
     SessionAlreadyClosedError,
     SessionNotFoundError,
@@ -168,6 +172,7 @@ from .project import (
     ProjectSummary,
     create_project,
     default_project_root,
+    delete_project,
     list_projects,
     open_project,
     slugify,
@@ -245,6 +250,7 @@ __all__ = [
     "ProjectError",
     "ProjectExistsError",
     "ProjectNotFoundError",
+    "ProjectOpenError",
     "ProjectSummary",
     "QualityError",
     "Session",
@@ -260,6 +266,7 @@ __all__ = [
     "create_project",
     "default_project_root",
     "delete_preset",
+    "delete_project",
     "export_csv",
     "frame_quality_for_frame",
     "get_frame_path",
