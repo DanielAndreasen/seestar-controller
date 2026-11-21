@@ -21,8 +21,9 @@ link work is mock-only):
 - a **FakeDevice** (executor facade shape + a scripted ``download_frames``
   writing real FITS via :func:`~seestar_controller.link.mock_scope.make_fits_bytes`)
   for the deterministic tests — worker loop with a queueing ``invoke_on_main``,
-  download failure -> error event + notification + recovery, dedupe across a
-  capture restart, device without ``download_frames``, and the
+  download failure -> error event + notification + recovery, store failure
+  -> the frame stays re-downloadable (the watermark advances only on store),
+  dedupe across a capture restart, device without ``download_frames``, and the
   ObserveController lifecycle.
 
 Plus a subprocess test enforcing the no-``gi`` boundary of the capture module
@@ -45,6 +46,7 @@ from seestar_controller import observing
 from seestar_controller.catalog.coords import J2000Coord
 from seestar_controller.link.device import Device, StackingProgress
 from seestar_controller.link.frames import (
+    KIND_SUB,
     DownloadedFrame,
     FrameMeta,
     atomic_write_json,
@@ -78,7 +80,13 @@ from seestar_controller.observing.observe_controller import (
 )
 from seestar_controller.observing.queue import PlanQueue, QueueEntry
 from seestar_controller.observing.queue_controller import PlanQueueController
-from seestar_controller.store.frames import get_frame_path, list_frames
+from seestar_controller.store.frames import (
+    get_frame_path,
+    list_frames,
+)
+from seestar_controller.store.frames import (
+    store_frame as real_store_frame,
+)
 from seestar_controller.store.project import create_project
 from seestar_controller.store.sessions import close_session, start_session
 from seestar_controller.ui.connection import ConnectionController
@@ -547,6 +555,64 @@ def test_download_failure_is_logged_notified_and_recoverable(project):
     device.add_frame("sub")
     assert capture.poll_once() == 1
     assert len(list_frames(project, session, kind="sub")) == 1
+    close_session(project, session)
+
+
+def test_store_failure_keeps_the_frame_eligible_for_redownload(project, monkeypatch):
+    """Regression (app-improvement 05): the per-kind ``since`` watermark must
+    advance only AFTER a frame is stored. A frame whose ``store_frame`` fails
+    is re-downloaded on the next poll (instead of being silently dropped for
+    the rest of the night) and is stored once the failure is fixed."""
+    device = FakeDevice()
+    session = start_session(project)
+    bus = NotificationBus()
+    capture = SessionCapture(device, project, session, bus=bus)
+    failed = device.add_frame("sub")  # sub-0001 — its store will fail
+    later = device.add_frame("sub")  # sub-0002 — stores, but must not advance past sub-0001
+    sub_since: list[float | None] = []
+    real_download = device.download_frames
+
+    def recording_download(dest_dir, kind="sub", *, since=None, timeout=None):
+        if kind == KIND_SUB:
+            sub_since.append(since)
+        return real_download(dest_dir, kind=kind, since=since, timeout=timeout)
+
+    device.download_frames = recording_download
+
+    failing = {"on": True}
+
+    def flaky_store(project, session_id, kind, fits_bytes, meta=None):
+        if failing["on"] and meta is not None and meta.get("id") == failed["id"]:
+            raise OSError("disk full")
+        return real_store_frame(project, session_id, kind, fits_bytes, meta=meta)
+
+    monkeypatch.setattr("seestar_controller.observing.capture.store_frame", flaky_store)
+
+    # first poll: sub-0001 fails (error event + ERROR notification), sub-0002 stores
+    assert capture.poll_once() == 1
+    assert capture.stored_frame_ids == {"sub-0002"}
+    assert len(list_frames(project, session, kind=KIND_SUB)) == 1
+    errors = [e for e in capture.events() if e.kind == KIND_ERROR]
+    assert len(errors) == 1
+    assert "sub-0001" in errors[0].detail and "disk full" in errors[0].detail
+    notes = [n for n in bus.log() if n.source == CAPTURE_SOURCE]
+    assert len(notes) == 1
+    assert notes[0].severity == NotificationSeverity.ERROR
+    assert "Frame store failed" in notes[0].title
+    # the watermark never advanced past the unstored sub-0001
+    assert capture._since[KIND_SUB] <= failed["epoch"]
+
+    # the next poll re-downloads sub-0001 (the since filter is inclusive)
+    assert capture.poll_once() == 0  # still failing, nothing new stored
+    assert sub_since[-1] is not None and sub_since[-1] <= failed["epoch"]
+    assert capture.stored_frame_ids == {"sub-0002"}
+
+    # fix the store: sub-0001 is re-downloaded and stored, the watermark moves past both
+    failing["on"] = False
+    assert capture.poll_once() == 1
+    assert capture.stored_frame_ids == {"sub-0001", "sub-0002"}
+    assert len(list_frames(project, session, kind=KIND_SUB)) == 2
+    assert capture._since[KIND_SUB] >= later["epoch"]
     close_session(project, session)
 
 

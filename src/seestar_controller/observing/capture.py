@@ -15,7 +15,9 @@ during a night and captures the data as it arrives:
 
 - **frame downloads** — a worker thread polls
   :meth:`~seestar_controller.link.device.Device.download_frames`
-  (``since=`` the per-kind newest frame seen so far) every ``poll_interval_s``
+  (``since=`` the per-kind newest **stored** frame — the watermark advances
+  only after a frame is stored, so a failed store is re-downloaded on a
+  later poll) every ``poll_interval_s``
   AND
   wakes up immediately on every pushed ``Stack`` progress event
   (:meth:`~...device.Device.add_stacking_progress_handler`), for both kinds
@@ -379,9 +381,15 @@ class SessionCapture:
         }
         # per-kind "since" watermark: a Stack is recorded when stacking stops,
         # i.e. AFTER the last sub-frames, so a single watermark would skip
-        # subs recorded just before the Stack but downloaded in a later poll
+        # subs recorded just before the Stack but downloaded in a later poll.
+        # It is advanced only in _apply, once a frame is actually stored —
+        # never past an unstored frame — so a failed store is retried on a
+        # later poll instead of silently dropping the frame for the night.
         start_epoch = self._session_start_epoch()
         self._since: dict[str, float] = {KIND_SUB: start_epoch, KIND_STACK: start_epoch}
+        # epochs of downloaded-but-unstored frames per kind; they cap the
+        # per-kind watermark (see _advance_watermark)
+        self._unstored: dict[str, set[float]] = {KIND_SUB: set(), KIND_STACK: set()}
         self._mirrored = 0
         self._cycle_lock = threading.Lock()  # serializes download cycles
         self._apply_lock = threading.Lock()  # serializes store/log applies
@@ -439,8 +447,9 @@ class SessionCapture:
 
     @property
     def since(self) -> float:
-        """The newest frame epoch seen so far (the max over the per-kind
-        watermarks; the next download's ``since`` per kind)."""
+        """The newest STORED frame epoch (the max over the per-kind
+        watermarks; each kind's next download ``since``). The watermark never
+        advances past an unstored frame, so failed stores stay re-pollable."""
         return max(self._since.values())
 
     @property
@@ -564,8 +573,11 @@ class SessionCapture:
     def _download_new_frames(self) -> list[tuple]:
         """Download the frames newer than the per-kind ``since`` watermark into
         a scratch dir (network — safe on any thread). Returns items:
-        ``("frame", kind, meta, fits_bytes)`` or ``("error", exc)``. Updates
-        the per-kind watermark to the newest frame epoch of that kind."""
+        ``("frame", kind, meta, fits_bytes)`` or ``("error", exc)``.
+
+        The watermark is deliberately NOT advanced here: it moves in
+        :meth:`_apply` only once a frame is stored, so a frame whose store
+        failed stays eligible for re-download on the next poll."""
         if self._download_missing or getattr(self._device, "download_frames", None) is None:
             return []
         items: list[tuple] = []
@@ -586,13 +598,16 @@ class SessionCapture:
                         items.append(("error", exc))
                         continue
                     items.append(("frame", kind, meta, fits))
-                    self._since[kind] = max(meta.epoch, self._since[kind])
         return items
 
     def _apply(self, items: list[tuple]) -> int:
         """Store the downloaded frames + mirror the executor log. Must run on
         the thread that owns the project db (scheduled via ``invoke_on_main``).
-        Returns the number of frames stored; never raises."""
+        Returns the number of frames stored; never raises.
+
+        The per-kind ``since`` watermark is advanced here — only after a frame
+        is actually stored (or found already stored) — and never past an
+        unstored frame, so a failed store is re-downloaded on a later poll."""
         stored = 0
         try:
             with self._apply_lock:
@@ -608,7 +623,9 @@ class SessionCapture:
                         continue
                     _, kind, meta, fits = item
                     if meta.id in self._stored_ids:
-                        continue  # already stored (re-poll / restart)
+                        # already stored (re-poll / restart) — safe to advance past
+                        self._advance_watermark(kind, meta.epoch)
+                        continue
                     try:
                         frame = store_frame(
                             self._project,
@@ -618,6 +635,9 @@ class SessionCapture:
                             meta=meta_to_sidecar(meta, size=len(fits)),
                         )
                     except Exception as exc:  # noqa: BLE001 - logged, never kills the night
+                        # keep the frame eligible for re-download: record its
+                        # epoch as unstored so the watermark cannot pass it
+                        self._unstored[kind].add(meta.epoch)
                         message = f"{type(exc).__name__}: {exc}"
                         self._log.append(
                             KIND_ERROR,
@@ -630,7 +650,9 @@ class SessionCapture:
                         )
                         continue
                     self._stored_ids.add(meta.id)
+                    self._unstored[kind].discard(meta.epoch)
                     stored += 1
+                    self._advance_watermark(kind, meta.epoch)
                     self._log.append(
                         KIND_FRAME,
                         f"stored {kind} frame {meta.id} -> {frame.path} "
@@ -640,6 +662,17 @@ class SessionCapture:
         except Exception:
             logger.exception("capture apply failed")
         return stored
+
+    def _advance_watermark(self, kind: str, epoch: float) -> None:
+        """Advance the per-kind ``since`` watermark past ``epoch`` — but never
+        past an unstored frame of that kind: a frame whose store failed stays
+        in ``_unstored[kind]`` and caps the watermark, so the next
+        ``download_frames(since=...)`` poll (the filter is inclusive) fetches
+        it again."""
+        self._since[kind] = max(self._since[kind], epoch)
+        unstored = self._unstored.get(kind)
+        if unstored:
+            self._since[kind] = min(self._since[kind], min(unstored))
 
     def _mirror_executor_log(self) -> None:
         """Mirror the executor log entries not yet in the session log."""
