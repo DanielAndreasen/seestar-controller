@@ -83,10 +83,13 @@ EXECUTOR_OBSERVING_MODULES = ("executor", "observe_controller", "capture")
 
 #: The widget observing modules — ``gi`` at module top, lazy-exported via PEP 562.
 #: ``stale_session_dialog`` (ticket 05) is the resume/close offer shown when
-#: Start night hits a stale open session.
+#: Start night hits a stale open session. ``report_panel`` (session-report
+#: ticket 03) is the per-session Generate report / Export PDF panel embedded
+#: in the session log dialog.
 WIDGET_OBSERVING_MODULES = (
     "queue_editor",
     "observe_view",
+    "report_panel",
     "session_log_dialog",
     "stale_session_dialog",
 )
@@ -695,6 +698,8 @@ def test_pure_observing_modules_import_no_gi_no_link_and_widget_stays_lazy():
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
         "assert 'seestar_controller.observing.queue_editor' not in sys.modules, "
         "'queue_editor imported eagerly';"
+        "assert 'seestar_controller.observing.report_panel' not in sys.modules, "
+        "'report_panel imported eagerly';"
         "print('clean')"
     )
     result = subprocess.run(

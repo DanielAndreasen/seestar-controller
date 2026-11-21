@@ -19,6 +19,13 @@ event log (goto / stack / errors / frames stored, with timestamps, oldest
 first) plus a summary line with the session id and the frames stored in the
 session. It is opened from the Observe view's "Session log" button and
 refreshes itself while open (it registers as a log listener).
+
+At the bottom it embeds the
+:class:`~seestar_controller.observing.report_panel.SessionReportPanel`
+(session-report ticket 03): the per-session **Generate report** / **Export
+PDF** actions (worker thread + ``GLib.idle_add`` marshalling, saved into the
+project, opened via ``Gtk.show_uri``) and the list of the session's saved
+reports.
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ from seestar_controller.link.frames import KIND_STACK, KIND_SUB
 from seestar_controller.store.frames import list_frames
 
 from .capture import KIND_ERROR, LogEvent, SessionCapture
+from .report_panel import SessionReportPanel
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +100,10 @@ class SessionLogDialog(Adw.Dialog):
             vexpand=True,
         )
         content.append(scrolled)
+        # session-report ticket 03: the per-session report actions + saved
+        # reports list (worker thread + GLib.idle_add inside the panel)
+        self._report_panel = SessionReportPanel(capture.project, capture.session_id)
+        content.append(self._report_panel)
         toolbar_view.set_content(content)
         self.set_child(toolbar_view)
 
@@ -115,6 +127,12 @@ class SessionLogDialog(Adw.Dialog):
     def summary_label(self) -> Gtk.Label:
         """The summary line (session, events, frames stored)."""
         return self._summary_label
+
+    @property
+    def report_panel(self) -> SessionReportPanel:
+        """The embedded session-report panel (ticket 03: Generate report /
+        Export PDF + saved reports of this session)."""
+        return self._report_panel
 
     def rows(self) -> tuple[Gtk.ListBoxRow, ...]:
         """The current event rows, oldest first."""

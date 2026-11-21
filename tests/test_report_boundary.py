@@ -14,8 +14,8 @@ REPORT_PACKAGE_DIR = (
 )
 
 #: The report package's modules (the exact set — a new module must be added
-#: here deliberately).
-REPORT_MODULES = {"__init__", "data", "plots", "thumbnail", "html", "generate"}
+#: here deliberately). ``pdf`` (ticket 03) is the reportlab PDF rebuild.
+REPORT_MODULES = {"__init__", "data", "plots", "thumbnail", "html", "generate", "pdf"}
 
 #: Packages the pure report core must never import (gi + the layers that pull
 #: in gi/link: link, ui, enhance, photometry, observing).
@@ -31,7 +31,9 @@ def test_report_package_imports_no_gi_no_link_no_ui_no_enhance_no_photometry_no_
         "import seestar_controller.report.thumbnail;"
         "import seestar_controller.report.html;"
         "import seestar_controller.report.generate;"
+        "import seestar_controller.report.pdf;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
+        "assert 'reportlab' not in sys.modules, 'reportlab imported eagerly (lazy in pdf.py)';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
         "assert 'seestar_controller.enhance' not in sys.modules, 'enhance imported eagerly';"
@@ -76,10 +78,14 @@ def test_report_public_api_is_exported_from_package():
         "ReportError",
         "collect_report_data",
         "fold_png",
+        "generate_pdf",
         "generate_report",
         "lightcurve_png",
+        "list_session_reports",
         "load_session_log",
+        "pdf_path",
         "render_html",
+        "render_pdf",
         "report_path",
         "session_log_path",
         "stack_thumbnail_png",
@@ -88,4 +94,5 @@ def test_report_public_api_is_exported_from_package():
         assert name in report.__all__, name
     assert report.REPORTS_DIR == "reports"
     assert report.REPORT_FILE_SUFFIX == ".html"
+    assert report.PDF_FILE_SUFFIX == ".pdf"
     assert report.SESSION_LOG_FILE == "session_log.jsonl"
