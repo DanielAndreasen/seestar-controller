@@ -1,6 +1,6 @@
 # Spec: moving-objects
 
-Status: ready-for-agent (1 issue)
+Status: ready-for-agent (2 issues)
 
 ## Problem Statement
 
