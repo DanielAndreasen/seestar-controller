@@ -16,8 +16,9 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   to the local brightness centroid -> sky coord when the frame has a usable
   2D celestial WCS -> pick; ALWAYS works in pixel space — frames without a
   WCS, e.g. raw Seestar subs, get pixel-only picks with ``coord=None``, and
-  RGB stacks use the WCS of their 2D celestial subset; one target with
-  replace semantics, comps multiple), :meth:`~.picking.PickController.add_at_sky`
+  RGB stacks use the WCS of their 2D celestial subset; one target and at most
+  one check star (check-star-plot ticket 01) with replace semantics, comps
+  multiple), :meth:`~.picking.PickController.add_at_sky`
   (the inverse: sky -> pixel via the WCS -> pick, ticket 02),
   :meth:`~.picking.PickController.remove_pick` /
   :meth:`~.picking.PickController.set_role` / :meth:`~.picking.PickController.clear`,
@@ -43,12 +44,15 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
 - **Pure layer** — :mod:`.measure` (ticket 03, the aperture-photometry core):
   :func:`~.measure.measure_frame_data` (raw array + header + picks →
   :class:`~.measure.FrameMeasurement`: photutils circular aperture + sky
-  annulus per pick, comp-ensemble mean, differential mag = target − ensemble,
-  error = ``sqrt(target_err² + mean(comp_err²))``, JD from the FITS
-  ``DATE-OBS``), :func:`~.measure.measure_frame` (one stored frame →
-  :class:`~seestar_controller.store.measurements.Measurement` via the store)
-  and :func:`~.measure.measure_project` (all sub-frames of a project →
-  :class:`~.measure.MeasureReport` with per-frame skips). The pure math
+  annulus per pick, comp-ensemble mean over the COMPS only (a ``"check"``
+  pick is excluded), differential mag = target − ensemble, error =
+  ``sqrt(target_err² + mean(comp_err²))``, plus the check star's differential
+  mag/error against the same ensemble and the target-minus-check curve, JD
+  from the FITS ``DATE-OBS``), :func:`~.measure.measure_frame` (one stored
+  frame → :class:`~seestar_controller.store.measurements.Measurement` via
+  the store) and :func:`~.measure.measure_project` (all sub-frames of a
+  project → :class:`~.measure.MeasureReport` with per-frame skips and the
+  per-frame :class:`~.measure.FrameMeasurement` results). The pure math
   (:func:`~.measure.flux_to_mag`, :func:`~.measure.ensemble_mag`,
   :func:`~.measure.differential_mag_err`, ...) is unit-tested on its own;
   errors are :class:`~.measure.MeasurementError` /
@@ -92,7 +96,7 @@ comps; ticket 03 the aperture-photometry core; ticket 04 the run/results
 view.
 """
 
-from seestar_controller.store.stars import ROLE_COMP, ROLE_TARGET, ROLES
+from seestar_controller.store.stars import ROLE_CHECK, ROLE_COMP, ROLE_TARGET, ROLES
 
 from .measure import (
     MAG_ERR_COEFF,
@@ -182,6 +186,7 @@ __all__ = [
     "MAX_COMP_SEARCH_RADIUS_DEG",
     "NO_WCS_HINT",
     "ROLES",
+    "ROLE_CHECK",
     "ROLE_COMP",
     "ROLE_TARGET",
     "SNAP_WINDOW_PX",

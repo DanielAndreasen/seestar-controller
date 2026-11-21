@@ -20,6 +20,7 @@ import pytest
 from seestar_controller.store import (
     DB_FILE,
     PROJECT_FILE,
+    ROLE_CHECK,
     ROLE_COMP,
     ROLE_TARGET,
     SCHEMA_TABLES,
@@ -146,6 +147,23 @@ CREATE TABLE stars (
 )
 """
 
+#: The v4 ``stars`` table: all current columns, but the OLD role CHECK (no
+#: ``'check'``) — exactly what a pre-v5 project database has.
+STARS_V4_DDL = """
+CREATE TABLE stars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL CHECK (role IN ('target', 'comp')),
+    label TEXT,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    ra_deg REAL,
+    dec_deg REAL,
+    aperture_radius REAL NOT NULL,
+    sky_annulus_inner REAL NOT NULL,
+    sky_annulus_outer REAL NOT NULL
+)
+"""
+
 
 def make_v0_project(root: Path) -> Path:
     """A valid project layout whose db is an empty v0 sqlite file
@@ -269,7 +287,7 @@ def test_migrate_db_1_to_2_adds_aperture_columns_and_backfills(tmp_path):
         conn.execute(OLD_STARS_DDL)
         conn.execute("INSERT INTO stars (role, label, x, y) VALUES ('comp', 'A', 1.0, 2.0)")
         conn.execute("PRAGMA user_version=1")
-    assert migrate_db(conn) == SCHEMA_VERSION == 4
+    assert migrate_db(conn) == SCHEMA_VERSION == 5
     cols = [row[1] for row in conn.execute("PRAGMA table_info(stars)")]
     assert cols == [
         "id", "role", "label", "x", "y", "ra_deg", "dec_deg",
@@ -361,8 +379,8 @@ def test_migrate_db_3_to_4_creates_frame_quality_and_is_idempotent(tmp_path):
         conn.execute("DROP TABLE frame_quality")
         conn.execute("PRAGMA user_version=3")
     assert "frame_quality" not in table_names(conn)
-    assert migrate_db(conn) == SCHEMA_VERSION == 4
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert migrate_db(conn) == SCHEMA_VERSION == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
     assert "frame_quality" in table_names(conn)
     # re-running the 3 -> 4 step on a db that already has the table is a no-op
     conn.execute("PRAGMA user_version=3")
@@ -388,6 +406,130 @@ def test_keyboard_interrupt_mid_3_to_4_rolls_back_and_reopen_recovers(root):
     with open_project(project_dir) as p:
         assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert "frame_quality" in table_names(p.db)
+
+
+# --- (b3) migration 4 -> 5: stars.role CHECK widened to allow 'check' (check-star-plot 01) ---
+
+
+def make_v4_project(root: Path) -> Path:
+    """A v4 project: the current-build schema MINUS the widened ``stars``
+    role CHECK (the table is rebuilt with the OLD CHECK), ``user_version=4``
+    and ``schema_version=4`` in project.json, with one target + one comp row
+    that must survive the migration."""
+    p = create_project("M 42", root=root)
+    with p.db:
+        p.db.execute("DROP TABLE stars")
+        p.db.execute(STARS_V4_DDL)
+        p.db.execute("CREATE INDEX IF NOT EXISTS idx_stars_role ON stars (role)")
+        p.db.execute(
+            "INSERT INTO stars (role, label, x, y, ra_deg, dec_deg, aperture_radius, "
+            "sky_annulus_inner, sky_annulus_outer) VALUES "
+            "('target', 'TIC 123', 100.0, 200.0, 83.82208, -5.39114, 4.0, 8.0, 12.0)"
+        )
+        p.db.execute(
+            "INSERT INTO stars (role, label, x, y, aperture_radius, "
+            "sky_annulus_inner, sky_annulus_outer) VALUES "
+            "('comp', 'comp A', 301.0, 401.0, 4.0, 8.0, 12.0)"
+        )
+        p.db.execute("PRAGMA user_version=4")
+    p.config["schema_version"] = 4
+    p.save_config()
+    p.close()
+    return root / "m-42"
+
+
+def stars_table_sql(db) -> str:
+    return db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='stars'"
+    ).fetchone()[0]
+
+
+def test_open_migrates_v4_project_widening_stars_role_check(root):
+    project_dir = make_v4_project(root)
+    # sanity: the db really is a v4 db with the OLD role CHECK, and a check
+    # pick is rejected by it (the reviewer's repro on a pre-existing project)
+    conn = sqlite3.connect(project_dir / DB_FILE)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert "'check'" not in stars_table_sql(conn)
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        conn.execute(
+            "INSERT INTO stars (role, label, x, y, aperture_radius, "
+            "sky_annulus_inner, sky_annulus_outer) VALUES ('check', 'K', 1.0, 2.0, 4.0, 8.0, 12.0)"
+        )
+    conn.close()
+
+    with open_project(project_dir) as p:
+        assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert "'check'" in stars_table_sql(p.db)
+        # the pre-existing rows survived the rebuild, index recreated
+        picks = load_star_picks(p)
+        assert [q.role for q in picks] == ["target", "comp"]
+        assert picks[0].label == "TIC 123" and picks[1].label == "comp A"
+        assert picks[0].x == 100.0 and picks[0].ra_deg == 83.82208
+        idx = p.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='stars'"
+        ).fetchall()
+        assert ("idx_stars_role",) in idx
+        assert p.db.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert p.db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert p.config["schema_version"] == SCHEMA_VERSION
+        # the migrated project accepts a check pick and round-trips it
+        saved = save_star_picks(
+            p, [TARGET, COMP_A, make_pick(role=ROLE_CHECK, label="Check K", x=50.0, y=60.0)]
+        )
+        assert [q.role for q in saved] == ["target", "comp", "check"]
+        assert [q.role for q in load_star_picks(p)] == ["target", "check", "comp"]
+    on_disk = json.loads((project_dir / PROJECT_FILE).read_text(encoding="utf-8"))
+    assert on_disk["schema_version"] == SCHEMA_VERSION
+    assert on_disk["star_picks"]["check"]["label"] == "Check K"
+    assert [c["role"] for c in on_disk["star_picks"]["comps"]] == ["comp"]
+
+
+def test_migrate_db_4_to_5_rebuilds_stars_and_is_idempotent(tmp_path):
+    conn = sqlite3.connect(tmp_path / "db.sqlite")
+    initialize_db(conn)
+    with conn:
+        conn.execute("DROP TABLE stars")
+        conn.execute(STARS_V4_DDL)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_stars_role ON stars (role)")
+        conn.execute(
+            "INSERT INTO stars (role, label, x, y, aperture_radius, "
+            "sky_annulus_inner, sky_annulus_outer) VALUES ('target', 'T', 1.0, 2.0, 4.0, 8.0, 12.0)"
+        )
+        conn.execute("PRAGMA user_version=4")
+    assert "'check'" not in stars_table_sql(conn)
+    assert migrate_db(conn) == SCHEMA_VERSION == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert "'check'" in stars_table_sql(conn)
+    row = conn.execute("SELECT role, label, x, y, aperture_radius FROM stars").fetchone()
+    assert row == ("target", "T", 1.0, 2.0, 4.0)  # the row is preserved
+    # re-running the 4 -> 5 step on a db that already allows 'check' is a no-op
+    conn.execute("PRAGMA user_version=4")
+    assert migrate_db(conn) == SCHEMA_VERSION
+    assert "'check'" in stars_table_sql(conn)
+    assert conn.execute("SELECT COUNT(*) FROM stars").fetchone()[0] == 1
+    conn.close()
+
+
+def test_keyboard_interrupt_mid_4_to_5_rolls_back_and_reopen_recovers(root):
+    project_dir = make_v4_project(root)
+    conn = sqlite3.connect(project_dir / DB_FILE)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    spy = KillSwitch(conn, dies_on("DROP TABLE STARS"))
+    with pytest.raises(KeyboardInterrupt):
+        migrate_db(spy)  # ty: ignore[invalid-argument-type]
+    conn.close()
+    # the migration rolled back completely: still v4, old table + rows intact
+    conn = sqlite3.connect(project_dir / DB_FILE)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert "'check'" not in stars_table_sql(conn)
+    assert conn.execute("SELECT COUNT(*) FROM stars").fetchone()[0] == 2
+    conn.close()
+    # reopening the project re-runs and completes the migration
+    with open_project(project_dir) as p:
+        assert p.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert "'check'" in stars_table_sql(p.db)
+        assert [q.role for q in load_star_picks(p)] == ["target", "comp"]
 
 
 # --- (c) user_version / schema_version newer than this build ---------------------
@@ -630,8 +772,8 @@ def test_public_api_exports_migration_runner():
 
     assert callable(store.migrate_db)
     assert isinstance(store.MIGRATIONS, dict)
-    assert set(store.MIGRATIONS) == {0, 1, 2, 3}
-    assert store.SCHEMA_VERSION == 4
+    assert set(store.MIGRATIONS) == {0, 1, 2, 3, 4}
+    assert store.SCHEMA_VERSION == 5
     assert "migrate_db" in store.__all__
     assert "MIGRATIONS" in store.__all__
     assert issubclass(store.InvalidProjectError, store.ProjectError)

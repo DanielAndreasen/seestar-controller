@@ -11,6 +11,7 @@ import sys
 import pytest
 
 from seestar_controller.store import (
+    ROLE_CHECK,
     ROLE_COMP,
     ROLE_TARGET,
     ROLES,
@@ -108,12 +109,13 @@ def test_save_mirrors_into_project_json(project):
     mirror = {
         "target": TARGET.to_dict(),
         "comps": [COMP_A.to_dict(), COMP_B.to_dict()],
+        "check": None,
     }
     assert project.config["star_picks"] == mirror
     on_disk = json.loads(project.config_path.read_text(encoding="utf-8"))
     assert on_disk["star_picks"] == mirror
     # mirror shape: exactly the spec placeholder keys, all pick fields present
-    assert set(on_disk["star_picks"]) == {"target", "comps"}
+    assert set(on_disk["star_picks"]) == {"target", "comps", "check"}
     assert set(on_disk["star_picks"]["target"]) == set(STAR_PICK_FIELDS)
 
 
@@ -128,6 +130,7 @@ def test_roundtrip_across_reopen(root, project):
         assert p.config["star_picks"] == {
             "target": TARGET.to_dict(),
             "comps": [COMP_A.to_dict()],
+            "check": None,
         }
         # and saving again on the reopened project works
         save_star_picks(p, [TARGET])
@@ -166,6 +169,7 @@ def test_replace_overwrites_cleanly(project):
     assert project.config["star_picks"] == {
         "target": new_target.to_dict(),
         "comps": [COMP_C.to_dict()],
+        "check": None,
     }
 
 
@@ -175,16 +179,16 @@ def test_empty_picks_clears_everything(project):
     assert returned == []
     assert load_star_picks(project) == []
     assert project.db.execute("SELECT COUNT(*) FROM stars").fetchone()[0] == 0
-    assert project.config["star_picks"] == {"target": None, "comps": []}
+    assert project.config["star_picks"] == {"target": None, "comps": [], "check": None}
     on_disk = json.loads(project.config_path.read_text(encoding="utf-8"))
-    assert on_disk["star_picks"] == {"target": None, "comps": []}
+    assert on_disk["star_picks"] == {"target": None, "comps": [], "check": None}
 
 
 def test_empty_picks_on_fresh_project(project):
     assert load_star_picks(project) == []
     save_star_picks(project, [])
     assert load_star_picks(project) == []
-    assert project.config["star_picks"] == {"target": None, "comps": []}
+    assert project.config["star_picks"] == {"target": None, "comps": [], "check": None}
 
 
 def test_single_target_without_comps_is_allowed(project):
@@ -282,8 +286,8 @@ def test_star_pick_error_is_project_error_and_value_error():
     assert issubclass(StarPickError, ValueError)
 
 
-@pytest.mark.parametrize("bad_role", ["bogus", "", "TARGET", None, 42, ["target"]])
-def test_role_must_be_target_or_comp(bad_role):
+@pytest.mark.parametrize("bad_role", ["bogus", "", "TARGET", "Check", None, 42, ["target"]])
+def test_role_must_be_target_comp_or_check_rejects_others(bad_role):
     with pytest.raises(StarPickError, match="role"):
         make_pick(role=bad_role)
     with pytest.raises(StarPickError):
@@ -293,7 +297,8 @@ def test_role_must_be_target_or_comp(bad_role):
 def test_normalize_role_accepts_valid_roles():
     assert normalize_role(ROLE_TARGET) == "target"
     assert normalize_role(ROLE_COMP) == "comp"
-    assert ROLES == ("target", "comp")
+    assert normalize_role(ROLE_CHECK) == "check"
+    assert ROLES == ("target", "comp", "check")
 
 
 @pytest.mark.parametrize("bad_label", [42, 3.14, ["comp A"], {"a": 1}])
@@ -419,6 +424,7 @@ def test_star_picks_api_is_exported_from_package():
         "StarPickError",
         "ROLE_TARGET",
         "ROLE_COMP",
+        "ROLE_CHECK",
         "ROLES",
         "STAR_PICK_FIELDS",
         "save_star_picks",
@@ -434,6 +440,7 @@ def test_star_picks_api_is_exported_from_package():
     assert callable(store.normalize_role)
     assert isinstance(store.StarPick, type)
     assert store.ROLE_TARGET == "target" and store.ROLE_COMP == "comp"
+    assert store.ROLE_CHECK == "check"
 
 
 def test_stars_module_imports_no_gtk_and_no_link():
@@ -451,3 +458,80 @@ def test_stars_module_imports_no_gtk_and_no_link():
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
+
+
+# --- check-star role (check-star-plot ticket 01) -------------------------------------------
+
+
+def check_pick(label="check K", x=400.0, y=500.0, **kwargs):
+    """A valid check-star pick."""
+    return make_pick(role=ROLE_CHECK, label=label, x=x, y=y, **kwargs)
+
+
+def test_check_role_is_accepted_and_roundtrips(project):
+    picks = [TARGET, check_pick(), COMP_A, COMP_B]  # load order: target, check, comps
+    save_star_picks(project, picks)
+    loaded = load_star_picks(project)
+    assert loaded == picks
+    # load order: target first, then the check star, then the comps by label
+    assert [p.role for p in loaded] == ["target", "check", "comp", "comp"]
+    assert loaded[1].label == "check K"
+    # the db row really carries role='check' in the existing role column
+    row = project.db.execute(
+        "SELECT role, label FROM stars WHERE label = 'check K'"
+    ).fetchone()
+    assert row == ("check", "check K")
+
+
+def test_check_pick_roundtrips_across_reopen(root, project):
+    picks = [TARGET, check_pick(), COMP_A]  # load order: target, check, comps
+    save_star_picks(project, picks)
+    project.close()
+    with open_project(root / "m-42") as p:
+        loaded = load_star_picks(p)
+        assert loaded == picks
+        assert [p.role for p in loaded] == ["target", "check", "comp"]
+        # the project.json mirror carries the check star too
+        assert p.config["star_picks"] == {
+            "target": TARGET.to_dict(),
+            "comps": [COMP_A.to_dict()],
+            "check": check_pick().to_dict(),
+        }
+        on_disk = json.loads(p.config_path.read_text(encoding="utf-8"))
+        assert on_disk["star_picks"]["check"]["role"] == "check"
+        # saving again without the check clears it from db and mirror
+        save_star_picks(p, [TARGET, COMP_A])
+        assert [p.role for p in load_star_picks(p)] == ["target", "comp"]
+        assert p.config["star_picks"]["check"] is None
+
+
+def test_check_pick_mirror_shape(project):
+    save_star_picks(project, [TARGET, COMP_A, check_pick()])
+    mirror = project.config["star_picks"]
+    assert set(mirror) == {"target", "comps", "check"}
+    assert mirror["check"] == check_pick().to_dict()
+    assert mirror["check"]["role"] == "check"
+    assert [c["role"] for c in mirror["comps"]] == ["comp"]  # check NOT among comps
+    assert json.loads(json.dumps(mirror)) == mirror  # JSON-serializable
+
+
+def test_two_check_picks_rejected_and_nothing_written(project):
+    with pytest.raises(StarPickError) as excinfo:
+        save_star_picks(project, [TARGET, COMP_A, check_pick(), check_pick("K2", x=1.0, y=1.0)])
+    assert "at most one" in str(excinfo.value) and "check" in str(excinfo.value)
+    assert load_star_picks(project) == []
+    assert project.db.execute("SELECT COUNT(*) FROM stars").fetchone()[0] == 0
+    assert project.config["star_picks"] is None
+
+
+def test_check_only_without_target_still_rejected(project):
+    # the exactly-one-target rule is unchanged: a check star does not count
+    with pytest.raises(StarPickError, match="exactly one"):
+        save_star_picks(project, [COMP_A, check_pick()])
+    assert load_star_picks(project) == []
+
+
+def test_check_pick_to_dict_from_dict_roundtrip():
+    pick = check_pick()
+    assert StarPick.from_dict(pick.to_dict()) == pick
+    assert pick.to_dict()["role"] == "check"

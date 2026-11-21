@@ -37,12 +37,12 @@ Pure Python, no GTK, no link (module boundary per
   :data:`~.frames.ENHANCED_DIR`, and :class:`~.errors.FrameStoreError`
 - :mod:`.stars` — star picks: :func:`~.stars.save_star_picks` (replace all
   picks in one db transaction + mirror into ``project.json``),
-  :func:`~.stars.load_star_picks` (target first, then comps by label), the
-  :class:`~.stars.StarPick` record (role/label/x/y/ra_deg/dec_deg + per-pick
-  aperture radius and sky annulus), the role constants
-  :data:`~.stars.ROLE_TARGET` / :data:`~.stars.ROLE_COMP` /
-  :data:`~.stars.ROLES`, :func:`~.stars.normalize_role`, and
-  :class:`~.errors.StarPickError`
+  :func:`~.stars.load_star_picks` (target first, then the check star, then
+  comps by label), the :class:`~.stars.StarPick` record (role/label/x/y/
+  ra_deg/dec_deg + per-pick aperture radius and sky annulus), the role
+  constants :data:`~.stars.ROLE_TARGET` / :data:`~.stars.ROLE_COMP` /
+  :data:`~.stars.ROLE_CHECK` / :data:`~.stars.ROLES`,
+  :func:`~.stars.normalize_role`, and :class:`~.errors.StarPickError`
 - :mod:`.measurements` — measurements + lightcurve query:
   :func:`~.measurements.add_measurement` (append one point for a frame, jd
   defaults to the frame's jd), :func:`~.measurements.lightcurve` (all
@@ -155,6 +155,7 @@ from .sessions import (
     start_session,
 )
 from .stars import (
+    ROLE_CHECK,
     ROLE_COMP,
     ROLE_TARGET,
     ROLES,
@@ -183,6 +184,7 @@ __all__ = [
     "PROJECT_ROOT_ENV_VAR",
     "PROJECT_SUBDIRS",
     "ROLES",
+    "ROLE_CHECK",
     "ROLE_COMP",
     "ROLE_TARGET",
     "SCHEMA_TABLES",
