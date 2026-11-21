@@ -38,6 +38,7 @@ except ValueError as exc:  # typelibs missing
     pytest.skip(f"GTK 4.0 / libadwaita typelibs missing: {exc}", allow_module_level=True)
 
 from gi.repository import GLib, Gtk
+from test_gaia_detect import STARS
 from test_gaia_overlay import cache, project, stack_frame, tap  # noqa: F401  (fixtures)
 
 from seestar_controller.gaia import CrossmatchController
@@ -144,8 +145,9 @@ def test_crossmatch_overlay_view_runs_and_rematches_cache_first(gtk, project, st
     assert view.status_label.get_label() == ""
 
     # click Cross-match: the pipeline runs on a worker thread, the annotated
-    # overlay + status land on the main loop
-    view.run_button.clicked()
+    # overlay + status land on the main loop (emit("clicked") — Gtk.Button has
+    # no .clicked() method on PyGObject/GTK4)
+    view.run_button.emit("clicked")
     assert wait_until(lambda: bool(cc.snapshot.rows) and "matched" in view.status_label.get_label())
     pump_main()
     snap = cc.snapshot
@@ -154,7 +156,9 @@ def test_crossmatch_overlay_view_runs_and_rematches_cache_first(gtk, project, st
     assert view.picture.get_paintable() is not None
     assert "matched" in view.status_label.get_label()
     assert len(calls) == 1  # one Gaia TAP query
-    assert sum(1 for r in snap.rows if r.matched) == len(snap.rows)  # 0.8″ < 1.5″
+    # every injected star matched its Gaia row (0.8″ jitter < 1.5″ radius);
+    # DAOStarFinder also finds spurious sources, which stay unmatched
+    assert sum(1 for r in snap.rows if r.matched) == len(STARS)
 
     # shrink the radius below the jitter: re-match, cache-first (no new HTTP)
     view.radius_spin.set_value(0.2)
@@ -172,9 +176,10 @@ def test_crossmatch_overlay_view_runs_and_rematches_cache_first(gtk, project, st
     pump_main()
     assert len(calls) == 1
 
-    # destroying the view unregisters its listener
+    # destroying the view unregisters its listener (GTK4 Gtk.Widget has no
+    # .destroy(), so invoke the destroy handler directly)
     assert view._on_snapshot in cc.listeners
-    view.destroy()
+    view._on_destroy()
     pump_main()
     assert view._on_snapshot not in cc.listeners
 
@@ -202,10 +207,10 @@ def test_crossmatch_overlay_view_shows_clean_error_when_gaia_unavailable(
     pump_main()
     cc.select_stack(frame.id)
     pump_main()
-    view.run_button.clicked()
+    view.run_button.emit("clicked")
     # the failure is shown as a clean status, not raised
     assert wait_until(lambda: "GaiaUnavailableError" in view.status_label.get_label())
     pump_main()
     assert cc.snapshot.error is not None and "GaiaUnavailableError" in cc.snapshot.error
     assert cc.snapshot.rows == ()
-    view.destroy()
+    view._on_destroy()  # unregister the listener (GTK4 has no Widget.destroy())
