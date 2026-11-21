@@ -209,6 +209,7 @@ from seestar_controller.photometry import (
     RunController,
     SuggestionController,
 )
+from seestar_controller.variable_scan import ScanController
 
 from .connection import ConnectionController
 from .connection_panel import ConnectionPanel
@@ -329,6 +330,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         quality_controller: QualityController | None = None,
         mover_controller: MoverController | None = None,
         crossmatch_controller: CrossmatchController | None = None,
+        scan_controller: ScanController | None = None,
         project_controller: ProjectController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
@@ -497,6 +499,19 @@ class SeestarWindow(Adw.ApplicationWindow):
                 viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
             ))
         )
+        # Variable-scan ticket 02: one shared scan controller following the
+        # shared viewer controller (the open project becomes the scan
+        # candidate view's project); the Photometry view's variable-scan
+        # panel renders its snapshots. Its invoke_on_main is GLib.idle_add,
+        # so worker-thread store reads/writes + notifications land on the
+        # main loop.
+        self._scan_controller = (
+            scan_controller
+            if scan_controller is not None
+            else _shared_from_app(app, "scan_controller", lambda: ScanController(
+                viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
+            ))
+        )
         # Projects-view ticket 01: the shared project controller. When the app
         # owns one it is used (the app already attached its controllers to it);
         # otherwise (explicit argument, or a standalone window without an app
@@ -564,6 +579,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     quality_controller=self._quality_controller,
                     mover_controller=self._mover_controller,
                     crossmatch_controller=self._crossmatch_controller,
+                    scan_controller=self._scan_controller,
                     project_controller=self._project_controller,
                     project=self._project_controller.current,
                     app_state=state,
@@ -774,6 +790,13 @@ class SeestarWindow(Adw.ApplicationWindow):
         return self._crossmatch_controller
 
     @property
+    def scan_controller(self) -> ScanController:
+        """The shared variable-scan controller (variable-scan ticket 02 —
+        the Photometry view's candidate panel binds to it; it follows the
+        viewer controller's project)."""
+        return self._scan_controller
+
+    @property
     def project_controller(self) -> ProjectController:
         """The shared project controller (projects-view ticket 01 — the
         Projects view lists/creates/opens through it; it is attached to the
@@ -805,6 +828,7 @@ class SeestarWindow(Adw.ApplicationWindow):
             quality=self._quality_controller,
             movers=self._mover_controller,
             crossmatch=self._crossmatch_controller,
+            scan=self._scan_controller,
         )
 
     def _on_row_selected(self, sidebar: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
@@ -973,6 +997,15 @@ class SeestarApplication(Adw.Application):
         self.crossmatch_controller = CrossmatchController(
             viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
         )
+        # Variable-scan ticket 02: the shared scan controller following the
+        # shared viewer controller (the open project becomes the candidate
+        # view's project); the window passes it to the Photometry view's
+        # variable-scan panel. Store reads/writes and notifications are
+        # marshalled onto the GLib main loop like the other shared
+        # controllers'.
+        self.scan_controller = ScanController(
+            viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
+        )
         # Projects-view ticket 01: the shared project controller over the same
         # state (project root from settings, last_project persisted). restore()
         # re-opens the last project when it still exists and clears a stale
@@ -998,6 +1031,7 @@ class SeestarApplication(Adw.Application):
             quality=self.quality_controller,
             movers=self.mover_controller,
             crossmatch=self.crossmatch_controller,
+            scan=self.scan_controller,
         )
         self.settings_controller.add_listener(self._on_settings_changed)
         self._last_project_root = self._state.get_setting("project_root")

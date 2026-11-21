@@ -147,6 +147,10 @@ from seestar_controller.store.csv_export import (
     CSV_FILE as LIGHTCURVE_CSV_FILE,
 )
 from seestar_controller.store.errors import ProjectError
+from seestar_controller.variable_scan import ScanController
+from seestar_controller.variable_scan.view import (
+    VariableScanView as VariableScanWidget,
+)
 from seestar_controller.visibility.timeline_view import (
     VisibilityView as VisibilityViewWidget,
 )
@@ -469,7 +473,11 @@ class PhotometryView(_PlaceholderView):
     the aperture overlay on the right. Below the paned it also carries the
     moving-objects ticket-02
     :class:`~seestar_controller.moving_objects.overlay_view.MoverOverlayView`
-    widget — the annotated overlay/blink view of the session's movers.
+    widget — the annotated overlay/blink view of the session's movers — and
+    the variable-scan ticket-02
+    :class:`~seestar_controller.variable_scan.view.VariableScanView` widget —
+    the ranked variable-candidate list with the selected candidate's
+    lightcurve + blink.
 
     ``picker_controller`` is the app's shared
     :class:`~seestar_controller.photometry.picking.PickController` (it follows
@@ -489,6 +497,10 @@ class PhotometryView(_PlaceholderView):
     :class:`~seestar_controller.moving_objects.overlay.MoverController`
     (moving-objects ticket 02) driving the mover overlay/blink widget — also
     passed in via :func:`build_view`, also defaulted when omitted.
+    ``scan_controller`` is the app's shared
+    :class:`~seestar_controller.variable_scan.controller.ScanController`
+    (variable-scan ticket 02) driving the variable-candidate widget — also
+    passed in via :func:`build_view`, also defaulted when omitted.
     """
 
     view_id = "photometry"
@@ -501,6 +513,7 @@ class PhotometryView(_PlaceholderView):
         suggest_controller: SuggestionController | None = None,
         run_controller: RunController | None = None,
         mover_controller: MoverController | None = None,
+        scan_controller: ScanController | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -522,6 +535,9 @@ class PhotometryView(_PlaceholderView):
         )
         self._mover_controller = (
             mover_controller if mover_controller is not None else MoverController()
+        )
+        self._scan_controller = (
+            scan_controller if scan_controller is not None else ScanController()
         )
         super().__init__(**kwargs)
 
@@ -545,6 +561,10 @@ class PhotometryView(_PlaceholderView):
         # session's movers below the photometry results panel
         self._mover_overlay = MoverOverlayWidget(mover_controller=self._mover_controller)
         self._content.append(self._mover_overlay)
+        # variable-scan ticket 02: the ranked variable-candidate list with the
+        # selected candidate's lightcurve + blink, next to the mover overlay
+        self._variable_scan = VariableScanWidget(scan_controller=self._scan_controller)
+        self._content.append(self._variable_scan)
 
     @property
     def picker_controller(self) -> PickController:
@@ -578,6 +598,17 @@ class PhotometryView(_PlaceholderView):
     def mover_overlay(self) -> MoverOverlayWidget:
         """The mover overlay/blink widget (moving-objects ticket 02)."""
         return self._mover_overlay
+
+    @property
+    def scan_controller(self) -> ScanController:
+        """The shared pure-layer variable-scan controller (variable-scan
+        ticket 02) driving this view's variable-candidate widget."""
+        return self._scan_controller
+
+    @property
+    def variable_scan_view(self) -> VariableScanWidget:
+        """The variable-candidate widget (variable-scan ticket 02)."""
+        return self._variable_scan
 
     @property
     def results_panel(self) -> ResultsPanelWidget:
@@ -1132,6 +1163,7 @@ def build_view(
     period_controller: PeriodController | None = None,
     quality_controller: QualityController | None = None,
     mover_controller: MoverController | None = None,
+    scan_controller: ScanController | None = None,
     crossmatch_controller: CrossmatchController | None = None,
     project_controller: ProjectController | None = None,
     project: Any = None,
@@ -1151,7 +1183,9 @@ def build_view(
     ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
     04), ``mover_controller`` to the Photometry view's mover overlay/blink
-    widget (moving-objects ticket 02), ``lightcurve_controller`` /
+    widget (moving-objects ticket 02), ``scan_controller`` to the Photometry
+    view's variable-candidate widget (variable-scan ticket 02),
+    ``lightcurve_controller`` /
     ``period_controller`` /
     ``quality_controller`` to the Lightcurve view (period-analysis tickets
     01 + 03 + 04 and frame-quality ticket 02), and
@@ -1181,6 +1215,7 @@ def build_view(
             suggest_controller=suggest_controller,
             run_controller=run_controller,
             mover_controller=mover_controller,
+            scan_controller=scan_controller,
         )
     if view_id == LightcurveView.view_id:
         return LightcurveView(
