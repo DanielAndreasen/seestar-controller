@@ -21,10 +21,11 @@ one shared
 window passes them down via
 :func:`seestar_controller.ui.views.build_view`):
 
-- **left pane** — the project's stored **frames** (subs, stacks, enhanced —
-  sub-frames ticket 01) as a :class:`Gtk.ListBox` (one row per
-  :class:`~seestar_controller.enhance.fits_io.StackInfo`, subtitle with the
-  frame kind; selecting a row opens the frame via the viewer controller) with
+- **left pane** — the project's listed entries (all stored **frames** — subs,
+  stacks, enhanced, sub-frames ticket 01 — PLUS the file-based stitched
+  **mosaics**, app-improvement ticket 08) as a :class:`Gtk.ListBox` (one row
+  per :class:`~seestar_controller.enhance.fits_io.StackInfo`, subtitle with the
+  entry kind; selecting a row opens the entry via the viewer controller) with
   a **Refresh** button, and
   below it the **per-op parameter sliders**: one
   :class:`Adw.PreferencesGroup` per pipeline op (from the
@@ -117,9 +118,9 @@ GAINS_CHANNELS = ("r", "g", "b")
 
 
 class EnhanceEditor(Gtk.Box):
-    """The Enhance-view editor: frame list (all stored frames — subs included)
-    + per-op sliders on the left, before/after preview + undo/redo/reset on
-    the right.
+    """The Enhance-view editor: entry list (all stored frames — subs included —
+    plus the file-based mosaics) + per-op sliders on the left, before/after
+    preview + undo/redo/reset on the right.
 
     Constructed with the two controllers (the app passes its shared
     instances; fresh ones are created when omitted, so the widget also works
@@ -143,8 +144,8 @@ class EnhanceEditor(Gtk.Box):
             if editor_controller is not None
             else EditorController(self._viewer_controller)
         )
-        self._stack_ids: tuple[int, ...] = ()
-        self._rows: dict[int, Gtk.ListBoxRow] = {}
+        self._keys: tuple[str, ...] = ()
+        self._rows: dict[str, Gtk.ListBoxRow] = {}
         self._updating = False  # guard against programmatic signal loops
         self._rendered_pipeline: Pipeline | None = None
         self._sliders: dict[tuple[str, str], Gtk.Scale] = {}
@@ -198,7 +199,7 @@ class EnhanceEditor(Gtk.Box):
 
         self._refresh_button = Gtk.Button(
             label="Refresh",
-            tooltip_text="Re-list the frames of the current project",
+            tooltip_text="Re-list the entries (frames and mosaics) of the current project",
         )
         self._refresh_button.connect("clicked", self._on_refresh_clicked)
         left.append(self._refresh_button)
@@ -434,11 +435,11 @@ class EnhanceEditor(Gtk.Box):
         return titles
 
     def row_count(self) -> int:
-        """The number of frame rows currently shown (test helper)."""
+        """The number of entry rows currently shown (test helper)."""
         return len(self._rows)
 
     def row_label(self, index: int) -> str:
-        """The label of the frame row at ``index`` (test helper)."""
+        """The label of the entry row at ``index`` (test helper)."""
         row = self._list_box.get_row_at_index(index)
         if row is None:
             return ""
@@ -447,7 +448,7 @@ class EnhanceEditor(Gtk.Box):
         return label.get_label() if label is not None else ""
 
     def row_subtitle(self, index: int) -> str:
-        """The subtitle (kind · session · jd · …) of the frame row at
+        """The subtitle (kind · session · jd · …) of the entry row at
         ``index`` (test helper)."""
         row = self._list_box.get_row_at_index(index)
         if row is None:
@@ -612,13 +613,21 @@ class EnhanceEditor(Gtk.Box):
         self._view_stack.set_visible_child_name("before" if toggle.get_active() else "after")
 
     def _on_row_selected(self, _list_box: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
+        """An entry row was selected -> open that entry (a stored frame by
+        frame id, a file-based entry such as a mosaic by path; inline error
+        on failure)."""
         if row is None or self._updating:
             return
         frame_id = getattr(row, "frame_id", None)
-        if frame_id is None:
-            return
+        if frame_id is not None:
+            open_entry = lambda: self._viewer_controller.open_stack(frame_id)
+        else:
+            entry_path = getattr(row, "entry_path", None)
+            if entry_path is None:
+                return
+            open_entry = lambda: self._viewer_controller.open_path(entry_path)
         try:
-            self._viewer_controller.open_stack(frame_id)
+            open_entry()
         except EnhanceError as exc:
             self._set_status(str(exc), error=True)
 
@@ -690,14 +699,14 @@ class EnhanceEditor(Gtk.Box):
     def _on_viewer_snapshot(self, snapshot: ViewerSnapshot) -> None:
         """Viewer listener: re-render the frame list + selection + status."""
         self._viewer_snapshot = snapshot
-        ids = tuple(s.frame_id for s in snapshot.stacks)
-        if ids != self._stack_ids:
-            self._stack_ids = ids
+        keys = tuple(s.key for s in snapshot.stacks)
+        if keys != self._keys:
+            self._keys = keys
             self._rebuild_rows(snapshot.stacks)
-        if snapshot.current is not None and snapshot.current.frame_id in self._rows:
+        if snapshot.current is not None and snapshot.current.key in self._rows:
             self._updating = True
             try:
-                self._list_box.select_row(self._rows[snapshot.current.frame_id])
+                self._list_box.select_row(self._rows[snapshot.current.key])
             finally:
                 self._updating = False
         if snapshot.error:
@@ -778,7 +787,8 @@ class EnhanceEditor(Gtk.Box):
             self._set_status("", error=False)
 
     def _rebuild_rows(self, stacks: tuple[StackInfo, ...]) -> None:
-        """Rebuild the frame list rows from ``stacks`` (one row per stored frame)."""
+        """Rebuild the entry list rows from ``stacks`` (one row per listed
+        entry — a stored frame or a file-based mosaic)."""
         self._rows = {}
         while (row := self._list_box.get_row_at_index(0)) is not None:
             self._list_box.remove(row)
@@ -795,8 +805,10 @@ class EnhanceEditor(Gtk.Box):
                 )
             )
             row = Gtk.ListBoxRow(child=box)
+            row.key = stack.key  # type: ignore[attr-defined]
             row.frame_id = stack.frame_id  # type: ignore[attr-defined]
-            self._rows[stack.frame_id] = row
+            row.entry_path = str(stack.path)  # type: ignore[attr-defined]
+            self._rows[stack.key] = row
             self._list_box.append(row)
 
     def _set_status(self, text: str, *, error: bool) -> None:

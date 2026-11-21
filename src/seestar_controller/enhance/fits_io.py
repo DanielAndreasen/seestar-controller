@@ -27,12 +27,21 @@ What lives here:
   fields (including the frame ``kind`` — ``"sub"`` / ``"stack"`` /
   ``"enhanced"``) plus the absolute file ``path`` (via
   :func:`~seestar_controller.store.frames.get_frame_path`) and the session's
-  start time;
+  start time. A **file-based entry** (a stitched mosaic, see
+  :func:`list_project_mosaics`) is also a :class:`StackInfo`, but with
+  ``frame_id=None`` and ``kind="mosaic"`` — it has no ``frames`` row;
 - :func:`list_project_frames` — all stored frames of a project across all
   sessions (``store.frames.list_frames(project)`` + the session records),
   ordered by ``jd``; store errors are wrapped into :class:`EnhanceError`.
   :func:`list_project_stacks` is the ``kind="stack"``-only view of the same
-  listing (kept for the stack-only callers).
+  listing (kept for the stack-only callers);
+- :func:`list_project_mosaics` — the stitched mosaics of a project
+  (``mosaics/<session_id>.fits``, mosaic-stitch ticket 01): FILE-BASED
+  products, NOT ``frames`` rows, listed as :class:`StackInfo` with
+  ``frame_id=None`` and ``kind="mosaic"`` (app-improvement ticket 08 — the
+  Enhance view lists and opens them like any other image);
+- :func:`stack_info_for_path` — a transient :class:`StackInfo` for an
+  arbitrary FITS file opened by path (the viewer's open-file path).
 
 Synthetic-FITS helpers for tests live in the tests, not here (this package
 only reads).
@@ -42,11 +51,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from seestar_controller.mosaic import MOSAICS_DIR
 from seestar_controller.store.errors import ProjectError
 from seestar_controller.store.frames import (
     KIND_STACK,
@@ -63,6 +74,23 @@ class EnhanceError(Exception):
     """Any image-enhance failure: an unreadable/unsupported FITS file, no
     project set, an unknown stack id, a bad render parameter, a store error
     while listing stacks."""
+
+
+#: Viewer-listing kind of a **stitched mosaic** — a FILE-BASED product of the
+#: project (``mosaics/<session_id>.fits``, mosaic-stitch ticket 01) that is
+#: NOT a ``frames`` row, so it has no frame id (app-improvement ticket 08:
+#: the Enhance view lists and opens it like any other image).
+KIND_MOSAIC = "mosaic"
+
+#: Viewer-listing kind of an arbitrary FITS file opened by path (the open-file
+#: path), when it is not one of the project's mosaics.
+KIND_FILE = "file"
+
+#: The Julian Date of the Unix epoch (1970-01-01T00:00:00 UTC).
+_JD_UNIX_EPOCH = 2440587.5
+
+#: Seconds per day (for the mtime -> JD conversion of file-based entries).
+_SECONDS_PER_DAY = 86400.0
 
 
 @dataclass(frozen=True)
@@ -101,24 +129,30 @@ class FitsImage:
 
 @dataclass(frozen=True)
 class StackInfo:
-    """One stored **frame** of a project, as listed by
-    :func:`list_project_frames` (any ``kind`` — sub, stack, or enhanced;
-    sub-frames ticket 01: the viewer lists and opens all of them).
+    """One listed **entry** of a project in the Enhance view: either a stored
+    **frame** (as listed by :func:`list_project_frames` — any ``kind``: sub,
+    stack, or enhanced) or a **file-based product** (a stitched mosaic, see
+    :func:`list_project_mosaics`).
 
     - ``frame_id`` — the store frame row id (the id :meth:`ViewerController.open_stack`
-      takes);
-    - ``session_id`` — the session the frame belongs to;
+      takes); **None** for a file-based entry (a mosaic), which has no
+      ``frames`` row;
+    - ``session_id`` — the session the entry belongs to (for a mosaic:
+      the stitched session; for an arbitrary file: the file stem);
     - ``session_started_at`` — the session's start (UTC ISO), None when the
       session row is missing (hand-edited db);
     - ``path`` — the absolute path of the FITS file;
     - ``jd`` / ``utc`` — the observation time (Julian Date / UTC ISO-8601);
+      for a file-based entry: the file's mtime;
     - ``target`` / ``exposure`` / ``gain`` — the frame metadata (None when
       unknown);
-    - ``kind`` — the frame kind (``"sub"`` / ``"stack"`` / ``"enhanced"``);
-      defaults to ``"stack"`` so stack-only constructions keep working.
+    - ``kind`` — the entry kind (``"sub"`` / ``"stack"`` / ``"enhanced"`` for
+      a stored frame, :data:`KIND_MOSAIC` / :data:`KIND_FILE` for a
+      file-based entry); defaults to ``"stack"`` so stack-only constructions
+      keep working.
     """
 
-    frame_id: int
+    frame_id: int | None
     session_id: str
     session_started_at: str | None
     path: Path
@@ -129,8 +163,19 @@ class StackInfo:
     gain: float | None
     kind: str = KIND_STACK
 
+    @property
+    def key(self) -> str:
+        """A unique list key for the viewer rows: ``frame:<id>`` for a stored
+        frame, ``<kind>:<session_id>`` for a file-based entry."""
+        if self.frame_id is not None:
+            return f"frame:{self.frame_id}"
+        return f"{self.kind}:{self.session_id}"
+
     def label(self) -> str:
-        """The one-line list label: ``"2026-11-20T22:00:00.000+00:00 — M 42"``."""
+        """The one-line list label: ``"2026-11-20T22:00:00.000+00:00 — M 42"``
+        (a file-based entry: ``"… — mosaic <session_id>"``)."""
+        if self.frame_id is None:
+            return f"{self.utc} — {self.kind} {self.session_id}"
         return f"{self.utc} — {self.target or 'no target'}"
 
     def subtitle(self) -> str:
@@ -284,3 +329,99 @@ def list_project_stacks(project: Project | None) -> list[StackInfo]:
     ``kind="stack"`` view of :func:`list_project_frames` (kept for the
     stack-only callers)."""
     return list_project_frames(project, kind=KIND_STACK)
+
+
+def _file_entry(
+    path: Path,
+    *,
+    kind: str,
+    session_id: str,
+    session_started_at: str | None = None,
+) -> StackInfo:
+    """Build the file-based :class:`StackInfo` of the FITS file ``path``
+    (``frame_id=None``; ``jd``/``utc`` from the file's mtime — the same
+    fallback :func:`seestar_controller.store.frames.store_frame` uses when
+    ``DATE-OBS`` is missing).
+
+    Raises :class:`EnhanceError` when the file cannot be stat-ed.
+    """
+    try:
+        mtime = path.stat().st_mtime
+    except OSError as exc:
+        raise EnhanceError(f"cannot stat file {path}: {exc}") from exc
+    utc = datetime.fromtimestamp(mtime, tz=UTC).isoformat(timespec="milliseconds")
+    jd = _JD_UNIX_EPOCH + mtime / _SECONDS_PER_DAY
+    return StackInfo(
+        frame_id=None,
+        session_id=session_id,
+        session_started_at=session_started_at,
+        path=path,
+        jd=jd,
+        utc=utc,
+        target=None,
+        exposure=None,
+        gain=None,
+        kind=kind,
+    )
+
+
+def list_project_mosaics(project: Project | None) -> list[StackInfo]:
+    """List the **stitched mosaics** of ``project`` — the file-based products
+    under ``mosaics/`` (``mosaics/<session_id>.fits``, mosaic-stitch ticket
+    01; NOT ``frames`` rows), ordered by file mtime (app-improvement ticket
+    08: the Enhance view lists and opens them like any other image).
+
+    Each is a :class:`StackInfo` with ``frame_id=None``, ``kind``
+    :data:`KIND_MOSAIC`, ``session_id`` = the mosaic file's stem (the stitched
+    session), and ``jd``/``utc`` from the file's mtime. A missing
+    ``mosaics/`` directory is an empty list, not an error.
+
+    Raises :class:`EnhanceError` when ``project`` is None or a store error
+    occurs while reading the sessions (wrapped, with the cause chained).
+    """
+    if project is None:
+        raise EnhanceError(
+            "no project — set one with ViewerController.set_project() first "
+            "(the Projects view is a later ticket)"
+        )
+    mosaics_dir = project.path / MOSAICS_DIR
+    if not mosaics_dir.is_dir():
+        return []
+    try:
+        sessions = {s.id: s for s in list_sessions(project)}
+    except ProjectError as exc:
+        raise EnhanceError(
+            f"cannot list the sessions of project {project.slug!r}: {exc}"
+        ) from exc
+    infos = [
+        _file_entry(
+            path,
+            kind=KIND_MOSAIC,
+            session_id=path.stem,
+            session_started_at=(
+                sessions[path.stem].started_at if path.stem in sessions else None
+            ),
+        )
+        for path in sorted(mosaics_dir.glob("*.fits"))
+        if path.is_file()
+    ]
+    infos.sort(key=lambda info: info.jd)
+    return infos
+
+
+def stack_info_for_path(
+    path: str | Path, *, kind: str = KIND_FILE, session_id: str | None = None
+) -> StackInfo:
+    """A transient :class:`StackInfo` for an arbitrary FITS file opened by
+    path (the viewer's open-file path — e.g. a freshly stitched mosaic before
+    the list is refreshed). ``kind`` defaults to :data:`KIND_FILE`;
+    ``session_id`` defaults to the file stem.
+
+    Raises :class:`EnhanceError` when the file cannot be stat-ed.
+    """
+    file_path = Path(path)
+    return _file_entry(
+        file_path,
+        kind=kind,
+        session_id=session_id if session_id is not None else file_path.stem,
+    )

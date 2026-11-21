@@ -18,13 +18,18 @@ dependency — it needs the system GTK headers to build)::
 app owns one shared instance; the window passes it down via
 :func:`seestar_controller.ui.views.build_view`):
 
-- **left pane** — the project's stored **frames** (subs, stacks, enhanced —
-  sub-frames ticket 01) as a :class:`Gtk.ListBox` (one row per
-  :class:`~seestar_controller.enhance.fits_io.StackInfo`, label + subtitle
-  with the frame kind) inside a scrolled window, plus a **Refresh** button
-  (re-lists the frames — newly stored frames appear) and an inline status
-  label for errors; selecting a row opens that frame via
-  :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.open_stack`;
+- **left pane** — the project's listed entries (all stored **frames** — subs,
+  stacks, enhanced, sub-frames ticket 01 — PLUS the file-based stitched
+  **mosaics**, app-improvement ticket 08) as a :class:`Gtk.ListBox` (one row
+  per :class:`~seestar_controller.enhance.fits_io.StackInfo`, label + subtitle
+  with the entry kind) inside a scrolled window, plus a **Refresh** button
+  (re-lists the entries — newly stored frames and newly stitched mosaics
+  appear) and an inline status label for errors; selecting a row opens that
+  entry via
+  :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.open_stack`
+  (a stored frame) or
+  :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.open_path`
+  (a file-based entry, e.g. a mosaic);
 - **right pane** — the tone-mapped preview in a :class:`Gtk.Picture`
   (``content_fit=CONTAIN`` — basic fit-to-widget zoom) fed from the
   controller's PIL preview: PIL -> PNG bytes -> :class:`Gdk.Texture`
@@ -71,8 +76,9 @@ def texture_from_pil(image: Image.Image) -> Gdk.Texture:
 
 
 class ImageViewer(Gtk.Box):
-    """The Enhance-view image viewer: frame list (all stored frames — subs
-    included) on the left, tone-mapped preview on the right, driven by a pure
+    """The Enhance-view image viewer: entry list (all stored frames — subs
+    included — plus the file-based mosaics) on the left, tone-mapped preview
+    on the right, driven by a pure
     :class:`~seestar_controller.enhance.viewer_controller.ViewerController`.
 
     Constructed with the controller (the app passes its shared instance; a
@@ -88,8 +94,8 @@ class ImageViewer(Gtk.Box):
         self._controller = (
             controller if controller is not None else ViewerController()
         )
-        self._stack_ids: tuple[int, ...] = ()
-        self._rows: dict[int, Gtk.ListBoxRow] = {}
+        self._keys: tuple[str, ...] = ()
+        self._rows: dict[str, Gtk.ListBoxRow] = {}
         self._updating = False  # guard against programmatic row selection loops
 
         paned = Gtk.Paned(
@@ -136,7 +142,7 @@ class ImageViewer(Gtk.Box):
 
         self._refresh_button = Gtk.Button(
             label="Refresh",
-            tooltip_text="Re-list the frames of the current project",
+            tooltip_text="Re-list the entries (frames and mosaics) of the current project",
         )
         self._refresh_button.connect("clicked", self._on_refresh_clicked)
         left.append(self._refresh_button)
@@ -244,19 +250,19 @@ class ImageViewer(Gtk.Box):
     # -- rendering ---------------------------------------------------------------------
 
     def _on_snapshot(self, snapshot: ViewerSnapshot) -> None:
-        """Controller listener: a new ViewerSnapshot -> re-render the frame
+        """Controller listener: a new ViewerSnapshot -> re-render the entry
         list, the preview picture, the placeholder and the labels."""
-        # frame list: rebuild only when the frame ids changed
-        ids = tuple(s.frame_id for s in snapshot.stacks)
-        if ids != self._stack_ids:
-            self._stack_ids = ids
+        # entry list: rebuild only when the entry keys changed
+        keys = tuple(s.key for s in snapshot.stacks)
+        if keys != self._keys:
+            self._keys = keys
             self._rebuild_rows(snapshot.stacks)
 
-        # select the current frame's row (without re-opening it)
-        if snapshot.current is not None and snapshot.current.frame_id in self._rows:
+        # select the current entry's row (without re-opening it)
+        if snapshot.current is not None and snapshot.current.key in self._rows:
             self._updating = True
             try:
-                self._list_box.select_row(self._rows[snapshot.current.frame_id])
+                self._list_box.select_row(self._rows[snapshot.current.key])
             finally:
                 self._updating = False
 
@@ -292,8 +298,9 @@ class ImageViewer(Gtk.Box):
             self._set_status("", error=False)
 
     def _rebuild_rows(self, stacks: tuple[StackInfo, ...]) -> None:
-        """Rebuild the frame list rows from ``stacks`` (one row per stored
-        frame; the subtitle carries the frame kind)."""
+        """Rebuild the entry list rows from ``stacks`` (one row per listed
+        entry — a stored frame or a file-based mosaic; the subtitle carries
+        the entry kind)."""
         self._rows = {}
         while (row := self._list_box.get_row_at_index(0)) is not None:
             self._list_box.remove(row)
@@ -310,8 +317,10 @@ class ImageViewer(Gtk.Box):
                 )
             )
             row = Gtk.ListBoxRow(child=box)
+            row.key = stack.key  # type: ignore[attr-defined]
             row.frame_id = stack.frame_id  # type: ignore[attr-defined]
-            self._rows[stack.frame_id] = row
+            row.entry_path = str(stack.path)  # type: ignore[attr-defined]
+            self._rows[stack.key] = row
             self._list_box.append(row)
 
     def _set_status(self, text: str, *, error: bool) -> None:
@@ -326,20 +335,26 @@ class ImageViewer(Gtk.Box):
     # -- signal handlers -----------------------------------------------------------------
 
     def _on_row_selected(self, _list_box: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
-        """A frame row was selected -> open that frame (inline error on
-        failure)."""
+        """An entry row was selected -> open that entry (a stored frame by
+        frame id, a file-based entry such as a mosaic by path; inline error
+        on failure)."""
         if row is None or self._updating:
             return
         frame_id = getattr(row, "frame_id", None)
-        if frame_id is None:
-            return
+        if frame_id is not None:
+            open_entry = lambda: self._controller.open_stack(frame_id)
+        else:
+            entry_path = getattr(row, "entry_path", None)
+            if entry_path is None:
+                return
+            open_entry = lambda: self._controller.open_path(entry_path)
         try:
-            self._controller.open_stack(frame_id)
+            open_entry()
         except EnhanceError as exc:
             self._set_status(str(exc), error=True)
 
     def _on_refresh_clicked(self, *_args) -> None:
-        """Refresh: re-list the frames (inline error on failure)."""
+        """Refresh: re-list the entries (inline error on failure)."""
         try:
             self._controller.refresh_stacks()
         except EnhanceError as exc:

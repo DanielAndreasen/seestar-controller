@@ -23,7 +23,10 @@ RGB (3-D) tiles, a single tile, mixed-ndim and pixel-scale-mismatch errors,
 the session-level errors (unknown session, no stacks, bad parameters,
 overwrite=False), the file-based output location (``mosaics/<sid>.fits``,
 NOT a ``frames`` row), the optional reproject path (skipped when the
-package is absent), and the package boundary (subprocess + source scan).
+package is absent), the package boundary (subprocess + source scan), and —
+app-improvement ticket 08 — that the stitched mosaic is listed and openable
+in the Enhance view (``list_project_mosaics`` + ``ViewerController.open_path``,
+the open-file path for a file-based product).
 """
 
 import io
@@ -40,6 +43,20 @@ from astropy.io import fits as pyfits
 from astropy.wcs import WCS
 
 from seestar_controller import mosaic
+from seestar_controller.enhance import (
+    EnhanceError,
+    ViewerController,
+    list_project_mosaics,
+)
+from seestar_controller.enhance import (
+    fits_io as enhance_fits_io,
+)
+from seestar_controller.enhance.persistence import (
+    load_preset_for,
+    save_enhanced,
+    save_preset_for,
+)
+from seestar_controller.enhance.pipeline import default_pipeline
 from seestar_controller.mosaic import (
     BLEND_AVERAGE,
     BLEND_FEATHER,
@@ -690,3 +707,113 @@ def test_mosaic_public_api_exports():
     }
     assert BLENDS == (BLEND_AVERAGE, BLEND_FEATHER)
     assert MosaicError.__mro__[1] is ValueError
+
+
+# --- app-improvement ticket 08: the stitched mosaic opens in the Enhance view -------------------
+
+
+def test_stitched_mosaic_is_listed_and_openable_in_enhance_viewer(project):
+    """After stitching, the mosaic is a file-based entry of the Enhance view:
+    ``list_project_mosaics`` lists it (``frame_id=None``, ``kind="mosaic"``,
+    NOT a ``frames`` row) and ``ViewerController.open_path`` opens it — the
+    open-file path — with the stitched pixels as the loaded image."""
+    sid = start_session(project, clock=frozen(T0))
+    canvas = make_canvas()
+    store_tiles(project, sid, canvas, [(0, 0), (64, 0)])
+
+    # no mosaic yet: the listing is empty (no mosaics/ directory at all)
+    assert list_project_mosaics(project) == []
+
+    out = stitch_session(project, sid)
+
+    mosaics = list_project_mosaics(project)
+    assert len(mosaics) == 1
+    info = mosaics[0]
+    assert info.frame_id is None
+    assert info.kind == enhance_fits_io.KIND_MOSAIC
+    assert info.session_id == sid
+    assert info.path == out
+    assert info.key == f"mosaic:{sid}"
+    assert "mosaic" in info.label() and sid in info.label()
+    assert "mosaic" in info.subtitle() and sid in info.subtitle()
+    with pytest.raises(EnhanceError):
+        list_project_mosaics(None)
+
+    # the viewer controller lists it among its entries and opens it by path
+    vc = ViewerController(project)
+    assert info in vc.stacks
+    assert vc.mosaics == (info,)
+    seen = []
+    vc.add_listener(seen.append)
+    image = vc.open_path(out)
+    assert image.path == out
+    assert image.data.shape == (TILE, TILE + 64)
+    mosaic = np.asarray(read_fits(out)[0], dtype=np.float64)
+    assert np.allclose(np.asarray(image.data, dtype=np.float64), mosaic, atol=1e-4)
+    assert vc.current_stack == info
+    assert vc.current_stack is not None
+    assert vc.current_stack.kind == "mosaic"
+    assert vc.current_stack.frame_id is None
+    assert vc.preview is not None
+    assert vc.snapshot.error is None
+    assert seen  # the listeners were notified
+    # re-opening an unchanged file is served from the path+mtime cache
+    assert vc.open_path(out) is image
+    # a relative path resolves against the project directory
+    assert vc.open_path(f"{MOSAICS_DIR}/{sid}.fits") is image
+
+
+def test_stitched_mosaic_open_path_errors_and_arbitrary_file(project, tmp_path):
+    """``open_path`` on a missing file raises :class:`EnhanceError` (recorded
+    in the snapshot, listeners notified); an arbitrary FITS file outside the
+    project opens as a transient ``"file"`` entry."""
+    sid = start_session(project, clock=frozen(T0))
+    canvas = make_canvas()
+    store_tiles(project, sid, canvas, [(0, 0), (64, 0)])
+    stitch_session(project, sid)
+
+    vc = ViewerController(project)
+    seen = []
+    vc.add_listener(seen.append)
+    with pytest.raises(EnhanceError):
+        vc.open_path(project.path / MOSAICS_DIR / "no-such-session.fits")
+    assert vc.snapshot.error is not None
+    assert "no-such-session.fits" in vc.snapshot.error
+    assert seen and vc.snapshot.current is None
+
+    foreign = tmp_path / "elsewhere.fits"
+    pyfits.PrimaryHDU(data=np.asarray(canvas[:16, :16], dtype=np.float32)).writeto(foreign)
+    image = vc.open_path(foreign)
+    assert image.data.shape == (16, 16)
+    assert vc.current_stack is not None
+    assert vc.current_stack.kind == enhance_fits_io.KIND_FILE
+    assert vc.current_stack.frame_id is None
+    assert vc.current_stack.session_id == "elsewhere"
+
+
+def test_mosaic_entry_has_no_preset_but_the_pipeline_consumes_it(project):
+    """A mosaic entry has no frames row, so it has no per-frame preset (a
+    clear :class:`EnhanceError` on save, None on load) — but the enhance
+    pipeline consumes it unchanged: ``save_enhanced`` stores the enhanced
+    mosaic as an ``enhanced`` frame of the stitched session."""
+    sid = start_session(project, clock=frozen(T0))
+    canvas = make_canvas()
+    store_tiles(project, sid, canvas, [(0, 0), (64, 0)])
+    out = stitch_session(project, sid)
+
+    vc = ViewerController(project)
+    image = vc.open_path(out)
+    info = vc.current_stack
+    assert info is not None and info.kind == "mosaic"
+
+    assert load_preset_for(project, info) is None
+    with pytest.raises(EnhanceError, match="no frames row|presets are per stored frame"):
+        save_preset_for(project, info, default_pipeline())
+
+    frame = save_enhanced(project, info, default_pipeline(), image)
+    assert frame.kind == "enhanced"
+    assert frame.session_id == sid
+    assert [f.id for f in list_frames(project, session_id=sid, kind="enhanced")] == [frame.id]
+    # the enhanced derivative is a normal frame: listed and openable by id
+    assert frame.id in [s.frame_id for s in vc.refresh_stacks()]
+    assert vc.open_stack(frame.id).data.shape == (TILE, TILE + 64)

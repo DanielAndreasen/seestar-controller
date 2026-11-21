@@ -1466,7 +1466,8 @@ class ProjectsView(_PlaceholderView):
             valign=Gtk.Align.CENTER,
             tooltip_text=(
                 f"Stitch this session's tile stacks into "
-                f"{mosaic_path(project, session.id)} (from the stored frames)"
+                f"{mosaic_path(project, session.id)} (from the stored frames) "
+                "and open the mosaic in the Enhance view"
             ),
         )
         stitch_button.connect(
@@ -1673,8 +1674,10 @@ class ProjectsView(_PlaceholderView):
         """Run one stored-data action on the current project and report the
         outcome in the data status label; writes the product back into the
         project (``mosaics/<session>.fits`` / a new ``kind='stack'`` frame
-        under ``stacks/<session>/`` / ``reports/<session>.html``).
-        Never raises — failures are surfaced inline."""
+        under ``stacks/<session>/`` / ``reports/<session>.html``). The
+        stitched mosaic is then opened in the Enhance view (app-improvement
+        ticket 08 — it is a file-based product, not a ``frames`` row, so it
+        is opened by path). Never raises — failures are surfaced inline."""
         project = self._project_controller.current
         if project is None:
             self._set_data_status("no project open", error=True)
@@ -1682,8 +1685,13 @@ class ProjectsView(_PlaceholderView):
         try:
             if kind == "stitch":
                 path = stitch_session(project, session_id)
-                self._set_data_status(
-                    f"stitched mosaic of {session_id} → {path}", error=False
+                self._open_in_viewer(
+                    lambda viewer: viewer.open_path(path),
+                    f"mosaic {path}",
+                    ok_message=(
+                        f"stitched mosaic of {session_id} → {path} · "
+                        "opened in the image viewer"
+                    ),
                 )
             elif kind == "stack_subs":
                 result = stack_session_subs(project, session_id)
@@ -1716,6 +1724,16 @@ class ProjectsView(_PlaceholderView):
         controller (any kind — subs included) and, when the app passed
         ``show_view``, switch to the Enhance view so the frame is visible.
         Reports the outcome in the data status label; never raises."""
+        self._open_in_viewer(
+            lambda viewer: viewer.open_stack(frame_id), f"frame {frame_id}"
+        )
+
+    def _open_in_viewer(self, open_entry, subject: str, *, ok_message: str | None = None) -> None:
+        """Open an entry of the current project in the shared viewer
+        controller — ``open_entry(viewer)`` is called after making sure the
+        viewer has the current project set — and, when the app passed
+        ``show_view``, switch to the Enhance view so the entry is visible.
+        Reports the outcome in the data status label; never raises."""
         project = self._project_controller.current
         if project is None:
             self._set_data_status("no project open", error=True)
@@ -1724,12 +1742,13 @@ class ProjectsView(_PlaceholderView):
         try:
             if viewer.project is None or Path(viewer.project.path) != Path(project.path):
                 viewer.set_project(project)
-            viewer.open_stack(frame_id)
+            open_entry(viewer)
         except EnhanceError as exc:
-            self._set_data_status(f"cannot open frame {frame_id}: {exc}", error=True)
+            self._set_data_status(f"cannot open {subject}: {exc}", error=True)
             return
         self._set_data_status(
-            f"opened frame {frame_id} in the image viewer", error=False
+            ok_message if ok_message is not None else f"opened {subject} in the image viewer",
+            error=False,
         )
         if self._show_view is not None:
             self._show_view(EnhanceView.view_id)
