@@ -335,6 +335,11 @@ class LinkTransport:
         With ``suppress_scope_error=True`` a 103 (method not found) reply is
         still returned (and still resolves the future) but does not dispatch
         a ``scope_error`` lifecycle event — other error codes always do.
+
+        ``timeout`` overrides :attr:`request_timeout` for this call, as given:
+        ``timeout=0`` waits no longer than the instant itself (a reply not
+        already in raises :class:`RequestTimeoutError` at once), while
+        ``timeout=None`` uses the configured default.
         """
         with self._state_lock:
             if not self._link_up:
@@ -363,15 +368,18 @@ class LinkTransport:
             # _send_lock so handlers can safely call back into the transport.
             self._handle_connection_lost("send failed")
             raise ConnectionLostError("send failed") from None
+        # An explicit numeric timeout is honored as-is — including 0 ("no
+        # wait"); only None falls back to the configured default.
+        effective_timeout = self.request_timeout if timeout is None else timeout
         try:
-            return future.result(timeout=timeout or self.request_timeout)
+            return future.result(timeout=effective_timeout)
         except TimeoutError:
             with self._send_lock:
                 self._pending.pop(msg["id"], None)
                 self._suppress_103_ids.discard(msg["id"])
             raise RequestTimeoutError(
                 f"no reply to {method!r} (id={msg['id']}) within "
-                f"{timeout or self.request_timeout}s"
+                f"{effective_timeout}s"
             ) from None
 
     def _send(self, msg: Mapping[str, Any]) -> None:
