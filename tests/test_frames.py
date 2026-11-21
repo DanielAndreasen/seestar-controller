@@ -11,6 +11,8 @@ import io
 import json
 import os
 import time
+import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -232,6 +234,152 @@ def test_redownload_replaces_files_without_leftovers(device, mock_scope, tmp_pat
     assert len(list(tmp_path.glob("*.json"))) == 1
     assert not list(tmp_path.glob("*.tmp"))
     _assert_valid_fits(second[0].path, _read_sidecar(second[0].sidecar))
+
+
+# -- fw 9.75 HTTP fetch: timeout forwarding --------------------------------------
+
+
+def _http_record() -> dict:
+    """A fw 9.75 album record (carries ``remote_path`` -> HTTP download)."""
+    return {
+        "id": "NGC 6888_sub/Light_NGC 6888_10s_20260101-000000.fit",
+        "kind": KIND_SUB,
+        "time": "2026-01-01T00:00:00.000",
+        "epoch": 1767225600.0,
+        "remote_path": "MyWorks/NGC 6888_sub/Light_NGC 6888_10s_20260101-000000.fit",
+    }
+
+
+def _spy_fetch(seen: list[tuple[str, float]]) -> Callable[[str, float], bytes]:
+    """An injected HTTP GET recording ``(url, timeout)`` and serving FITS."""
+
+    def spy(url: str, timeout: float) -> bytes:
+        seen.append((url, timeout))
+        return make_fits_bytes(
+            when=datetime(2026, 1, 1, tzinfo=UTC),
+            exposure=10.0,
+            gain=80,
+            target={"name": "NGC 6888"},
+        )
+
+    return spy
+
+
+def test_fetch_frame_bytes_http_forwards_caller_timeout(transport):
+    record = _http_record()
+    seen: list[tuple[str, float]] = []
+    blob = frames.fetch_frame_bytes(
+        transport, record, fetch=_spy_fetch(seen), timeout=7.5
+    )
+    assert blob.startswith(b"SIMPLE")
+    assert seen == [(frames.http_frame_url(transport.host, record["remote_path"]), 7.5)]
+
+
+def test_fetch_frame_bytes_http_default_timeout_when_none(transport):
+    """No ``timeout`` given: the HTTP GET still gets the documented 30 s
+    default (:data:`frames.DEFAULT_FETCH_TIMEOUT`), not "block forever"."""
+    seen: list[tuple[str, float]] = []
+    frames.fetch_frame_bytes(transport, _http_record(), fetch=_spy_fetch(seen))
+    assert seen[0][1] == frames.DEFAULT_FETCH_TIMEOUT == 30.0
+
+
+def test_fetch_frame_bytes_http_uses_default_fetch_with_timeout(
+    transport, monkeypatch
+):
+    """No ``fetch`` injected: the HTTP branch calls ``default_fetch``, which
+    hands the caller's timeout to ``urlopen`` (spied at that boundary)."""
+    calls: list[tuple[str, object]] = []
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self) -> bytes:
+            return b"SIMPLE  = fake fits bytes"
+
+    def fake_urlopen(url, timeout=None):
+        calls.append((url, timeout))
+        return _FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    blob = frames.fetch_frame_bytes(transport, _http_record(), timeout=2.5)
+    assert blob == b"SIMPLE  = fake fits bytes"
+    assert calls[0][1] == 2.5
+    frames.fetch_frame_bytes(transport, _http_record())
+    assert calls[1][1] == frames.DEFAULT_FETCH_TIMEOUT
+
+
+def test_default_fetch_passes_timeout_to_urlopen(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self) -> bytes:
+            return b"fits-bytes"
+
+    def fake_urlopen(url, timeout=None):
+        calls.append((url, timeout))
+        return _FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    url = "http://127.0.0.1/MyWorks/NGC 6888_sub/x.fit"
+    assert frames.default_fetch(url, timeout=3.5) == b"fits-bytes"
+    assert calls == [(url, 3.5)]
+    assert frames.default_fetch(url) == b"fits-bytes"
+    assert calls[-1] == (url, frames.DEFAULT_FETCH_TIMEOUT)
+
+
+def test_download_frames_http_path_forwards_timeout(transport, tmp_path, monkeypatch):
+    """End to end through ``download_frames`` on the fw 9.75 album flow: the
+    injected HTTP GET receives the caller's ``timeout`` and the frame lands
+    on disk with its sidecar."""
+    monkeypatch.setattr(
+        frames, "list_remote_frames", lambda *a, **k: ("get_albums", [_http_record()])
+    )
+    seen: list[tuple[str, float]] = []
+    downloaded = frames.download_frames(
+        transport, tmp_path, kind=KIND_SUB, timeout=12.5, fetch=_spy_fetch(seen)
+    )
+    assert seen[0][1] == 12.5
+    assert len(downloaded) == 1
+    assert downloaded[0].path.exists() and downloaded[0].sidecar.exists()
+    sidecar = _read_sidecar(downloaded[0].sidecar)
+    assert sidecar["exposure"] == 10.0 and sidecar["gain"] == 80
+    assert sidecar["target"] == {"name": "NGC 6888"}
+
+
+def test_download_frames_http_path_default_timeout(transport, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        frames, "list_remote_frames", lambda *a, **k: ("get_albums", [_http_record()])
+    )
+    seen: list[tuple[str, float]] = []
+    frames.download_frames(transport, tmp_path, kind=KIND_SUB, fetch=_spy_fetch(seen))
+    assert seen[0][1] == frames.DEFAULT_FETCH_TIMEOUT
+
+
+def test_device_download_frames_forwards_timeout_to_http_fetch(
+    device, tmp_path, monkeypatch
+):
+    """The facade forwards both ``timeout`` and ``fetch`` to the HTTP path."""
+    record = _http_record()
+    monkeypatch.setattr(
+        frames, "list_remote_frames", lambda *a, **k: ("get_albums", [record])
+    )
+    seen: list[tuple[str, float]] = []
+    downloaded = device.download_frames(
+        tmp_path, kind=KIND_SUB, timeout=9.0, fetch=_spy_fetch(seen)
+    )
+    expected_url = frames.http_frame_url(device.transport.host, record["remote_path"])
+    assert seen == [(expected_url, 9.0)]
+    assert len(downloaded) == 1
 
 
 # -- atomic writes (unit) --------------------------------------------------------
