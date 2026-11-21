@@ -18,6 +18,15 @@ What lives here:
   file (corrupt lines are skipped, like the capture's own loader);
 - :class:`MeasurementsSummary` — the aggregate stats of the project's
   lightcurve (counts, mag/jd ranges, per-session counts);
+- :class:`QualityPoint` / :class:`QualitySummary` — the session's frame
+  quality (ticket 02): the persisted per-frame records
+  (:func:`seestar_controller.store.quality.session_quality`) joined with
+  their frames' ``jd``, plus the summary (median FWHM, % rejected, ...);
+- :class:`MoverDetection` / :func:`load_movers` — the session's moving-object
+  detections (ticket 02), loaded DEFENSIVELY from
+  :mod:`seestar_controller.moving_objects` when that package exists (its
+  ticket lands in parallel — when it does not, or it has no data / fails,
+  the report simply omits the section);
 - :class:`ReportData` — the frozen everything-needed-to-render snapshot of
   one session's report;
 - :func:`collect_report_data` — gather it all from an open project + a
@@ -54,10 +63,23 @@ Documented choices:
   prefers the newest ``enhanced`` frame of the session (the image-enhance
   pipeline output), falling back to the newest ``stack``; ``None`` when the
   session has neither (the HTML then shows a placeholder, never a crash).
+- **Quality + movers are optional sections (ticket 02).** The frame-quality
+  summary is read from the store's persisted quality records
+  (:func:`seestar_controller.store.quality.session_quality` — the same API
+  :mod:`seestar_controller.frame_quality` re-exports; the store is imported
+  directly so this package never pulls in :mod:`frame_quality`'s widget
+  layer). A session with no scored frames yields ``quality=None`` and the
+  report OMITS the quality section (missing data -> gracefully omitted, never
+  a placeholder crash). The movers are loaded from
+  :mod:`seestar_controller.moving_objects` **defensively**: the import is
+  lazy and any failure (package absent, no ``session_movers`` API, an
+  exception, an empty result) yields ``movers=None`` and the section is
+  omitted.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import statistics
 from collections.abc import Callable
@@ -80,6 +102,7 @@ from seestar_controller.store.frames import (
 )
 from seestar_controller.store.measurements import Measurement, lightcurve
 from seestar_controller.store.project import SUBS_DIR, Project
+from seestar_controller.store.quality import session_quality
 from seestar_controller.store.sessions import Session, list_sessions
 
 
@@ -242,6 +265,230 @@ def summarize_measurements(points: tuple[Measurement, ...]) -> MeasurementsSumma
 
 
 @dataclass(frozen=True)
+class QualityPoint:
+    """One scored frame of the session's quality table, joined with its
+    frame's ``jd`` (the persisted :class:`~seestar_controller.store.quality.FrameQuality`
+    record carries no jd — the join happens here, like
+    :func:`seestar_controller.frame_quality.trends.session_trends`).
+
+    - ``frame_id`` — the ``frames`` row id;
+    - ``jd`` — the frame's observation time as Julian Date;
+    - ``fwhm`` — the estimated FWHM in pixels, or None when no star was
+      detected on the frame;
+    - ``bg_median`` / ``bg_std`` — the sigma-clipped background median/std;
+    - ``star_count`` — the detected star count;
+    - ``flagged`` — the outlier flag; ``flag_reasons`` — the metric names
+      that flagged the frame.
+    """
+
+    frame_id: int
+    jd: float
+    fwhm: float | None
+    bg_median: float
+    bg_std: float
+    star_count: int
+    flagged: bool
+    flag_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class QualitySummary:
+    """The session's frame-quality summary for the report (ticket 02),
+    built from :func:`seestar_controller.store.quality.session_quality`
+    joined with the session frames.
+
+    - ``session_id`` — the session the records belong to;
+    - ``points`` — the :class:`QualityPoint`\\ s, ordered by ``jd``.
+
+    Summary properties: :attr:`frame_count`, :attr:`flagged` (the flagged
+    points), :attr:`flagged_count`, :attr:`rejected_percent` (``100 *
+    flagged / total``, 0.0 when empty), :attr:`median_fwhm` (None when no
+    point has a FWHM), :attr:`median_bg_std`, :attr:`median_star_count`.
+    """
+
+    session_id: str
+    points: tuple[QualityPoint, ...]
+
+    @property
+    def frame_count(self) -> int:
+        """The number of scored frames in the session."""
+        return len(self.points)
+
+    @property
+    def flagged(self) -> tuple[QualityPoint, ...]:
+        """The flagged (rejected) points."""
+        return tuple(p for p in self.points if p.flagged)
+
+    @property
+    def flagged_count(self) -> int:
+        """The number of flagged (rejected) frames."""
+        return len(self.flagged)
+
+    @property
+    def rejected_percent(self) -> float:
+        """The rejected fraction in percent (0.0 when empty)."""
+        if not self.points:
+            return 0.0
+        return 100.0 * len(self.flagged) / len(self.points)
+
+    @property
+    def median_fwhm(self) -> float | None:
+        """The median FWHM (pixels) over the points that have one, or None."""
+        values = [p.fwhm for p in self.points if p.fwhm is not None]
+        if not values:
+            return None
+        return float(statistics.median(values))
+
+    @property
+    def median_bg_std(self) -> float | None:
+        """The median background std over the scored frames, or None."""
+        if not self.points:
+            return None
+        return float(statistics.median(p.bg_std for p in self.points))
+
+    @property
+    def median_star_count(self) -> float | None:
+        """The median detected star count over the scored frames, or None."""
+        if not self.points:
+            return None
+        return float(statistics.median(p.star_count for p in self.points))
+
+
+@dataclass(frozen=True)
+class MoverDetection:
+    """One detected moving object of the session (ticket 02), coerced from
+    a duck-typed moving-objects record.
+
+    - ``kind`` — the detection kind (``asteroid`` / ``satellite`` / ...);
+    - ``label`` — the human-readable name / id;
+    - ``position`` — a short position string (sky ``ra/dec`` or pixel
+      ``x/y``), empty when unknown;
+    - ``frames`` — a short "how many frames" string, empty when unknown.
+    """
+
+    kind: str
+    label: str
+    position: str
+    frames: str
+
+
+def _coerce_mover(raw: Any) -> MoverDetection:
+    """Coerce one duck-typed moving-objects record into a
+    :class:`MoverDetection` (attribute aliases: ``kind``/``type``,
+    ``label``/``name``/``id``, ``ra_deg``/``dec_deg`` or ``x``/``y``,
+    ``n_frames``/``frame_count``/``frames``)."""
+    kind = getattr(raw, "kind", None) or getattr(raw, "type", None) or "mover"
+    label = (
+        getattr(raw, "label", None)
+        or getattr(raw, "name", None)
+        or getattr(raw, "id", None)
+        or ""
+    )
+    ra = getattr(raw, "ra_deg", None)
+    dec = getattr(raw, "dec_deg", None)
+    x = getattr(raw, "x", None)
+    y = getattr(raw, "y", None)
+    position = ""
+    try:
+        if ra is not None and dec is not None:
+            position = f"ra {float(ra):.5f}° dec {float(dec):+.5f}°"
+        elif x is not None and y is not None:
+            position = f"x {float(x):.1f} px, y {float(y):.1f} px"
+    except (TypeError, ValueError):
+        position = ""
+    n_frames = (
+        getattr(raw, "n_frames", None)
+        if getattr(raw, "n_frames", None) is not None
+        else getattr(raw, "frame_count", getattr(raw, "frames", None))
+    )
+    frames = ""
+    if isinstance(n_frames, bool):
+        frames = ""
+    elif isinstance(n_frames, (int, float)):
+        frames = f"{int(n_frames)} frame(s)"
+    elif n_frames:
+        frames = str(n_frames)
+    return MoverDetection(
+        kind=str(kind), label=str(label), position=position, frames=frames
+    )
+
+
+def load_movers(project: Project, session_id: str) -> tuple[MoverDetection, ...] | None:
+    """The session's moving-object detections as :class:`MoverDetection`\\ s,
+    or **None when there is no mover data** (the report then omits the
+    movers section).
+
+    Defensive by design (the moving-objects package is a parallel
+    workstream): the import of :mod:`seestar_controller.moving_objects` is
+    LAZY and any failure — the package absent, no ``session_movers`` API, an
+    exception from the call, an empty result — yields None. Nothing here
+    ever raises.
+    """
+    if not isinstance(session_id, str):
+        raise TypeError(f"session_id must be a string, got {session_id!r}")
+    try:
+        # importlib (not ``from seestar_controller import moving_objects``):
+        # the package is a parallel workstream and may not exist yet, and a
+        # dynamic import keeps the static checker happy about the missing
+        # module while still honouring a sys.modules entry (the tests inject
+        # a fake module there)
+        moving_objects = importlib.import_module("seestar_controller.moving_objects")
+    except ImportError:
+        return None
+    getter = getattr(moving_objects, "session_movers", None)
+    if not callable(getter):
+        return None
+    try:
+        raw = getter(project, session_id)
+    except Exception:  # a failing mover lookup never breaks the report  # noqa: BLE001
+        return None
+    if raw is None:
+        return None
+    try:
+        movers = tuple(_coerce_mover(item) for item in raw)
+    except Exception:  # a malformed record never breaks the report  # noqa: BLE001
+        return None
+    return movers or None  # no detections -> None -> section omitted
+
+
+def _collect_quality(
+    project: Project, session_id: str, frames: tuple[Frame, ...]
+) -> QualitySummary | None:
+    """The session's :class:`QualitySummary` from the persisted quality
+    records joined with the frames' ``jd``, or None when the session has no
+    scored frames (or the read fails — missing data is omitted, never a
+    crash)."""
+    try:
+        table = session_quality(project, session_id)
+    except Exception:  # no readable quality data -> the section is omitted  # noqa: BLE001
+        return None
+    if not table.frames:
+        return None
+    by_id = {frame.id: frame for frame in frames}
+    points: list[QualityPoint] = []
+    for record in table.frames:
+        frame = by_id.get(record.frame_id)
+        if frame is None:
+            continue  # a record whose frame is not in this session's list
+        points.append(
+            QualityPoint(
+                frame_id=record.frame_id,
+                jd=frame.jd,
+                fwhm=record.fwhm,
+                bg_median=record.bg_median,
+                bg_std=record.bg_std,
+                star_count=record.star_count,
+                flagged=record.flagged,
+                flag_reasons=tuple(record.flag_reasons),
+            )
+        )
+    if not points:
+        return None
+    points.sort(key=lambda p: p.jd)
+    return QualitySummary(session_id=session_id, points=tuple(points))
+
+
+@dataclass(frozen=True)
 class ReportData:
     """The frozen everything-needed-to-render snapshot of one session's
     report (built by :func:`collect_report_data`).
@@ -261,7 +508,13 @@ class ReportData:
       or ``()`` when no period / no points;
     - ``summary`` — the :class:`MeasurementsSummary` of the lightcurve;
     - ``stack_frame`` — the session's best stack frame for the thumbnail
-      (latest ``enhanced``, else latest ``stack``), or None.
+      (latest ``enhanced``, else latest ``stack``), or None;
+    - ``quality`` — the session's :class:`QualitySummary` (ticket 02), or
+      None when the session has no scored frames — the report then OMITS
+      the quality section;
+    - ``movers`` — the session's :class:`MoverDetection`\\ s (ticket 02), or
+      None when no moving-objects data exists — the report then OMITS the
+      movers section.
     """
 
     project_name: str
@@ -278,6 +531,8 @@ class ReportData:
     folded: tuple[FoldedPoint, ...]
     summary: MeasurementsSummary
     stack_frame: Frame | None
+    quality: QualitySummary | None = None
+    movers: tuple[MoverDetection, ...] | None = None
 
 
 def _check_project(project: Any) -> Project:
@@ -407,4 +662,6 @@ def collect_report_data(
         folded=folded,
         summary=summarize_measurements(points),
         stack_frame=_best_stack_frame(frames),
+        quality=_collect_quality(project, session.id, frames),
+        movers=load_movers(project, session.id),
     )

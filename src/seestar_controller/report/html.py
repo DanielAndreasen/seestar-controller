@@ -24,7 +24,14 @@ Sections (stable ``id``\\ s, used by the tests and by the later view ticket):
 - ``fold`` — the current period + the phase-fold overlay plot (embedded
   PNG), or a "no period selected" note;
 - ``measurements`` — the measurements summary table (counts, mag/jd stats,
-  per-session counts).
+  per-session counts);
+- ``frame-quality`` (ticket 02, OPTIONAL) — the frame-quality summary: the
+  scored-frame count, median FWHM, % rejected, the FWHM-vs-JD sparkline
+  (embedded PNG) and a table of the flagged frames with their reasons. The
+  section is OMITTED when the session has no scored frames;
+- ``movers`` (ticket 02, OPTIONAL) — the detected moving objects (from
+  :mod:`seestar_controller.moving_objects` when available) as a table. The
+  section is OMITTED when there is no mover data.
 """
 
 from __future__ import annotations
@@ -43,15 +50,23 @@ from .data import LogEntry, ReportData
 IMAGE_THUMBNAIL = "thumbnail"
 IMAGE_LIGHTCURVE = "lightcurve"
 IMAGE_FOLD = "fold"
-IMAGE_KEYS = (IMAGE_THUMBNAIL, IMAGE_LIGHTCURVE, IMAGE_FOLD)
+IMAGE_QUALITY = "quality-trend"
+IMAGE_KEYS = (IMAGE_THUMBNAIL, IMAGE_LIGHTCURVE, IMAGE_FOLD, IMAGE_QUALITY)
 
-#: The section ids of the rendered document.
+#: The section ids of the rendered document (always present).
 SECTION_STACK = "stack-thumbnail"
 SECTION_LOG = "session-log"
 SECTION_LIGHTCURVE = "lightcurve"
 SECTION_FOLD = "fold"
 SECTION_MEASUREMENTS = "measurements"
 SECTION_IDS = (SECTION_STACK, SECTION_LOG, SECTION_LIGHTCURVE, SECTION_FOLD, SECTION_MEASUREMENTS)
+
+#: The OPTIONAL section ids (ticket 02) — rendered only when the data exists:
+#: ``frame-quality`` when the session has scored frames, ``movers`` when
+#: moving-object detections exist.
+SECTION_QUALITY = "frame-quality"
+SECTION_MOVERS = "movers"
+OPTIONAL_SECTION_IDS = (SECTION_QUALITY, SECTION_MOVERS)
 
 _CSS = """
 :root { color-scheme: light dark; }
@@ -217,16 +232,77 @@ def _render_measurements_section(data: ReportData) -> str:
     )
 
 
+def _render_quality_section(data: ReportData, images: Mapping[str, bytes | None]) -> str:
+    """The frame-quality section (ticket 02) — only called when
+    ``data.quality`` is not None."""
+    q = data.quality
+    assert q is not None  # for ty: the caller guarantees it
+    caption = (
+        f"{q.frame_count} scored frame(s) · median FWHM {_fmt_float(q.median_fwhm, 2)} px · "
+        f"{q.rejected_percent:.1f}% rejected ({q.flagged_count} flagged)"
+    )
+    body = f'<p class="caption">{_esc(caption)}</p>\n'
+    body += _img_tag(images.get(IMAGE_QUALITY), "Frame quality trend (FWHM vs JD)")
+    flagged = q.flagged
+    if flagged:
+        rows = "\n".join(
+            "<tr>"
+            f'<td class="num">{p.frame_id}</td>'
+            f'<td class="num">{_fmt_float(p.jd)}</td>'
+            f'<td class="num">{_fmt_float(p.fwhm, 2)}</td>'
+            f"<td>{_esc(', '.join(p.flag_reasons) or '—')}</td>"
+            "</tr>"
+            for p in flagged
+        )
+        body += (
+            "\n<table>\n<thead><tr><th>frame</th><th>JD</th><th>FWHM (px)</th>"
+            "<th>flag reasons</th></tr></thead>\n<tbody>\n"
+            + rows
+            + "\n</tbody>\n</table>"
+        )
+    return f'<section id="{SECTION_QUALITY}">\n<h2>Frame quality</h2>\n{body}\n</section>'
+
+
+def _render_movers_section(data: ReportData) -> str:
+    """The moving-objects section (ticket 02) — only called when
+    ``data.movers`` is a non-empty tuple."""
+    movers = data.movers or ()
+    caption = f"{len(movers)} moving object(s) detected"
+    rows = "\n".join(
+        "<tr>"
+        f"<td>{_esc(m.kind)}</td>"
+        f"<td>{_esc(m.label)}</td>"
+        f"<td>{_esc(m.position)}</td>"
+        f"<td>{_esc(m.frames)}</td>"
+        "</tr>"
+        for m in movers
+    )
+    table = (
+        "<table>\n<thead><tr><th>kind</th><th>label</th><th>position</th>"
+        "<th>frames</th></tr></thead>\n<tbody>\n"
+        + rows
+        + "\n</tbody>\n</table>"
+    )
+    return (
+        f'<section id="{SECTION_MOVERS}">\n<h2>Moving objects</h2>\n'
+        f'<p class="caption">{_esc(caption)}</p>\n{table}\n</section>'
+    )
+
+
 def render_html(data: ReportData, images: Mapping[str, bytes | None]) -> str:
     """Render ``data`` + ``images`` into the single self-contained HTML
     document (a string).
 
     - ``images`` — a mapping with the keys :data:`IMAGE_THUMBNAIL` /
-      :data:`IMAGE_LIGHTCURVE` / :data:`IMAGE_FOLD` (see :data:`IMAGE_KEYS`)
-      to PNG bytes (or None for a placeholder);
+      :data:`IMAGE_LIGHTCURVE` / :data:`IMAGE_FOLD` / :data:`IMAGE_QUALITY`
+      (see :data:`IMAGE_KEYS`) to PNG bytes (or None for a placeholder);
     - every image is embedded as a base64 ``data:`` URI — the document has no
       external references;
-    - all dynamic text is HTML-escaped.
+    - all dynamic text is HTML-escaped;
+    - the optional sections (see :data:`OPTIONAL_SECTION_IDS`) are rendered
+      only when the corresponding data is present: the frame-quality section
+      when ``data.quality`` is not None, the movers section when
+      ``data.movers`` is a non-empty tuple.
     """
     for key in IMAGE_KEYS:
         if key not in images:
@@ -247,6 +323,12 @@ def render_html(data: ReportData, images: Mapping[str, bytes | None]) -> str:
             _render_lightcurve_section(data, images),
             _render_fold_section(data, images),
             _render_measurements_section(data),
+            *(
+                (_render_quality_section(data, images),)
+                if data.quality is not None
+                else ()
+            ),
+            *((_render_movers_section(data),) if data.movers else ()),
         )
     )
     return (

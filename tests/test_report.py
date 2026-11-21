@@ -43,6 +43,7 @@ from seestar_controller.report import (
     IMAGE_FOLD,
     IMAGE_KEYS,
     IMAGE_LIGHTCURVE,
+    IMAGE_QUALITY,
     IMAGE_THUMBNAIL,
     REPORTS_DIR,
     SECTION_FOLD,
@@ -483,12 +484,13 @@ def test_render_html_requires_all_image_keys(project, session):
             IMAGE_THUMBNAIL: b"\x89PNG-fake",
             IMAGE_LIGHTCURVE: b"\x89PNG-fake",
             IMAGE_FOLD: None,
+            IMAGE_QUALITY: None,
         },
     )
     assert doc.startswith("<!DOCTYPE html>")
     assert doc.count("data:image/png;base64,") == 2
     assert "No period selected" not in doc  # a period IS selected here
-    assert IMAGE_KEYS == (IMAGE_THUMBNAIL, IMAGE_LIGHTCURVE, IMAGE_FOLD)
+    assert IMAGE_KEYS == (IMAGE_THUMBNAIL, IMAGE_LIGHTCURVE, IMAGE_FOLD, IMAGE_QUALITY)
     # the module-level constants the view ticket will rely on
     assert html_module.SECTION_IDS == SECTION_IDS
     assert generate_module.REPORTS_DIR == REPORTS_DIR

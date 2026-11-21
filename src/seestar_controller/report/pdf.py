@@ -15,7 +15,10 @@ What lives here:
   sections as :func:`~seestar_controller.report.html.render_html`:
   header (title + project/session/generated meta), enhanced stack thumbnail,
   session log (summary + event table), lightcurve plot, period fold, and the
-  measurements summary table.
+  measurements summary table. Ticket 02 adds two OPTIONAL sections at the
+  end, omitted when the data is missing: **Frame quality** (scored-frame
+  count, median FWHM, % rejected, the FWHM-vs-JD sparkline PNG and a table
+  of the flagged frames) and **Moving objects** (a table of the detections).
 
 Documented choices:
 
@@ -53,6 +56,7 @@ from .html import (
     IMAGE_FOLD,
     IMAGE_KEYS,
     IMAGE_LIGHTCURVE,
+    IMAGE_QUALITY,
     IMAGE_THUMBNAIL,
     _duration_text,
     _fmt_float,
@@ -208,6 +212,76 @@ def _measurements_table(rl: Any, styles: Any, data: ReportData) -> Any:
     return table
 
 
+def _grid_table(rl: Any, styles: Any, header: list[str], rows: list[list[str]]) -> Any:
+    """A generic GRID-styled table with a bold header row (ticket 02
+    sections: flagged frames, movers)."""
+    table_rows = [[rl.Paragraph(f"<b>{_esc(h)}</b>", styles["Normal"]) for h in header]]
+    for row in rows:
+        table_rows.append([rl.Paragraph(_esc(cell), styles["Normal"]) for cell in row])
+    table = rl.Table(table_rows, repeatRows=1)
+    table.setStyle(
+        rl.TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 0.4, rl.colors.grey),
+                ("BACKGROUND", (0, 0), (-1, 0), rl.colors.lightgrey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return table
+
+
+def _quality_section_flowables(rl: Any, styles: Any, data: ReportData,
+                               images: Mapping[str, bytes | None]) -> list[Any]:
+    """The frame-quality section flowables (ticket 02) — only called when
+    ``data.quality`` is not None."""
+    q = data.quality
+    assert q is not None  # for ty: the caller guarantees it
+    caption = (
+        f"{q.frame_count} scored frame(s) · median FWHM {_fmt_float(q.median_fwhm, 2)} px · "
+        f"{q.rejected_percent:.1f}% rejected ({q.flagged_count} flagged)"
+    )
+    out: list[Any] = [
+        rl.Paragraph("Frame quality", styles["Heading2"]),
+        rl.Paragraph(_esc(caption), styles["Normal"]),
+        _image_flowable(rl, styles, images.get(IMAGE_QUALITY),
+                         "Frame quality trend (FWHM vs JD)",
+                         IMAGE_MAX_WIDTH_PT, IMAGE_MAX_HEIGHT_PT),
+    ]
+    flagged = q.flagged
+    if flagged:
+        rows = [
+            [
+                str(p.frame_id),
+                _fmt_float(p.jd),
+                _fmt_float(p.fwhm, 2),
+                ", ".join(p.flag_reasons) or "—",
+            ]
+            for p in flagged
+        ]
+        out.append(_grid_table(rl, styles, ["frame", "JD", "FWHM (px)", "flag reasons"], rows))
+    out.append(rl.Spacer(1, 0.3 * rl.cm))
+    return out
+
+
+def _movers_section_flowables(rl: Any, styles: Any, data: ReportData) -> list[Any]:
+    """The moving-objects section flowables (ticket 02) — only called when
+    ``data.movers`` is a non-empty tuple."""
+    movers = data.movers or ()
+    caption = f"{len(movers)} moving object(s) detected"
+    rows = [[m.kind, m.label, m.position, m.frames] for m in movers]
+    return [
+        rl.Paragraph("Moving objects", styles["Heading2"]),
+        rl.Paragraph(_esc(caption), styles["Normal"]),
+        _grid_table(rl, styles, ["kind", "label", "position", "frames"], rows),
+        rl.Spacer(1, 0.3 * rl.cm),
+    ]
+
+
 def render_pdf(data: ReportData, images: Mapping[str, bytes | None]) -> bytes:
     """Render ``data`` + ``images`` into a complete PDF document (bytes),
     rebuilding the same sections as
@@ -217,6 +291,8 @@ def render_pdf(data: ReportData, images: Mapping[str, bytes | None]) -> bytes:
       to PNG bytes (or None for a placeholder);
     - the document is A4, self-contained (images embedded, no external
       references), all dynamic text XML-escaped;
+    - the optional sections (frame quality, moving objects — ticket 02) are
+      appended only when the corresponding data is present;
     - returns the PDF file bytes (starting with ``%PDF-``).
     """
     for key in IMAGE_KEYS:
@@ -309,6 +385,15 @@ def render_pdf(data: ReportData, images: Mapping[str, bytes | None]) -> bytes:
     # measurements summary
     story.append(rl.Paragraph("Measurements summary", styles["Heading2"]))
     story.append(_measurements_table(rl, styles, data))
+    story.append(rl.Spacer(1, 0.3 * rl.cm))
+
+    # frame quality (ticket 02, optional — omitted when no scored frames)
+    if data.quality is not None:
+        story.extend(_quality_section_flowables(rl, styles, data, images))
+
+    # moving objects (ticket 02, optional — omitted when no mover data)
+    if data.movers:
+        story.extend(_movers_section_flowables(rl, styles, data))
 
     buf = io.BytesIO()
     doc = rl.SimpleDocTemplate(

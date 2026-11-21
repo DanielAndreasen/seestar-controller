@@ -35,6 +35,19 @@ What lives here:
   PDF document: :func:`~.pdf.render_pdf` + :func:`~.pdf.pdf_path` (reportlab
   imported lazily, like matplotlib in :mod:`.plots`).
 
+Ticket 02 adds two OPTIONAL sections to both documents (HTML + PDF), each
+omitted gracefully when its data is missing:
+
+- **frame quality** (``frame-quality``) — :class:`~.data.QualitySummary` /
+  :class:`~.data.QualityPoint` from :func:`seestar_controller.store.quality.session_quality`
+  (median FWHM, % rejected, flagged frames) + the FWHM-vs-JD sparkline
+  :func:`~.plots.quality_trend_png`;
+- **moving objects** (``movers``) — :func:`~.data.load_movers` reads
+  :mod:`seestar_controller.moving_objects` LAZILY (imported inside the
+  function, so this package stays importable while that package does not
+  exist yet); when it is unavailable or has no detections the section is
+  simply omitted.
+
 Ticket 01 covers the pure core; the view/PDF wiring is ticket 03.
 """
 
@@ -45,9 +58,13 @@ from .data import (
     SESSION_LOG_FILE,
     LogEntry,
     MeasurementsSummary,
+    MoverDetection,
+    QualityPoint,
+    QualitySummary,
     ReportData,
     ReportError,
     collect_report_data,
+    load_movers,
     load_session_log,
     session_log_path,
     summarize_measurements,
@@ -64,17 +81,29 @@ from .html import (
     IMAGE_FOLD,
     IMAGE_KEYS,
     IMAGE_LIGHTCURVE,
+    IMAGE_QUALITY,
     IMAGE_THUMBNAIL,
+    OPTIONAL_SECTION_IDS,
     SECTION_FOLD,
     SECTION_IDS,
     SECTION_LIGHTCURVE,
     SECTION_LOG,
     SECTION_MEASUREMENTS,
+    SECTION_MOVERS,
+    SECTION_QUALITY,
     SECTION_STACK,
     render_html,
 )
 from .pdf import PDF_FILE_SUFFIX, pdf_path, render_pdf
-from .plots import FOLD_FIGSIZE, LIGHTCURVE_FIGSIZE, PNG_DPI, fold_png, lightcurve_png
+from .plots import (
+    FOLD_FIGSIZE,
+    LIGHTCURVE_FIGSIZE,
+    PNG_DPI,
+    QUALITY_FIGSIZE,
+    fold_png,
+    lightcurve_png,
+    quality_trend_png,
+)
 from .thumbnail import STRETCH_PERCENTILES, THUMBNAIL_MAX_PX, stack_thumbnail_png
 
 __all__ = [
@@ -82,11 +111,14 @@ __all__ = [
     "IMAGE_FOLD",
     "IMAGE_KEYS",
     "IMAGE_LIGHTCURVE",
+    "IMAGE_QUALITY",
     "IMAGE_THUMBNAIL",
     "LIGHTCURVE_FIGSIZE",
+    "OPTIONAL_SECTION_IDS",
     "PDF_FILE_SUFFIX",
     "PERIOD_CONFIG_KEY",
     "PNG_DPI",
+    "QUALITY_FIGSIZE",
     "REPORTS_DIR",
     "REPORT_FILE_SUFFIX",
     "SECTION_FOLD",
@@ -94,12 +126,17 @@ __all__ = [
     "SECTION_LIGHTCURVE",
     "SECTION_LOG",
     "SECTION_MEASUREMENTS",
+    "SECTION_MOVERS",
+    "SECTION_QUALITY",
     "SECTION_STACK",
     "SESSION_LOG_FILE",
     "STRETCH_PERCENTILES",
     "THUMBNAIL_MAX_PX",
     "LogEntry",
     "MeasurementsSummary",
+    "MoverDetection",
+    "QualityPoint",
+    "QualitySummary",
     "ReportData",
     "ReportError",
     "collect_report_data",
@@ -108,8 +145,10 @@ __all__ = [
     "generate_report",
     "lightcurve_png",
     "list_session_reports",
+    "load_movers",
     "load_session_log",
     "pdf_path",
+    "quality_trend_png",
     "render_html",
     "render_pdf",
     "report_path",

@@ -19,6 +19,11 @@ What lives here:
   the same data + images rebuilt as a PDF by :mod:`.pdf` (reportlab) and
   written atomically NEXT TO the HTML (``<session_id>.pdf``).
 
+Ticket 02 adds the OPTIONAL frame-quality sparkline to the shared image set
+(:data:`~seestar_controller.report.html.IMAGE_QUALITY`, built only when the
+session has scored frames) — the HTML and PDF renderers omit the section
+when it is None.
+
 Documented choices:
 
 - **File-based persistence only.** The report lives at
@@ -53,11 +58,12 @@ from .data import collect_report_data
 from .html import (
     IMAGE_FOLD,
     IMAGE_LIGHTCURVE,
+    IMAGE_QUALITY,
     IMAGE_THUMBNAIL,
     render_html,
 )
 from .pdf import pdf_path, render_pdf
-from .plots import fold_png, lightcurve_png
+from .plots import fold_png, lightcurve_png, quality_trend_png
 from .thumbnail import stack_thumbnail_png
 
 #: Directory for the generated reports inside a project (``reports/``).
@@ -120,8 +126,10 @@ def _atomic_write_text(path: Path, text: str) -> Path:
 
 
 def _build_images(project: Any, data: Any) -> dict[str, bytes | None]:
-    """The report's PNG images (thumbnail + lightcurve + fold), shared by the
-    HTML and the PDF renderers so both documents show the same pictures."""
+    """The report's PNG images (thumbnail + lightcurve + fold + the optional
+    quality sparkline), shared by the HTML and the PDF renderers so both
+    documents show the same pictures. The quality sparkline is None when the
+    session has no scored frames (the section is then omitted)."""
     return {
         IMAGE_THUMBNAIL: stack_thumbnail_png(project, data.stack_frame),
         IMAGE_LIGHTCURVE: lightcurve_png(
@@ -130,6 +138,13 @@ def _build_images(project: Any, data: Any) -> dict[str, bytes | None]:
         IMAGE_FOLD: (
             fold_png(data.folded, data.period, title=f"Phase fold — P = {data.period:.6g} d")
             if data.period is not None
+            else None
+        ),
+        IMAGE_QUALITY: (
+            quality_trend_png(
+                data.quality.points, title=f"Frame quality — {data.project_name}"
+            )
+            if data.quality is not None
             else None
         ),
     }
