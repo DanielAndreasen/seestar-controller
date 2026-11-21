@@ -35,10 +35,13 @@ no GTK, see docs/wiki/assumptions.md):
   editor + night controls on the left, live preview + progress on the right),
   :mod:`.session_log_dialog` (:class:`~.session_log_dialog.SessionLogDialog`,
   the per-session event log + stored frames dialog opened from the Observe
-  view — ticket 04), and :mod:`.stale_session_dialog`
+  view — ticket 04), :mod:`.stale_session_dialog`
   (:class:`~.stale_session_dialog.StaleSessionDialog`, the resume /
   close-and-start-new offer shown when Start night hits a stale open session —
-  ticket 05). All import ``gi`` at module top and are re-exported here
+  ticket 05), and :mod:`.report_panel` (:class:`~.report_panel.SessionReportPanel`,
+  the per-session "Generate report" / "Export PDF" actions + saved-reports
+  list embedded in the session log dialog — session-report ticket 03). All
+  import ``gi`` at module top and are re-exported here
   **lazily** (PEP 562 ``__getattr__``), so ``import seestar_controller.observing``
   never imports ``gi``.
 
@@ -85,6 +88,7 @@ _WIDGET_EXPORTS = {
     "ObserveView": "observe_view",
     "QueueEditor": "queue_editor",
     "SessionLogDialog": "session_log_dialog",
+    "SessionReportPanel": "report_panel",
     "StaleSessionDialog": "stale_session_dialog",
 }
 
@@ -228,6 +232,7 @@ __all__ = [
     "SessionCapture",
     "SessionLog",
     "SessionLogDialog",
+    "SessionReportPanel",
     "StaleSessionDialog",
     "StaleSessionError",
     "classify_executor_event",

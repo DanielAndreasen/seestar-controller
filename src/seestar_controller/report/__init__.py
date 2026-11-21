@@ -27,7 +27,13 @@ What lives here:
 - :mod:`.generate` — :func:`~.generate.generate_report`: build + write the
   report to ``<project>/reports/<session_id>.html`` (file-based persistence,
   no db record — the store schema is owned by another workstream; regenerating
-  overwrites) and return the path.
+  overwrites) and return the path; plus ticket 03's
+  :func:`~.generate.generate_pdf` (the PDF export of the same report, written
+  next to the HTML) and :func:`~.generate.list_session_reports` (the saved
+  report files of one session, for the GUI's per-session list);
+- :mod:`.pdf` (ticket 03) — the reportlab rebuild of the same sections into a
+  PDF document: :func:`~.pdf.render_pdf` + :func:`~.pdf.pdf_path` (reportlab
+  imported lazily, like matplotlib in :mod:`.plots`).
 
 Ticket 01 covers the pure core; the view/PDF wiring is ticket 03.
 """
@@ -49,7 +55,9 @@ from .data import (
 from .generate import (
     REPORT_FILE_SUFFIX,
     REPORTS_DIR,
+    generate_pdf,
     generate_report,
+    list_session_reports,
     report_path,
 )
 from .html import (
@@ -65,6 +73,7 @@ from .html import (
     SECTION_STACK,
     render_html,
 )
+from .pdf import PDF_FILE_SUFFIX, pdf_path, render_pdf
 from .plots import FOLD_FIGSIZE, LIGHTCURVE_FIGSIZE, PNG_DPI, fold_png, lightcurve_png
 from .thumbnail import STRETCH_PERCENTILES, THUMBNAIL_MAX_PX, stack_thumbnail_png
 
@@ -75,6 +84,7 @@ __all__ = [
     "IMAGE_LIGHTCURVE",
     "IMAGE_THUMBNAIL",
     "LIGHTCURVE_FIGSIZE",
+    "PDF_FILE_SUFFIX",
     "PERIOD_CONFIG_KEY",
     "PNG_DPI",
     "REPORTS_DIR",
@@ -94,10 +104,14 @@ __all__ = [
     "ReportError",
     "collect_report_data",
     "fold_png",
+    "generate_pdf",
     "generate_report",
     "lightcurve_png",
+    "list_session_reports",
     "load_session_log",
+    "pdf_path",
     "render_html",
+    "render_pdf",
     "report_path",
     "session_log_path",
     "stack_thumbnail_png",
