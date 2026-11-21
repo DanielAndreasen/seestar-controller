@@ -4,7 +4,7 @@
 
 **Blocked by:** check-star-plot 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 16a5334 (merged)
 
 - [ ] Star picker: designate one picked star as check (role UI), persisted via store.stars
 - [ ] Results view (photometry/results_view.py + analysis/lightcurve_view.py patterns): second series for the check star, toggle for target-minus-check

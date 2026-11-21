@@ -1,6 +1,6 @@
 # Spec: check-star-plot
 
-Status: ready-for-agent (2 issues)
+Status: completed 2026-11-20 (01: cad0b2e; 02: 16a5334)
 
 ## Problem Statement
 
