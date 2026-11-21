@@ -1,6 +1,6 @@
 # Spec: transit-fit
 
-Status: needs-info
+Status: ready-for-agent (1 issue)
 
 ## Problem Statement
 
