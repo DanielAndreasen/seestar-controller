@@ -18,11 +18,19 @@ status line and a "saved reports" list.
 - **Generate report** runs :func:`~seestar_controller.report.generate_report`
   on a WORKER thread (the report renders matplotlib plots — it must never
   block the main loop, the same pattern as the periodogram worker in
-  :mod:`seestar_controller.analysis.period_view`); the result is marshalled
-  back onto the GLib main loop with ``GLib.idle_add`` (injectable
-  ``invoke_on_main`` for tests), the report is saved into the project
-  (``reports/<session_id>.html``), the saved-reports list refreshes, and the
-  HTML is opened with ``Gtk.show_uri`` (injectable ``open_uri`` for tests);
+  :mod:`seestar_controller.analysis.period_view`); the worker does NOT use the
+  panel's ``project`` handle directly — its sqlite connection was created on
+  the main thread (``check_same_thread`` default) and may not be used from
+  another thread, so the worker RE-OPENS the project on its own thread
+  (:func:`~seestar_controller.store.open_project`; the db runs in WAL mode,
+  so a second connection is a safe concurrent reader) and runs the whole
+  report (data collection + rendering + atomic write) against that fresh
+  connection — every sqlite object stays on the thread that created it. The
+  result is marshalled back onto the GLib main loop with ``GLib.idle_add``
+  (injectable ``invoke_on_main`` for tests), the report is saved into the
+  project (``reports/<session_id>.html``), the saved-reports list refreshes,
+  and the HTML is opened with ``Gtk.show_uri`` (injectable ``open_uri`` for
+  tests);
 - **Export PDF** does the same with
   :func:`~seestar_controller.report.generate_pdf`, producing the PDF next to
   the HTML (``reports/<session_id>.pdf``) and opening it;
@@ -54,6 +62,7 @@ from seestar_controller.report import (
     generate_report,
     list_session_reports,
 )
+from seestar_controller.store.project import open_project
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +234,11 @@ class SessionReportPanel(Gtk.Box):
         """Run ``func(project, session_id)`` on a daemon worker thread (the
         report rendering must never block the main loop); the outcome is
         marshalled back with ``invoke_on_main`` (``GLib.idle_add`` in the app).
-        One worker at a time — a second click while busy is ignored."""
+        One worker at a time — a second click while busy is ignored.
+
+        The worker runs ``func`` against a FRESH store connection opened on
+        its own thread (:meth:`_run_with_worker_store`) — never against
+        ``self._project``, whose db connection is main-thread-bound."""
         if self._busy:
             return
         self._busy = True
@@ -234,7 +247,7 @@ class SessionReportPanel(Gtk.Box):
 
         def work() -> None:
             try:
-                path = func(self._project, self._session_id)
+                path = self._run_with_worker_store(func)
             except Exception as exc:  # noqa: BLE001 - surfaced on the status line
                 outcome: tuple[bool, Path | None, Exception | None] = (False, None, exc)
             else:
@@ -245,6 +258,31 @@ class SessionReportPanel(Gtk.Box):
             target=work, name="session-report-worker", daemon=True
         )
         self._worker.start()
+
+    def _run_with_worker_store(self, func: Callable[[Any, str], Path]) -> Path:
+        """Run ``func(project, session_id)`` on the CALLING (worker) thread
+        against a fresh store connection opened on that thread, and return
+        its result.
+
+        ``self._project`` was opened on the main thread and its sqlite
+        connection is bound to that thread (``sqlite3.connect`` default
+        ``check_same_thread=True``) — a store read from the worker through
+        it raises ``sqlite3.ProgrammingError``. So the project directory is
+        re-opened here with :func:`~seestar_controller.store.open_project`:
+        the db runs in WAL mode, so a second connection on another thread is
+        a safe concurrent reader, and the whole report (data collection,
+        plot rendering, atomic file write) runs on the worker against it —
+        every sqlite object is used only on the thread that created it and
+        the main loop stays free. The fresh connection is closed when done.
+
+        A project handle without a ``path`` (not a real store project) is
+        passed through unchanged — ``func`` applies its own contract.
+        """
+        project_path = getattr(self._project, "path", None)
+        if project_path is None:
+            return func(self._project, self._session_id)
+        with open_project(project_path) as worker_project:
+            return func(worker_project, self._session_id)
 
     def _on_worker_done(self, what: str, outcome: tuple[bool, Path | None, Exception | None]) -> bool:
         """The worker finished (runs on the main loop via ``invoke_on_main``):
