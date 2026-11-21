@@ -39,7 +39,18 @@ One project database holds the whole observing campaign (GLOSSARY.md):
   fields (``source_id``, ``g``/``bp``/``rp``, ``parallax`` +
   ``parallax_error``, ``pmra``/``pmra_error``, ``pmdec``/``pmdec_error``,
   all nullable — NULL when unmatched) plus the match
-  ``separation_arcsec``.
+  ``separation_arcsec``;
+- ``scan_results`` — the persisted variable-scan results (variable-scan
+  ticket 01, see :mod:`seestar_controller.variable_scan`): one row per
+  scanned field star per scan run, keyed by the stack FK
+  (``stack_frame_id``, cascade-deleted with the frame): the star's sky
+  position (``ra_deg``/``dec_deg``), pixel position (``x``/``y``) and Gaia
+  ``source_id`` (nullable), the robust scatter (``mad``), the median
+  photometric error (``median_err``), the variability ratio
+  (``variability`` = mad / median_err), the ``variable`` candidate flag,
+  the ``candidate_rank`` within the run, the frame count (``n_frames``),
+  and the scan parameters (``threshold``, ``min_frames``) plus the run time
+  (``scanned_at``).
 
 All writes go through SQLite transactions (``with conn:``); the database runs
 in WAL mode (``PRAGMA journal_mode=WAL``, set once by :func:`initialize_db`,
@@ -97,6 +108,11 @@ Migration history:
   source, keyed by the ``frame_id`` FK with ``ON DELETE CASCADE``) plus its
   ``frame_id`` index. ``IF NOT EXISTS`` keeps the step idempotent, exactly
   like 3 -> 4.
+- **6 -> 7** — variable-scan ticket 01: create the ``scan_results`` table
+  (one row per scanned field star per scan run, keyed by the
+  ``stack_frame_id`` FK with ``ON DELETE CASCADE`` — deleting the stack
+  deletes its scan rows) plus its ``stack_frame_id`` and ``scanned_at``
+  indexes. ``IF NOT EXISTS`` keeps the step idempotent, exactly like 5 -> 6.
 
 :func:`initialize_db` creates the current schema by running the migrations
 on a fresh db (0 -> 1 -> ... -> :data:`SCHEMA_VERSION`).
@@ -110,7 +126,7 @@ from collections.abc import Callable
 from .errors import InvalidProjectError
 
 #: The schema version this build writes and supports.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 #: The tables every project database must have (checked on open).
 SCHEMA_TABLES = ("sessions", "frames", "stars", "measurements")
@@ -324,6 +340,53 @@ _CROSSMATCH_INDEX_DDL = (
     "CREATE INDEX IF NOT EXISTS idx_crossmatch_frame_id ON crossmatch (frame_id)"
 )
 
+#: The ``scan_results`` table DDL (v7, variable-scan ticket 01): the
+#: persisted variable-scan results — one row per scanned field star per scan
+#: run, so results ACCUMULATE across nights (a re-run appends a new run,
+#: keyed by ``scanned_at``). Keyed by ``stack_frame_id`` (INTEGER, REFERENCES
+#: frames ON DELETE CASCADE — the stack whose cross-match source list was
+#: scanned; deleting the frame deletes its scan rows). Each row carries the
+#: star's sky position (``ra_deg``/``dec_deg``), pixel position (``x``/``y``)
+#: and Gaia ``source_id`` (nullable — NULL for an unmatched detection), the
+#: robust scatter ``mad`` (median absolute deviation of the differential
+#: lightcurve), the ``median_err`` (median photometric error), the
+#: ``variability`` ratio (``mad / median_err``), the ``variable`` candidate
+#: flag, the ``candidate_rank`` within the run (1 = most variable), the
+#: frame count ``n_frames``, the scan parameters (``threshold``,
+#: ``min_frames``) and the run time ``scanned_at`` (UTC ISO-8601).
+_SCAN_RESULTS_DDL = """
+CREATE TABLE IF NOT EXISTS scan_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scanned_at TEXT NOT NULL,
+    stack_frame_id INTEGER NOT NULL REFERENCES frames (id) ON DELETE CASCADE,
+    source_id INTEGER,
+    ra_deg REAL NOT NULL,
+    dec_deg REAL NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    n_frames INTEGER NOT NULL CHECK (n_frames >= 0),
+    mad REAL NOT NULL CHECK (mad >= 0),
+    median_err REAL NOT NULL CHECK (median_err >= 0),
+    variability REAL NOT NULL CHECK (variability >= 0),
+    variable INTEGER NOT NULL CHECK (variable IN (0, 1)),
+    candidate_rank INTEGER NOT NULL CHECK (candidate_rank >= 1),
+    threshold REAL NOT NULL CHECK (threshold > 0),
+    min_frames INTEGER NOT NULL CHECK (min_frames >= 1)
+)
+"""
+
+#: The ``scan_results`` indexes (v7): per-stack lookups (the cascade
+#: bookkeeping) go through ``stack_frame_id``, run listings through
+#: ``scanned_at``.
+_SCAN_RESULTS_STACK_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_scan_results_stack_frame_id "
+    "ON scan_results (stack_frame_id)"
+)
+_SCAN_RESULTS_SCANNED_AT_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_scan_results_scanned_at "
+    "ON scan_results (scanned_at)"
+)
+
 def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
     """Migration step 2 -> 3 (image-enhance ticket 04): create the
     ``presets`` table and widen the ``frames.kind`` CHECK to allow
@@ -411,6 +474,11 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
     3: (_FRAME_QUALITY_DDL,),  # v3 -> v4: frame_quality table (ticket 01)
     4: (_migrate_4_to_5,),  # v4 -> v5: stars.role CHECK allows 'check'
     5: (_CROSSMATCH_DDL, _CROSSMATCH_INDEX_DDL),  # v5 -> v6: crossmatch table
+    6: (  # v6 -> v7: scan_results table (variable-scan ticket 01)
+        _SCAN_RESULTS_DDL,
+        _SCAN_RESULTS_STACK_INDEX_DDL,
+        _SCAN_RESULTS_SCANNED_AT_INDEX_DDL,
+    ),
 }
 
 
