@@ -8,7 +8,7 @@ Entering targets by name and finding good standard stars requires catalog lookup
 
 ## Solution
 
-A catalog module that resolves object names to J2000 coordinates (SIMBAD / NASA resolver) and queries AAVSO-style standard star data around a position, with a local on-disk cache so repeated lookups are instant and offline-capable.
+A catalog module that resolves object names to J2000 coordinates (SIMBAD) and queries AAVSO-style standard star data around a position, with a local on-disk cache so repeated lookups are instant and offline-capable.
 
 ## User Stories
 
@@ -21,7 +21,7 @@ A catalog module that resolves object names to J2000 coordinates (SIMBAD / NASA 
 
 ## Implementation Decisions
 
-- Name resolution: SIMBAD via astroquery (or direct SIMBAD HTTP), plus a NASA/SIMBAD fallback; return candidates with coordinates and magnitude.
+- Name resolution: SIMBAD via direct TAP HTTP (CDS Strasbourg first, then the official mirrors as fallback); return candidates with coordinates and magnitude.
 - Standard stars: AAVSO sequence/chart data around the target position (VizieR/AAVSO API), filtered by angular distance and magnitude range.
 - Cache: JSON files under the app config dir, keyed by query; TTL configurable.
 - Coordinates always J2000; conversions handled in one place.
