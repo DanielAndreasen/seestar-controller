@@ -534,6 +534,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     quality_controller=self._quality_controller,
                     project_controller=self._project_controller,
                     project=self._project_controller.current,
+                    app_state=state,
                 ),
                 view.id,
                 view.title,

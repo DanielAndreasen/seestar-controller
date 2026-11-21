@@ -139,6 +139,9 @@ from seestar_controller.store.csv_export import (
     CSV_FILE as LIGHTCURVE_CSV_FILE,
 )
 from seestar_controller.store.errors import ProjectError
+from seestar_controller.visibility.timeline_view import (
+    VisibilityView as VisibilityViewWidget,
+)
 
 from .connection import ConnectionController
 from .project_controller import ProjectController, ProjectEvent
@@ -237,6 +240,10 @@ class ObserveView(_PlaceholderView):
     when given, the view listens to it and pushes every current-project
     change into the observe widget (so the Start button enables as soon as a
     project is open and the scope is connected).
+    ``app_state`` (visibility-planner ticket 02) is the app's shared
+    :class:`~seestar_controller.ui.state.AppState`; it feeds the night-timeline
+    widget's site settings (a default ``AppState()`` is created when omitted,
+    so the view also constructs standalone).
     """
 
     view_id = "observe"
@@ -248,6 +255,7 @@ class ObserveView(_PlaceholderView):
         observe_controller: ObserveController | None = None,
         project: Any = None,
         project_controller: ProjectController | None = None,
+        app_state: AppState | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -264,6 +272,7 @@ class ObserveView(_PlaceholderView):
         )
         self._project = project
         self._project_controller = project_controller
+        self._app_state = app_state if app_state is not None else AppState()
         super().__init__(**kwargs)
         if self._project_controller is not None:
             self._project_controller.add_listener(self._on_project_event)
@@ -281,6 +290,16 @@ class ObserveView(_PlaceholderView):
             project=self._project,
         )
         self._content.append(self._observe_widget)
+        # visibility-planner ticket 02: the night timeline (altitude curves,
+        # twilight, moon) + the suggested queue order with its Apply button,
+        # below the observe widget on the same page. It reads the observing
+        # site from the app state's live settings and the queue through the
+        # shared queue controller's public API.
+        self._visibility_widget = VisibilityViewWidget(
+            self._queue_controller,
+            settings=lambda: self._app_state.settings,
+        )
+        self._content.append(self._visibility_widget)
 
     @property
     def queue_controller(self) -> PlanQueueController:
@@ -307,6 +326,17 @@ class ObserveView(_PlaceholderView):
         """The shared project controller this view follows (projects-view
         ticket 01), or ``None`` when constructed standalone."""
         return self._project_controller
+
+    @property
+    def app_state(self) -> AppState:
+        """The app state feeding the night-timeline widget's site settings
+        (visibility-planner ticket 02)."""
+        return self._app_state
+
+    @property
+    def visibility_widget(self) -> VisibilityViewWidget:
+        """The night-timeline widget (visibility-planner ticket 02)."""
+        return self._visibility_widget
 
 
 class EnhanceView(_PlaceholderView):
@@ -1038,14 +1068,16 @@ def build_view(
     quality_controller: QualityController | None = None,
     project_controller: ProjectController | None = None,
     project: Any = None,
+    app_state: AppState | None = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
 
     Raises :class:`~seestar_controller.ui.state.UnknownViewError` for an id
     not in the pure-layer view list. ``queue_controller`` /
-    ``observe_controller`` / ``project_controller`` / ``project`` are
-    forwarded to the Observe view (observing tickets 01 + 03, projects-view
-    ticket 01), ``viewer_controller`` /
+    ``observe_controller`` / ``project_controller`` / ``project`` /
+    ``app_state`` are forwarded to the Observe view (observing tickets 01 +
+    03, projects-view ticket 01, visibility-planner ticket 02),
+    ``viewer_controller`` /
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
     ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
@@ -1063,6 +1095,7 @@ def build_view(
             observe_controller=observe_controller,
             project_controller=project_controller,
             project=project,
+            app_state=app_state,
         )
     if view_id == EnhanceView.view_id:
         return EnhanceView(

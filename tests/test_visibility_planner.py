@@ -1,11 +1,13 @@
-"""Pure visibility-planner tests — no gi, no network (visibility-planner 01).
+"""Pure visibility-planner tests — no gi, no network (visibility-planner 01 + 02).
 
 Covers the pure core of ``seestar_controller.visibility``:
 
 - the package boundary: a subprocess test asserting that importing the
-  package (and computing a full night with it) does NOT import ``gi`` and
-  never touches the network (sockets are blocked in the subprocess), plus a
-  source-scan audit of the package modules;
+  package (and computing a full night with it, incl. the ticket-02 timeline
+  model + Agg PNG render) does NOT import ``gi`` and never touches the
+  network (sockets are blocked in the subprocess), plus a source-scan audit
+  of the package modules (pure modules stay gi-free; the widget module
+  ``timeline_view`` has ``import gi`` at module top and is lazy-exported);
 - :class:`~seestar_controller.visibility.Site` — validation, the astropy
   ``EarthLocation`` / tzinfo / local-time helpers, and the settings bridge
   :meth:`~...Site.from_settings` (key names asserted against
@@ -72,8 +74,11 @@ from seestar_controller.visibility import (
 #: Directory of the visibility package (source-scan audit).
 VISIBILITY_PACKAGE_DIR = Path(visibility.__file__).resolve().parent
 
-#: The visibility package modules — all pure, no ``gi`` (subprocess-enforced).
-VISIBILITY_MODULES = ("__init__", "site", "planner")
+#: The PURE visibility modules — no ``gi``, no subprocess (subprocess-enforced).
+PURE_VISIBILITY_MODULES = ("__init__", "site", "planner", "timeline", "render")
+
+#: The WIDGET visibility modules — ``import gi`` at module top, lazy export.
+WIDGET_VISIBILITY_MODULES = ("timeline_view",)
 
 #: The fixed test site: Munich (48.1373 N, 11.5755 E, 520 m, Europe/Berlin).
 MUNICH = Site(latitude_deg=48.1373, longitude_deg=11.5755, elevation_m=520.0, timezone="Europe/Berlin")
@@ -134,10 +139,15 @@ import astropy.units as u
 import seestar_controller.visibility as vis
 import seestar_controller.visibility.site
 import seestar_controller.visibility.planner
+import seestar_controller.visibility.timeline
+import seestar_controller.visibility.render
 
 assert "gi" not in sys.modules, "GTK imported"
 assert "seestar_controller.link" not in sys.modules, "link imported"
 assert "seestar_controller.ui" not in sys.modules, "ui imported"
+assert "seestar_controller.visibility.timeline_view" not in sys.modules, (
+    "widget module imported eagerly"
+)
 
 from seestar_controller.catalog.coords import J2000Coord
 
@@ -153,6 +163,13 @@ order = vis.suggest_order(
     [J2000Coord.from_hours(20.0, 20.0), J2000Coord.from_hours(5.0, 25.0)], site, night
 )
 assert order == (1, 0), order
+# ticket 02: the timeline model + the Agg PNG render are pure too
+model = vis.build_timeline(
+    [J2000Coord.from_hours(20.0, 20.0), J2000Coord.from_hours(5.0, 25.0)], site, night
+)
+assert model.order == (1, 0) and len(model.curves) == 2
+png = vis.render_timeline_png(model)
+assert png[:8] == b"\\x89PNG\\r\\n\\x1a\\n", "not a PNG"
 print("clean")
 """
     result = subprocess.run(
@@ -162,10 +179,10 @@ print("clean")
     assert "clean" in result.stdout
 
 
-def test_every_visibility_module_is_pure_and_the_public_api_is_exported():
+def test_every_visibility_module_is_pure_or_widget_and_the_public_api_is_exported():
     modules = {path.stem for path in VISIBILITY_PACKAGE_DIR.glob("*.py")}
-    assert modules == set(VISIBILITY_MODULES)
-    for name in VISIBILITY_MODULES:
+    assert modules == {"__init__", *PURE_VISIBILITY_MODULES, *WIDGET_VISIBILITY_MODULES}
+    for name in PURE_VISIBILITY_MODULES:
         source = (VISIBILITY_PACKAGE_DIR / f"{name}.py").read_text(encoding="utf-8")
         assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE), (
             f"visibility module {name} imports gi"
@@ -182,8 +199,21 @@ def test_every_visibility_module_is_pure_and_the_public_api_is_exported():
             assert top in ("catalog", "visibility"), (
                 f"visibility module {name} imports seestar_controller.{top}"
             )
+    for name in WIDGET_VISIBILITY_MODULES:
+        lines = (VISIBILITY_PACKAGE_DIR / f"{name}.py").read_text(encoding="utf-8").splitlines()
+        gi_lines = [i for i, line in enumerate(lines) if line.strip() == "import gi"]
+        assert gi_lines, f"widget module {name} has no 'import gi' at module top"
+        repo_line = next(
+            i for i, line in enumerate(lines) if line.startswith("from gi.repository")
+        )
+        assert gi_lines[0] < repo_line, (
+            f"widget module {name}: 'import gi' must come before 'from gi.repository'"
+        )
+    assert visibility._WIDGET_EXPORTS == {"VisibilityView": "timeline_view"}
+    assert set(visibility._WIDGET_EXPORTS.values()) == set(WIDGET_VISIBILITY_MODULES)
     for name in visibility.__all__:
         assert hasattr(visibility, name), name
+    assert "VisibilityView" in visibility.__all__
 
 
 # --- Site ----------------------------------------------------------------------------------

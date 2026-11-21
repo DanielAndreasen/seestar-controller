@@ -25,7 +25,21 @@ Modules:
   :func:`~.planner.altitude_curves`, :func:`~.planner.twilight_times`,
   :func:`~.planner.moon_track`, :func:`~.planner.suggest_order` and the
   result types :class:`~.planner.AltitudeCurve` / :class:`~.planner.TwilightTimes`
-  / :class:`~.planner.MoonTrack`.
+  / :class:`~.planner.MoonTrack`;
+- :mod:`.timeline` (ticket 02) — the night-timeline model behind the timeline
+  view: :class:`~.timeline.TimelineModel` + :func:`~.timeline.build_timeline`,
+  :func:`~.timeline.reorder_moves` / :func:`~.timeline.apply_order` (write a
+  suggested order back to the plan queue through its public ``move`` API),
+  :func:`~.timeline.suggested_labels` and the display helpers
+  :func:`~.timeline.axis_hours` / :func:`~.timeline.format_local`;
+- :mod:`.render` (ticket 02) — :func:`~.render.render_timeline_png`: the model
+  rendered to PNG bytes with matplotlib's Agg backend (no pyplot, no display).
+
+**Widget layer** (ticket 02): :mod:`.timeline_view` —
+:class:`~.timeline_view.VisibilityView`, the night-timeline view (plot +
+suggested order + Apply + Export PNG). It imports ``gi`` at module top and is
+re-exported here **lazily** (PEP 562 ``__getattr__``), so
+``import seestar_controller.visibility`` never imports ``gi``.
 """
 
 from .planner import (
@@ -41,6 +55,18 @@ from .planner import (
     night_window,
     suggest_order,
     twilight_times,
+)
+from .render import (
+    DEFAULT_DPI,
+    DEFAULT_HEIGHT_PX,
+    DEFAULT_WIDTH_PX,
+    HORIZON_COLOR,
+    MAX_RENDER_PX,
+    MOON_COLOR,
+    TIMELINE_PALETTE,
+    TWILIGHT_COLOR,
+    X_TICK_STEP_HOURS,
+    render_timeline_png,
 )
 from .site import (
     DEFAULT_SITE_TIMEZONE,
@@ -58,11 +84,46 @@ from .site import (
     Site,
     VisibilityError,
 )
+from .timeline import (
+    MAX_TIMELINE_ENTRIES,
+    SettingsSource,
+    TimelineModel,
+    apply_order,
+    axis_hours,
+    build_timeline,
+    format_local,
+    reorder_moves,
+    resolve_settings,
+    suggested_labels,
+)
+
+#: Widget-layer names re-exported lazily (importing the module pulls in
+#: ``gi`` — only the GUI path does).
+_WIDGET_EXPORTS = {
+    "VisibilityView": "timeline_view",
+}
+
+
+def __getattr__(name: str):
+    if name in _WIDGET_EXPORTS:
+        from importlib import import_module
+
+        module = import_module(f".{_WIDGET_EXPORTS[name]}", __name__)
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "ASTRO_TWILIGHT_ALT_DEG",
+    "DEFAULT_DPI",
+    "DEFAULT_HEIGHT_PX",
     "DEFAULT_SITE_TIMEZONE",
     "DEFAULT_STEP_MINUTES",
+    "DEFAULT_WIDTH_PX",
+    "HORIZON_COLOR",
+    "MAX_RENDER_PX",
+    "MAX_TIMELINE_ENTRIES",
+    "MOON_COLOR",
     "NIGHT_WINDOW_HOURS",
     "SITE_ELEVATION_KEY",
     "SITE_ELEVATION_MAX_M",
@@ -75,15 +136,30 @@ __all__ = [
     "SITE_LONGITUDE_MIN_DEG",
     "SITE_SETTINGS_KEYS",
     "SITE_TIMEZONE_KEY",
+    "TIMELINE_PALETTE",
+    "TWILIGHT_COLOR",
+    "X_TICK_STEP_HOURS",
     "AltitudeCurve",
     "MoonTrack",
+    "SettingsSource",
     "Site",
+    "TimelineModel",
     "TwilightTimes",
     "VisibilityError",
+    # widget layer (lazy, imports gi):
+    "VisibilityView",
     "altitude_curves",
+    "apply_order",
+    "axis_hours",
+    "build_timeline",
+    "format_local",
     "moon_track",
     "night_grid",
     "night_window",
+    "render_timeline_png",
+    "reorder_moves",
+    "resolve_settings",
     "suggest_order",
+    "suggested_labels",
     "twilight_times",
 ]

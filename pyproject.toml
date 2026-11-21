@@ -59,6 +59,7 @@ include = [
     "src/seestar_controller/ui/settings_dialog.py",
     "src/seestar_controller/ui/toast.py",
     "src/seestar_controller/ui/views.py",
+    "src/seestar_controller/visibility/timeline_view.py",
     "tests/test_analysis_widgets.py",
     "tests/test_enhance_widgets.py",
     "tests/test_frame_quality_widgets.py",
@@ -66,6 +67,7 @@ include = [
     "tests/test_photometry_widgets.py",
     "tests/test_report_widgets.py",
     "tests/test_ui_widgets.py",
+    "tests/test_visibility_widgets.py",
 ]
 [tool.ty.overrides.rules]
 import-not-found = "ignore"
