@@ -41,10 +41,10 @@ in via :func:`build_view`; a fresh one over a default
 the view also constructs standalone). Offline-analysis ticket 02 adds the
 **stored-data browser** to the Projects view: below the project list, one row
 per session of the current project (id, open/closed, per-kind frame counts,
-plus **Stitch mosaic** and **Session report** action buttons) followed by one
-row per stored frame (kind, id, jd, exposure, target) — all read from the
-project store, so the whole browser works in offline mode with no scope
-connection; the two actions run on the main loop (via ``invoke_on_main``,
+plus **Stitch mosaic**, **Stack subs**, and **Session report** action buttons)
+followed by one row per stored frame (kind, id, jd, exposure, target) — all
+read from the project store, so the whole browser works in offline mode with
+no scope connection; the actions run on the main loop (via ``invoke_on_main``,
 like every other store call) and write their products back into the project
 (``mosaics/<session>.fits`` / ``reports/<session>.html``). The
 **Observe** view (observing tickets 01 + 03) already carries the real
@@ -165,6 +165,7 @@ from seestar_controller.photometry.star_picker import (
     StarPickerView as StarPickerWidget,
 )
 from seestar_controller.report import generate_report, report_path
+from seestar_controller.stacking import stack_session_subs
 from seestar_controller.store import KINDS, list_frames, list_sessions
 from seestar_controller.store.csv_export import (
     CSV_FILE as LIGHTCURVE_CSV_FILE,
@@ -1093,16 +1094,19 @@ class ProjectsView(_PlaceholderView):
       :class:`~seestar_controller.observing.queue_editor.QueueEditor`;
     - a **stored-data browser** (offline-analysis ticket 02): one row per
       session of the current project — id, open/closed status, per-kind frame
-      counts, and **Stitch mosaic** / **Session report** buttons — followed
-      by one row per stored frame (kind, id, jd, exposure, target), all read
-      from the project store via :func:`~seestar_controller.store.list_sessions`
+      counts, and **Stitch mosaic** / **Stack subs** / **Session report**
+      buttons — followed by one row per stored frame (kind, id, jd, exposure,
+      target), all read from the project store via
+      :func:`~seestar_controller.store.list_sessions`
       / :func:`~seestar_controller.store.list_frames`. The browser works in
       offline mode exactly like in connected mode (no live session needed);
-      the two actions run on the main loop through ``invoke_on_main`` (the
+      the actions run on the main loop through ``invoke_on_main`` (the
       store connection is main-thread-bound, like every analysis
       controller's store call) and write their products back into the
       project (:func:`~seestar_controller.mosaic.stitch_session` →
       ``mosaics/<session>.fits``,
+      :func:`~seestar_controller.stacking.stack_session_subs` → a new
+      ``kind='stack'`` frame in ``stacks/<session>/``,
       :func:`~seestar_controller.report.generate_report` →
       ``reports/<session>.html``), reporting the outcome (or the error) in
       the data status label.
@@ -1284,7 +1288,8 @@ class ProjectsView(_PlaceholderView):
 
     @property
     def data_status_label(self) -> Gtk.Label:
-        """The status label for the Stitch mosaic / Session report actions."""
+        """The status label for the Stored-data action buttons (Stitch
+        mosaic / Stack subs / Session report)."""
         return self._data_status_label
 
     def session_count(self) -> int:
@@ -1326,6 +1331,14 @@ class ProjectsView(_PlaceholderView):
     def click_report(self, index: int) -> None:
         """Click the Session report button of the session at ``index``."""
         self.report_button(index).emit("clicked")
+
+    def stack_subs_button(self, index: int) -> Gtk.Button:
+        """The Stack subs button of the session at ``index``."""
+        return self._session_records[index]["stack_button"]
+
+    def click_stack_subs(self, index: int) -> None:
+        """Click the Stack subs button of the session at ``index``."""
+        self.stack_subs_button(index).emit("clicked")
 
     # -- rendering ------------------------------------------------------------------
 
@@ -1420,6 +1433,17 @@ class ProjectsView(_PlaceholderView):
         stitch_button.connect(
             "clicked", lambda _btn, sid=session.id: self._on_data_action("stitch", sid)
         )
+        stack_button = Gtk.Button(
+            label="Stack subs",
+            valign=Gtk.Align.CENTER,
+            tooltip_text=(
+                "Median-combine this session's subs into a new stack frame "
+                "(stored under stacks/<session>/, from the stored frames)"
+            ),
+        )
+        stack_button.connect(
+            "clicked", lambda _btn, sid=session.id: self._on_data_action("stack_subs", sid)
+        )
         report_button = Gtk.Button(
             label="Session report",
             valign=Gtk.Align.CENTER,
@@ -1432,6 +1456,7 @@ class ProjectsView(_PlaceholderView):
             "clicked", lambda _btn, sid=session.id: self._on_data_action("report", sid)
         )
         box.append(stitch_button)
+        box.append(stack_button)
         box.append(report_button)
         self._sessions_box.append(Gtk.ListBoxRow(child=box, activatable=False))
         frame_labels: list[str] = []
@@ -1461,6 +1486,7 @@ class ProjectsView(_PlaceholderView):
                 "title_label": title_label,
                 "subtitle_label": subtitle_label,
                 "stitch_button": stitch_button,
+                "stack_button": stack_button,
                 "report_button": report_button,
                 "frame_labels": frame_labels,
             }
@@ -1585,8 +1611,9 @@ class ProjectsView(_PlaceholderView):
             self._data_status_label.add_css_class("dim-label")
 
     def _on_data_action(self, kind: str, session_id: str) -> None:
-        """Stitch mosaic / Session report button (offline-analysis ticket 02):
-        run the action on the main loop via ``invoke_on_main`` — the store
+        """Stored-data action button (Stitch mosaic / Stack subs / Session
+        report; offline-analysis ticket 02, sub-frames ticket 03): run the
+        action on the main loop via ``invoke_on_main`` — the store
         connection is main-thread-bound, exactly like the analysis
         controllers' store calls (the app binds ``GLib.idle_add``) — so the
         action is GLib-main-loop safe and works offline (store only, no link
@@ -1596,7 +1623,8 @@ class ProjectsView(_PlaceholderView):
     def _run_data_action(self, kind: str, session_id: str) -> None:
         """Run one stored-data action on the current project and report the
         outcome in the data status label; writes the product back into the
-        project (``mosaics/<session>.fits`` / ``reports/<session>.html``).
+        project (``mosaics/<session>.fits`` / a new ``kind='stack'`` frame
+        under ``stacks/<session>/`` / ``reports/<session>.html``).
         Never raises — failures are surfaced inline."""
         project = self._project_controller.current
         if project is None:
@@ -1607,6 +1635,13 @@ class ProjectsView(_PlaceholderView):
                 path = stitch_session(project, session_id)
                 self._set_data_status(
                     f"stitched mosaic of {session_id} → {path}", error=False
+                )
+            elif kind == "stack_subs":
+                result = stack_session_subs(project, session_id)
+                self._set_data_status(
+                    f"stacked {result.n_subs} subs of {session_id} → "
+                    f"stack #{result.frame.id} ({result.frame.path})",
+                    error=False,
                 )
             else:
                 path = generate_report(project, session_id)
