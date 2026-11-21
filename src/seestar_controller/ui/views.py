@@ -167,6 +167,7 @@ from seestar_controller.visibility.timeline_view import (
 )
 
 from .connection import ConnectionController
+from .mode import OFFLINE_PREVIEW_LABEL, OFFLINE_SCOPE_TOOLTIP
 from .project_controller import ProjectController, ProjectEvent
 from .settings import SettingsController
 from .state import VIEWS, AppState, view_by_id
@@ -271,6 +272,13 @@ class ObserveView(_PlaceholderView):
     :class:`~seestar_controller.astrometry.DriftController`; when omitted, the
     view creates its own, so it also constructs standalone. The drift plot
     widget sits below the night timeline on the same page.
+
+    Offline mode (offline-analysis ticket 01): :meth:`set_scope_gated` gates
+    the scope-dependent controls — the night-control buttons (start /
+    pause / skip / stop / park, where start performs the goto/slew) become
+    insensitive with the offline tooltip and the live preview is hidden while
+    gated; the gating is re-applied after every observe-controller state
+    change, so the buttons stay disabled for the whole offline session.
     """
 
     view_id = "observe"
@@ -304,6 +312,15 @@ class ObserveView(_PlaceholderView):
         self._project = project
         self._project_controller = project_controller
         self._app_state = app_state if app_state is not None else AppState()
+        # offline-analysis ticket 01: scope gating (offline mode) — the
+        # night-control buttons + live preview are disabled/hidden while
+        # gated; the base sensitivity/tooltip are remembered to restore them
+        self._scope_gated = False
+        self._gated_base: dict[Gtk.Button, bool] = {}
+        self._gated_tooltips: dict[Gtk.Button, str | None] = {}
+        self._gated_preview_hidden = False
+        self._gated_preview_visible = True
+        self._gated_preview_label = ""
         super().__init__(**kwargs)
         if self._project_controller is not None:
             self._project_controller.add_listener(self._on_project_event)
@@ -321,6 +338,11 @@ class ObserveView(_PlaceholderView):
             project=self._project,
         )
         self._content.append(self._observe_widget)
+        # offline-analysis ticket 01: re-apply the scope gating after every
+        # observe-controller state change (this listener is registered after
+        # the widget's own, so it runs after the widget re-rendered the
+        # buttons' sensitivity)
+        self._observe_controller.add_listener(self._on_observe_state_gating)
         # visibility-planner ticket 02: the night timeline (altitude curves,
         # twilight, moon) + the suggested queue order with its Apply button,
         # below the observe widget on the same page. It reads the observing
@@ -385,6 +407,76 @@ class ObserveView(_PlaceholderView):
     def drift_plot(self) -> DriftPlotWidget:
         """The drift plot widget (astrometry ticket 03)."""
         return self._drift_plot
+
+    # -- offline-mode scope gating (offline-analysis ticket 01) -------------------
+
+    @property
+    def scope_gated(self) -> bool:
+        """Whether the scope-dependent controls are gated (offline mode)."""
+        return self._scope_gated
+
+    def _scope_buttons(self) -> tuple[Gtk.Button, ...]:
+        """The scope-dependent night-control buttons (start/pause/skip/stop/
+        park — start performs the goto/slew to the target)."""
+        widget = self._observe_widget
+        return (
+            widget.start_button,
+            widget.pause_button,
+            widget.skip_button,
+            widget.stop_button,
+            widget.park_button,
+        )
+
+    def set_scope_gated(self, gated: bool) -> None:
+        """Gate/ungate the scope-dependent controls (offline-analysis ticket
+        01): while gated (offline mode) the night-control buttons are
+        insensitive with the offline tooltip and the live preview is hidden;
+        ungating restores exactly the widgets gating changed (the remembered
+        base sensitivity/tooltips and the preview) and leaves untouched
+        widgets alone, so the observe widget's own state-driven rendering is
+        never clobbered."""
+        self._scope_gated = bool(gated)
+        self._apply_scope_gating()
+
+    def _on_observe_state_gating(self, _state) -> None:
+        """Observe-controller listener: re-apply the gating after the widget
+        re-rendered (only while gated — ungated leaves the widget alone)."""
+        if self._scope_gated:
+            self._apply_scope_gating()
+
+    def _apply_scope_gating(self) -> None:
+        """Apply the current gating to the night-control buttons + preview.
+
+        While gating, the base sensitivity/tooltip (and the preview's
+        visibility/label) are remembered exactly once — re-applying the gate
+        after an observe-state change must not overwrite the remembered base
+        with the gated values. While ungating, only widgets present in the
+        remembered maps are restored; untouched widgets keep whatever the
+        observe widget's own state-driven rendering last set."""
+        widget = self._observe_widget
+        for button in self._scope_buttons():
+            if self._scope_gated:
+                if button not in self._gated_base:
+                    self._gated_base[button] = button.get_sensitive()
+                if button not in self._gated_tooltips:
+                    self._gated_tooltips[button] = button.get_tooltip_text()
+                button.set_sensitive(False)
+                button.set_tooltip_text(OFFLINE_SCOPE_TOOLTIP)
+            elif button in self._gated_base:
+                button.set_sensitive(self._gated_base.pop(button))
+                if button in self._gated_tooltips:
+                    button.set_tooltip_text(self._gated_tooltips.pop(button))
+        if self._scope_gated:
+            if not self._gated_preview_hidden:
+                self._gated_preview_hidden = True
+                self._gated_preview_visible = widget.picture.get_visible()
+                self._gated_preview_label = widget.preview_label.get_label()
+            widget.picture.set_visible(False)
+            widget.preview_label.set_label(OFFLINE_PREVIEW_LABEL)
+        elif self._gated_preview_hidden:
+            self._gated_preview_hidden = False
+            widget.picture.set_visible(self._gated_preview_visible)
+            widget.preview_label.set_label(self._gated_preview_label)
 
 
 class EnhanceView(_PlaceholderView):

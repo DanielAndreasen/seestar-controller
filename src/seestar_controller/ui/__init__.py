@@ -22,10 +22,15 @@ docs/wiki/assumptions.md):
   :func:`~.project_controller.ProjectListener`, projects-view ticket 01 —
   wraps the store's create/open/list against the settings project root,
   holds the current project, persists ``last_project``, restores it on
-  startup). All import **nothing** from ``gi`` — stdlib only (the project
-  controller imports only the pure :mod:`seestar_controller.store` and
-  :mod:`.state`), fully unit-testable headless; a subprocess test enforces
-  the boundary.
+  startup), and :mod:`.mode`: the app/window mode flag
+  (:class:`~.mode.AppMode`, :class:`~.mode.ModeController`,
+  :func:`~.mode.ModeListener`, :data:`~.mode.SCOPE_ACTIONS`,
+  offline-analysis ticket 01 — ``offline`` vs ``connected``, the
+  offline-open path that never touches the link layer, and the pure
+  scope-action gating helpers). All import **nothing** from ``gi`` — stdlib
+  only (the project controller imports only the pure
+  :mod:`seestar_controller.store` and :mod:`.state`), fully unit-testable
+  headless; a subprocess test enforces the boundary.
 - **Widget layer** — :mod:`.views` (the five placeholder view widgets),
   :mod:`.settings_dialog` (the settings dialog), :mod:`.connection_panel`
   (the header-bar connection panel, ticket 03), :mod:`.toast` +
@@ -57,6 +62,16 @@ from .connection import (
     InvokeOnMain,
     default_device_factory,
     describe_scope_state,
+)
+from .mode import (
+    OFFLINE_BANNER_TITLE,
+    OFFLINE_PREVIEW_LABEL,
+    OFFLINE_SCOPE_TOOLTIP,
+    SCOPE_ACTIONS,
+    AppMode,
+    ModeController,
+    ModeListener,
+    UnknownScopeActionError,
 )
 from .notifications import (
     CONNECTION_SOURCE,
@@ -174,8 +189,12 @@ __all__ = [
     "MAX_WINDOW_COORD",
     "MAX_WINDOW_SIZE",
     "MIN_WINDOW_SIZE",
+    "OFFLINE_BANNER_TITLE",
+    "OFFLINE_PREVIEW_LABEL",
+    "OFFLINE_SCOPE_TOOLTIP",
     "RECONNECTED_EVENT",
     "RECONNECTING_EVENT",
+    "SCOPE_ACTIONS",
     "SCOPE_ERROR_EVENT",
     "SETTINGS_FILE_NAME",
     "SETTINGS_KEYS",
@@ -186,6 +205,7 @@ __all__ = [
     "VIEWS",
     "VIEW_CLASSES",
     "VIEW_IDS",
+    "AppMode",
     "AppState",
     "ConnectionController",
     "ConnectionListener",
@@ -198,6 +218,8 @@ __all__ = [
     "EventSubscribe",
     "InvokeOnMain",
     "LightcurveView",
+    "ModeController",
+    "ModeListener",
     "Notification",
     "NotificationBus",
     "NotificationController",
@@ -220,6 +242,7 @@ __all__ = [
     "SettingsListener",
     "SettingsValidationError",
     "UIStateError",
+    "UnknownScopeActionError",
     "UnknownViewError",
     "View",
     "apply_dark_theme",

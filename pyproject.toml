@@ -72,6 +72,7 @@ include = [
     "tests/test_gaia_overlay_widgets.py",
     "tests/test_hr_diagram_view_widgets.py",
     "tests/test_moving_objects_widgets.py",
+    "tests/test_offline_mode_widgets.py",
     "tests/test_observing_widgets.py",
     "tests/test_photometry_widgets.py",
     "tests/test_report_widgets.py",
