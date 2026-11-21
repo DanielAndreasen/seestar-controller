@@ -1,6 +1,6 @@
 # Spec: offline-analysis
 
-Status: ready-for-agent (0 issues)
+Status: ready-for-agent (3 issues)
 
 ## Problem Statement
 
