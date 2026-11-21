@@ -1,6 +1,6 @@
 # Spec: sub-frames workflow (view / solve / analyze raw subs)
 
-Status: ready-for-agent (3 issues)
+Status: completed 2026-11-21 (01: e216f83; 02: fbc19ec; 03: 25f50a6)
 
 ## Problem Statement
 
