@@ -46,6 +46,7 @@ from seestar_controller.frame_quality import (
     SkippedFrame,
     flag_outliers,
     flag_reasons,
+    flagged_frame_reasons,
     robust_zscores,
     score_frame,
     score_session,
@@ -55,6 +56,7 @@ from seestar_controller.store import (
     KIND_STACK,
     KIND_SUB,
     SessionNotFoundError,
+    close_session,
     create_project,
     frame_quality_for_frame,
     list_frames,
@@ -505,6 +507,48 @@ def test_score_session_custom_threshold(project):
     assert session_quality(project, sid).flagged_count == 0
 
 
+# --- ticket 03 glue: flagged_frame_reasons (the photometry run's default excluded set) ----------------
+
+
+def test_flagged_frame_reasons_returns_only_flagged_frames_with_reasons(project):
+    sid = start_session(project, clock=frozen(T0))
+    frames = good_frames(8)
+    frames.insert(4, make_frame(sigma=BLURRY_SIGMA, seed=99))  # blurry -> fwhm
+    frames.append(make_frame(background=1000.0, noise=30.0, seed=7))  # cloudy -> bg_*
+    stored = store_subs(project, sid, frames)
+    score_session(project, sid)
+    reasons = flagged_frame_reasons(project, sid)
+    # exactly the two flagged frames, as frame_id -> tuple of flag reasons
+    assert set(reasons) == {stored[4].id, stored[9].id}
+    assert isinstance(reasons[stored[4].id], tuple)
+    assert all(isinstance(r, str) for r in reasons[stored[4].id])
+    assert "fwhm" in reasons[stored[4].id]
+    assert "bg_median" in reasons[stored[9].id] or "bg_std" in reasons[stored[9].id]
+    # consistent with the query API
+    q = session_quality(project, sid)
+    assert {f.frame_id: f.flag_reasons for f in q.flagged} == reasons
+
+
+def test_flagged_frame_reasons_no_flagged_frames_yields_empty_map(project):
+    sid = start_session(project, clock=frozen(T0))
+    store_subs(project, sid, good_frames(6))
+    score_session(project, sid)
+    assert flagged_frame_reasons(project, sid) == {}
+    # nothing persisted at all (persist=False) -> also empty
+    close_session(project, sid)
+    sid2 = start_session(project, clock=frozen(T0 + timedelta(hours=2)))
+    store_subs(project, sid2, good_frames(3))
+    score_session(project, sid2, persist=False)
+    assert flagged_frame_reasons(project, sid2) == {}
+
+
+def test_flagged_frame_reasons_unknown_session_raises(project):
+    with pytest.raises(SessionNotFoundError, match="no session"):
+        flagged_frame_reasons(project, "no-such-session")
+    with pytest.raises(TypeError, match="session_id"):
+        flagged_frame_reasons(project, 123)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+
 # --- package boundary (subprocess + source scan) + public API -------------------------------
 
 
@@ -581,6 +625,7 @@ def test_frame_quality_public_api_is_exported():
         "SkippedFrame",
         "flag_outliers",
         "flag_reasons",
+        "flagged_frame_reasons",
         "frame_quality_for_frame",
         "robust_zscores",
         "save_frame_quality",

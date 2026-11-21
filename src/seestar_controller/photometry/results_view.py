@@ -28,7 +28,12 @@ passes it down via :func:`seestar_controller.ui.views.build_view`):
   **worker thread** and marshals the progress callback (and the listener
   notifications) back to the GLib main loop with :func:`GLib.idle_add` — the
   main loop NEVER blocks on the FITS reads / photutils measuring;
-- a **progress bar + label** while running (``done/total — frame N``);
+- a **progress bar + label** while running (``done/total — frame N``), and
+  after a run the summary ``N measured, N skipped, N excluded`` plus a
+  dedicated **exclusion label** (frame-quality ticket 03: how many sub-frames
+  were excluded from the run and why — e.g. ``2 frames excluded (fwhm×2)`` —
+  from the report's :class:`~seestar_controller.photometry.run.ExcludedFrame`\\ s,
+  by default the session's flagged frames);
 - a **per-frame table** (:class:`Gtk.ListBox`, one row per lightcurve point:
   jd/utc, mag, mag_err, an "excluded" :class:`Gtk.CheckButton`) — clicking a
   row (or the checkbox) toggles the outlier flag via
@@ -118,7 +123,8 @@ class ResultsPanel(Gtk.Box):
             label="Run",
             tooltip_text=(
                 "Measure all sub-frames of the chosen session (worker thread, "
-                "progress shown below) and append the results to the lightcurve"
+                "progress shown below) and append the results to the lightcurve; "
+                "flagged frames (frame quality) are excluded by default"
             ),
         )
         self._run_button.connect("clicked", self._on_run_clicked)
@@ -135,6 +141,13 @@ class ResultsPanel(Gtk.Box):
         )
         progress_row.append(self._progress_label)
         self.append(progress_row)
+
+        # frame-quality ticket 03: how many frames were excluded from the last
+        # run and why (e.g. "2 frames excluded (fwhm×2)")
+        self._exclusion_label = Gtk.Label(
+            label="", xalign=0.0, css_classes=["dim-label", "caption"]
+        )
+        self.append(self._exclusion_label)
 
         # per-frame table + scatter plot side by side
         paned = Gtk.Paned(
@@ -239,6 +252,13 @@ class ResultsPanel(Gtk.Box):
     def progress_label(self) -> Gtk.Label:
         """The progress label (``done/total — frame N`` while running)."""
         return self._progress_label
+
+    @property
+    def exclusion_label(self) -> Gtk.Label:
+        """The exclusion label (frame-quality ticket 03): after a run, how many
+        sub-frames were excluded and why (``"2 frames excluded (fwhm×2)"``);
+        empty before the first run."""
+        return self._exclusion_label
 
     @property
     def list_box(self) -> Gtk.ListBox:
@@ -409,11 +429,16 @@ class ResultsPanel(Gtk.Box):
             r = snapshot.report
             self._progress_bar.set_fraction(1.0)
             self._progress_label.set_label(
-                f"{len(r.measurements)} measured, {len(r.skipped)} skipped"
+                f"{len(r.measurements)} measured, {len(r.skipped)} skipped, "
+                f"{r.excluded_count} excluded"
             )
         else:
             self._progress_bar.set_fraction(0.0)
             self._progress_label.set_label("")
+        # frame-quality ticket 03: the exclusion summary of the last run
+        self._exclusion_label.set_label(
+            snapshot.report.exclusion_summary if snapshot.report is not None else ""
+        )
         self._run_button.set_sensitive(not snapshot.running)
         if snapshot.error is not None:
             self._set_status(snapshot.error, error=True)
@@ -421,7 +446,8 @@ class ResultsPanel(Gtk.Box):
             r = snapshot.report
             self._set_status(
                 f"session {r.session_id}: {len(r.measurements)} measured, "
-                f"{len(r.skipped)} skipped — {len(snapshot.lightcurve)} point(s) in the lightcurve",
+                f"{len(r.skipped)} skipped, {r.excluded_count} excluded — "
+                f"{len(snapshot.lightcurve)} point(s) in the lightcurve",
                 error=False,
             )
         return GLib.SOURCE_REMOVE

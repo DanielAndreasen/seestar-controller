@@ -84,8 +84,10 @@ from seestar_controller.store import (
     StarPick,
     create_project,
     lightcurve,
+    list_frames,
     list_sessions,
     load_star_picks,
+    save_frame_quality,
     save_star_picks,
     start_session,
     store_frame,
@@ -551,6 +553,39 @@ def test_results_panel_shows_table_and_plot_after_a_run(gtk, project):
     assert "4 measured" in panel.status_label.get_label()
     assert panel.run_button.get_sensitive() is True
     assert len(lightcurve(project)) == 4
+
+
+def test_results_panel_shows_exclusion_summary_for_flagged_frames(gtk, project):
+    # frame-quality ticket 03: a flagged sub-frame is excluded from the run by
+    # default and the panel surfaces the count + reasons
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs(project, n=4)
+    _save_widget_picks(project)
+    flagged = list_frames(project, session_id=session, kind=KIND_SUB)[2]
+    save_frame_quality(
+        project,
+        flagged.id,
+        fwhm=9.4,
+        bg_median=100.0,
+        bg_std=5.0,
+        star_count=8,
+        flagged=True,
+        flag_reasons=("fwhm",),
+    )
+    rc = RunController(project=project)
+    panel = ResultsPanel(run_controller=rc)
+    report = rc.run_session(session)  # main thread: rendered synchronously
+    assert [e.frame_id for e in report.excluded] == [flagged.id]
+    assert report.excluded[0].reasons == ("fwhm",)
+    assert len(report.measurements) == 3
+    # the exclusion label carries the count + reasons, progress + status the count
+    assert panel.exclusion_label.get_label() == "1 frame excluded (fwhm×1)"
+    assert "3 measured, 0 skipped, 1 excluded" in panel.progress_label.get_label()
+    assert "1 excluded" in panel.status_label.get_label()
+    assert len(panel.measurement_rows()) == 3
+    assert len(panel.plot_points()) == 3
+    assert len(lightcurve(project)) == 3
 
 
 def test_results_panel_row_click_toggles_outlier_exclusion(gtk, project):

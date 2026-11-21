@@ -4,8 +4,10 @@
 This is a PURE module: **no ``gi`` import** (the sandbox has no GTK, see
 docs/wiki/assumptions.md; a subprocess test enforces the boundary) — stdlib +
 :mod:`seestar_controller.store` + the sibling pure modules :mod:`.picking` /
-:mod:`.measure` only. No :mod:`seestar_controller.link`, no :mod:`ui`, no
-:mod:`enhance` imports. The widget layer (:mod:`.results_view`) imports ``gi``
+:mod:`.measure` + the frame-quality glue
+:func:`seestar_controller.frame_quality.session.flagged_frame_reasons` only.
+No :mod:`seestar_controller.link`, no :mod:`ui`, no :mod:`enhance` imports.
+The widget layer (:mod:`.results_view`) imports ``gi``
 at module top and is never imported by this module or eagerly by the package
 ``__init__``.
 
@@ -13,13 +15,20 @@ What lives here:
 
 - :class:`RunError` — the run-layer error, a :class:`~.picking.PhotometryError`
   (hence a :class:`ValueError`): no project, an unknown session, an unrunnable
-  pick ensemble (no target pick), a run already in progress, a store failure,
+  pick ensemble (no target pick), a run already in progress, a bad
+  ``excluded_frames`` argument, a store failure,
   or an unexpected failure while running (wrapped and chained);
 - :class:`RunProgress` — one frozen progress tick (``done`` / ``total`` /
   ``frame_id``);
+- :class:`ExcludedFrame` — one sub-frame excluded from the run (frame-quality
+  ticket 03): ``frame_id`` + the ``reasons`` (the flag reasons from the
+  session's quality records);
+- :func:`format_exclusion_reasons` — format aggregated exclusion reason counts
+  for display (``"fwhm×2, bg_std×1"``);
 - :class:`RunReport` — the frozen result of :meth:`RunController.run_session`:
   the stored :class:`~seestar_controller.store.measurements.Measurement`\\ s,
-  the :class:`~.measure.SkippedFrame`\\ s, the ``session_id``, and the
+  the :class:`~.measure.SkippedFrame`\\ s, the :class:`ExcludedFrame`\\ s
+  (frame-quality ticket 03), the ``session_id``, and the
   per-frame :class:`~.measure.FrameMeasurement` results (``frame_results`` —
   carrying the check star's differential mag + error and the
   target-minus-check curve, check-star-plot ticket 01);
@@ -39,7 +48,16 @@ What lives here:
     callback (called after each frame, so a full run yields the sequence
     ``1..N``), and returning the frozen :class:`RunReport`. It is a plain
     synchronous, GTK-free method — **safe to call from a worker thread** (the
-    widget layer does exactly that, so the GLib main loop never blocks);
+    widget layer does exactly that, so the GLib main loop never blocks).
+    Frame-quality ticket 03: ``excluded_frames`` selects the sub-frames to
+    SKIP (never measured, never stored) — None (default) excludes the
+    session's **flagged** frames
+    (:func:`seestar_controller.frame_quality.session.flagged_frame_reasons`),
+    an explicit collection/mapping overrides that (an empty set excludes
+    nothing); excluded frames are recorded on the report as
+    :class:`ExcludedFrame`\\ s and the exclusion is persisted into the
+    project's ``project.json`` config (the store schema is owned by another
+    workstream, so no db column is added);
   - the picks come from the shared picker controller; when the picker session
     is empty, the stored picks are loaded from the project
     (:func:`seestar_controller.store.stars.load_star_picks`);
@@ -83,6 +101,16 @@ Conventions (documented choices):
   pick outside the image, or a non-positive flux is recorded as a
   :class:`~.measure.SkippedFrame` (the same skip semantics as
   :func:`~.measure.measure_project`).
+- **Excluded frames (frame-quality ticket 03)** are skipped BEFORE any
+  measuring (no FITS read, no store write) and recorded as
+  :class:`ExcludedFrame`\\ s on the report; they still advance the progress
+  (``done`` counts every processed sub-frame, so a full run still yields
+  ``1..N``). The default excluded set is the session's flagged frames; the
+  per-run exclusion (count + frame ids + reasons) is also written to
+  ``project.json`` under ``config["photometry"]["last_run"]`` — best-effort,
+  a config write failure never fails the run. The CSV export is unchanged:
+  excluded frames have no measurement rows, and the export's OMIT policy for
+  ``excluded`` points already keeps the file the clean lightcurve.
 - **One run at a time**: calling :meth:`~RunController.run_session` while a
   run is in progress raises :class:`RunError`.
 - **Unknown session**: a ``session_id`` not in
@@ -100,10 +128,11 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from seestar_controller.frame_quality.session import flagged_frame_reasons
 from seestar_controller.store.errors import (
     MeasurementError as StoreMeasurementError,
 )
@@ -117,6 +146,7 @@ from seestar_controller.store.measurements import (
 from seestar_controller.store.measurements import (
     set_excluded as store_set_excluded,
 )
+from seestar_controller.store.project import utc_now_iso
 from seestar_controller.store.sessions import Session, list_sessions
 from seestar_controller.store.stars import load_star_picks
 
@@ -161,6 +191,76 @@ class RunProgress:
 
 
 @dataclass(frozen=True)
+class ExcludedFrame:
+    """One sub-frame EXCLUDED from a photometry run (frame-quality ticket 03):
+    skipped before any measuring, never stored as a measurement.
+
+    - ``frame_id`` — the excluded sub-frame's id;
+    - ``reasons`` — why it was excluded: the flag reasons from the session's
+      quality records (e.g. ``("fwhm",)``) for the default flagged-frame
+      exclusion, the mapping values for an explicit
+      ``excluded_frames={id: reasons}`` argument, or empty for a plain id
+      collection.
+    """
+
+    frame_id: int
+    reasons: tuple[str, ...] = ()
+
+
+def format_exclusion_reasons(counts: Mapping[str, int]) -> str:
+    """Format aggregated exclusion reason counts for display (pure):
+    ``"fwhm×2, bg_std×1"`` — reasons sorted alphabetically, zero/negative
+    counts dropped; the empty string when there are none."""
+    return ", ".join(
+        f"{reason}×{count}"
+        for reason, count in sorted(counts.items())
+        if count > 0
+    )
+
+
+def _normalize_excluded_frames(
+    excluded_frames: Any,
+) -> dict[int, tuple[str, ...]]:
+    """Validate an explicit ``excluded_frames`` argument of
+    :meth:`RunController.run_session` and normalize it to a
+    ``frame_id -> reasons`` map.
+
+    Accepted shapes: a mapping ``frame_id -> reasons`` (an iterable of
+    strings), or any other collection of frame ids (reasons empty). Raises
+    :class:`RunError` for anything else (a str/bytes, non-int ids, non-string
+    reasons).
+    """
+    if isinstance(excluded_frames, Mapping):
+        items: Iterable[tuple[Any, Any]] = excluded_frames.items()
+    elif isinstance(excluded_frames, (str, bytes)) or not isinstance(
+        excluded_frames, Iterable
+    ):
+        raise RunError(
+            "excluded_frames must be None, a collection of frame ids, or a "
+            f"mapping frame_id -> reasons, got {excluded_frames!r}"
+        )
+    else:
+        items = ((frame_id, ()) for frame_id in excluded_frames)
+    result: dict[int, tuple[str, ...]] = {}
+    for frame_id, reasons in items:
+        if isinstance(frame_id, bool) or not isinstance(frame_id, int):
+            raise RunError(f"excluded frame ids must be ints, got {frame_id!r}")
+        if isinstance(reasons, (str, bytes)) or not isinstance(reasons, Iterable):
+            raise RunError(
+                f"the exclusion reasons of frame {frame_id!r} must be an "
+                f"iterable of strings, got {reasons!r}"
+            )
+        reason_tuple = tuple(reasons)
+        if not all(isinstance(r, str) for r in reason_tuple):
+            raise RunError(
+                f"the exclusion reasons of frame {frame_id!r} must contain "
+                f"only strings, got {reason_tuple!r}"
+            )
+        result[frame_id] = reason_tuple
+    return result
+
+
+@dataclass(frozen=True)
 class RunReport:
     """The frozen result of :meth:`RunController.run_session`.
 
@@ -175,18 +275,56 @@ class RunReport:
       star's differential mag + error (``check_mag`` / ``check_mag_err``) and
       the target-minus-check curve (``target_minus_check`` /
       ``target_minus_check_err``) when a check star was picked
-      (check-star-plot ticket 01).
+      (check-star-plot ticket 01);
+    - ``excluded`` — the :class:`ExcludedFrame`\\ s (in frame order,
+      frame-quality ticket 03): the sub-frames skipped because they were
+      excluded (by default: the session's flagged frames).
     """
 
     measurements: tuple[Measurement, ...]
     skipped: tuple[SkippedFrame, ...]
     session_id: str
     frame_results: tuple[FrameMeasurement, ...] = ()
+    excluded: tuple[ExcludedFrame, ...] = ()
 
     @property
     def frames(self) -> int:
-        """The total number of sub-frames processed (measured + skipped)."""
-        return len(self.measurements) + len(self.skipped)
+        """The total number of sub-frames processed (measured + skipped +
+        excluded)."""
+        return len(self.measurements) + len(self.skipped) + len(self.excluded)
+
+    @property
+    def excluded_count(self) -> int:
+        """The number of excluded sub-frames (frame-quality ticket 03)."""
+        return len(self.excluded)
+
+    @property
+    def excluded_reasons(self) -> dict[str, int]:
+        """The aggregated exclusion reasons: ``reason -> count`` over the
+        excluded frames (a frame with empty reasons counts under
+        ``"flagged"``)."""
+        counts: dict[str, int] = {}
+        for excluded in self.excluded:
+            if excluded.reasons:
+                for reason in excluded.reasons:
+                    counts[reason] = counts.get(reason, 0) + 1
+            else:
+                counts["flagged"] = counts.get("flagged", 0) + 1
+        return counts
+
+    @property
+    def exclusion_summary(self) -> str:
+        """A human-readable one-line exclusion summary for the results view:
+        ``"2 frames excluded (fwhm×1, bg_std×1)"``, ``"1 frame excluded
+        (flagged×1)"``, or ``"no frames excluded"``."""
+        count = self.excluded_count
+        if count == 0:
+            return "no frames excluded"
+        text = f"{count} frame{'s' if count != 1 else ''} excluded"
+        reasons = format_exclusion_reasons(self.excluded_reasons)
+        if reasons:
+            text += f" ({reasons})"
+        return text
 
     @property
     def check_points(self) -> tuple[tuple[float, float, float], ...]:
@@ -640,10 +778,63 @@ class RunController:
             ) from exc
         return measurement, fm
 
+    def _record_run_exclusion(
+        self,
+        project: Any,
+        session_id: str,
+        report: RunReport,
+        *,
+        used_default: bool,
+    ) -> None:
+        """Persist a compact exclusion record of the finished run into the
+        project's ``project.json`` config (frame-quality ticket 03): the store
+        schema is owned by another workstream, so instead of a new db column
+        the per-run exclusion (which frames were skipped as flagged, and why)
+        is recorded under ``config["photometry"]``::
+
+            {"exclude_flagged_frames": true,
+             "last_run": {"session_id": ..., "at": ..., "measured": N,
+                          "skipped": N, "excluded_count": N,
+                          "excluded": [{"frame_id": ..., "reasons": [...]}]}}
+
+        The write runs on the db-owning thread (via :meth:`_call_store`, like
+        every project mutation) and is BEST-EFFORT: any failure is logged and
+        never fails the run.
+        """
+        try:
+
+            def _record() -> None:
+                config = project.config
+                photometry_config = config.get("photometry")
+                if not isinstance(photometry_config, dict):
+                    photometry_config = {}
+                photometry_config["exclude_flagged_frames"] = bool(used_default)
+                photometry_config["last_run"] = {
+                    "session_id": session_id,
+                    "at": utc_now_iso(),
+                    "measured": len(report.measurements),
+                    "skipped": len(report.skipped),
+                    "excluded_count": report.excluded_count,
+                    "excluded": [
+                        {"frame_id": e.frame_id, "reasons": list(e.reasons)}
+                        for e in report.excluded
+                    ],
+                }
+                config["photometry"] = photometry_config
+                project.save_config()
+
+            self._call_store(_record)
+        except Exception:
+            logger.warning(
+                "could not record the run exclusion in project.json", exc_info=True
+            )
+
     def run_session(
         self,
         session_id: str,
         on_progress: ProgressCallback | None = None,
+        *,
+        excluded_frames: Collection[int] | Mapping[int, Iterable[str]] | None = None,
     ) -> RunReport:
         """Run aperture photometry over ALL sub-frames of ``session_id`` and
         return the frozen :class:`RunReport`.
@@ -654,9 +845,19 @@ class RunController:
           callback, called after each frame on the CALLING thread (a full run
           yields the ``done`` sequence ``1..N``); the same tick is emitted to
           the listeners as :attr:`RunSnapshot.progress`;
-        - every sub-frame (``kind="sub"`` only — stacks/enhanced are never
-          measured) is measured with the resolved picks and its result appended
-          via :func:`seestar_controller.store.measurements.add_measurement`
+        - ``excluded_frames`` — the sub-frames to SKIP (frame-quality ticket
+          03): None (default) excludes the session's **flagged** frames
+          (:func:`seestar_controller.frame_quality.session.flagged_frame_reasons`,
+          with their flag reasons); a collection of frame ids excludes exactly
+          those (no reasons); a mapping ``frame_id -> reasons`` also carries
+          the reasons. An explicit EMPTY collection excludes nothing (it
+          overrides the default). Excluded frames are never measured nor
+          stored, are recorded as :class:`ExcludedFrame`\\ s on the report,
+          and still advance the progress;
+        - every non-excluded sub-frame (``kind="sub"`` only — stacks/enhanced
+          are never measured) is measured with the resolved picks and its
+          result appended via
+          :func:`seestar_controller.store.measurements.add_measurement`
           (jd, mag, mag_err); a per-frame failure is recorded as a
           :class:`~.measure.SkippedFrame`, never a crash;
         - the picks come from the shared picker controller, falling back to the
@@ -697,21 +898,43 @@ class RunController:
             frames = self._call_store(
                 lambda: list_frames(project, session_id=session_id, kind=KIND_SUB)
             )
+            # frame-quality ticket 03: resolve the excluded-frame set — None
+            # (default) = the session's flagged frames (with their flag
+            # reasons); an explicit collection/mapping overrides that.
+            if excluded_frames is None:
+                excluded_map = dict(
+                    self._call_store(lambda: flagged_frame_reasons(project, session_id))
+                )
+            else:
+                excluded_map = _normalize_excluded_frames(excluded_frames)
             total = len(frames)
             measurements: list[Measurement] = []
             frame_results: list[FrameMeasurement] = []
             skipped: list[SkippedFrame] = []
+            excluded: list[ExcludedFrame] = []
             for index, frame in enumerate(frames):
-                try:
-                    measurement, fm = self._measure_one(project, frame, picks, aperture)
-                except MeasurementError as exc:
+                reasons = excluded_map.get(frame.id)
+                if reasons is not None:
+                    # excluded (e.g. flagged as an outlier by frame-quality):
+                    # skipped BEFORE any measuring — no FITS read, no store write
                     logger.info(
-                        "skipping sub-frame %s of session %s: %s", frame.id, session_id, exc
+                        "excluding sub-frame %s of session %s (%s)",
+                        frame.id,
+                        session_id,
+                        ", ".join(reasons) or "excluded",
                     )
-                    skipped.append(SkippedFrame(frame_id=frame.id, reason=str(exc)))
+                    excluded.append(ExcludedFrame(frame_id=frame.id, reasons=reasons))
                 else:
-                    measurements.append(measurement)
-                    frame_results.append(fm)
+                    try:
+                        measurement, fm = self._measure_one(project, frame, picks, aperture)
+                    except MeasurementError as exc:
+                        logger.info(
+                            "skipping sub-frame %s of session %s: %s", frame.id, session_id, exc
+                        )
+                        skipped.append(SkippedFrame(frame_id=frame.id, reason=str(exc)))
+                    else:
+                        measurements.append(measurement)
+                        frame_results.append(fm)
                 done = index + 1
                 progress = RunProgress(done=done, total=total, frame_id=frame.id)
                 with self._lock:
@@ -724,6 +947,12 @@ class RunController:
                 skipped=tuple(skipped),
                 session_id=session_id,
                 frame_results=tuple(frame_results),
+                excluded=tuple(excluded),
+            )
+            # frame-quality ticket 03: persist the exclusion record into the
+            # project's project.json config (best-effort — never fails the run)
+            self._record_run_exclusion(
+                project, session_id, report, used_default=excluded_frames is None
             )
             # refresh the snapshot's lightcurve (store call OUTSIDE the lock)
             lc = tuple(
