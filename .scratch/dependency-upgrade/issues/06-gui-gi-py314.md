@@ -4,7 +4,7 @@
 
 **Blocked by:** dependency-upgrade 01, 03, 06 is independent of 04/05
 
-**Status:** ready-for-agent
+**Status:** implemented in 2241c6b+f622ba1 (merged)
 
 - [ ] Working `gi` import under the 3.14 venv on the desktop via the simplest option; exact steps documented (dated wiki entry + CLI error message updated)
 - [ ] No hard PyGObject dependency; headless install/test path unchanged
