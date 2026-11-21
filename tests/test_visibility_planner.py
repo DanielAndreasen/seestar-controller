@@ -118,6 +118,7 @@ def _entry(name, coord):
 # --- package boundary (subprocess + source scan) -----------------------------------------
 
 
+@pytest.mark.slow
 def test_visibility_package_imports_no_gi_and_computes_offline():
     code = """
 import socket
@@ -388,6 +389,7 @@ def _reference_twilight_crossings(site, night, sample_s=10.0):
     return crossings
 
 
+@pytest.mark.slow
 def test_twilight_times_match_astropy_reference_within_a_minute():
     tw = twilight_times(MUNICH, NIGHT)
     assert isinstance(tw, TwilightTimes)

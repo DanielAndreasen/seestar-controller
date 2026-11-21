@@ -27,10 +27,14 @@ packages = ["src/seestar_controller"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "slow: genuinely slow integration-style tests (>= ~2s serial); deselect in a fast loop with -m \"not slow\" — the full suite always runs them",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.ty]
