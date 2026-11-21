@@ -1,6 +1,6 @@
 # Spec: visibility-planner
 
-Status: ready-for-agent (2 issues)
+Status: completed 2026-11-20 (01: 28cb0e6; 02: 4ce1e3a)
 
 ## Problem Statement
 
