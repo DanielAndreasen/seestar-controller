@@ -16,6 +16,14 @@ New work (tickets, bug fixes) is done in its own git worktree under `$VIBE_HOME/
 
 Before committing a ticket's code, run `uv tool run ty check` and `uv tool run ruff check` and fix all errors and warnings they report.
 
+## Running tests
+
+- Default (full suite, parallel — pytest-xdist is in the dev group and verified reliable: identical pass/fail set across repeated `-n auto` runs, no shared global state, no network, gi-gated suites skip identically): `uv run pytest -q -n auto`
+- Serial full suite (same tests, ~2.5 min): `uv run pytest -q`
+- Fast loop (deselects only the 7 `@pytest.mark.slow` integration-style tests; the full suite always runs them): `uv run pytest -q -n auto -m "not slow"`
+- Slowest-test report: `uv run pytest -q -n auto --durations=20`
+- In headless sandboxes without gi, the widget suites skip via `pytest.importorskip("gi")` and two known pre-existing failures remain (see `docs/wiki/dependency-upgrade.md`); do not "fix" them by weakening tests. Test-only I/O shims (fsync no-op + `PRAGMA synchronous=OFF`) live in `tests/conftest.py` — see the issue-05 section of `docs/wiki/dependency-upgrade.md` for why they are safe.
+
 ## Agent skills
 
 ### Issue tracker

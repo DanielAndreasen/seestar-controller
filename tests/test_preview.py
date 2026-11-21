@@ -399,6 +399,7 @@ def _alive_dispatchers() -> list[threading.Thread]:
     ]
 
 
+@pytest.mark.slow
 def test_slow_callback_stop_restart_leaves_one_dispatcher(keypair):
     """Regression (review F1): with a slow callback the queue drains slower
     than the old 2 s join timeout, so the dispatcher used to survive stop()

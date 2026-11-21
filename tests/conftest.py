@@ -1,4 +1,5 @@
 import os
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,46 @@ from seestar_controller.ui.state import AppState
 # under ~/.config/seestar-controller), so disable it for the whole session
 # unless a test opts in explicitly (protocol_log=... / monkeypatch.setenv).
 os.environ["SEESTAR_PROTOCOL_LOG"] = "0"
+
+# --- test-only performance shims (dependency-upgrade ticket 05) -------------------
+#
+# The suite builds synthetic projects with hundreds of FITS frames + sqlite
+# rows; every store_frame()/add_measurement() fsyncs the file and the WAL
+# commit (~30 ms per point on this machine, ~22 s for one 710-point synthetic
+# lightcurve). Durability against power loss is not observable in-process, so
+# for the whole test session: (a) os.fsync becomes a no-op — the atomic-write
+# failure-path tests monkeypatch os.fsync themselves and are unaffected — and
+# (b) every sqlite connection opened by the store runs with
+# PRAGMA synchronous=OFF (commits stay visible to all in-process readers;
+# journal_mode stays WAL, which test_store_project asserts). No assertion in
+# the suite depends on a real fsync.
+_real_fsync = os.fsync
+_real_connect = sqlite3.connect
+
+
+def _noop_fsync(fd: int) -> None:
+    return None
+
+
+def _fast_connect(*args, **kwargs):
+    conn = _real_connect(*args, **kwargs)
+    try:
+        conn.execute("PRAGMA synchronous=OFF")
+    except sqlite3.Error:  # pragma: no cover - defensive
+        pass
+    return conn
+
+
+os.fsync = _noop_fsync  # ty: ignore[invalid-assignment]
+sqlite3.connect = _fast_connect  # ty: ignore[invalid-assignment]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _restore_io_shims():
+    """Restore the real fsync / sqlite3.connect when the session ends."""
+    yield
+    os.fsync = _real_fsync
+    sqlite3.connect = _real_connect
 
 
 @pytest.fixture(scope="session")

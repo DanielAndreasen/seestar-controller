@@ -204,6 +204,7 @@ def test_malformed_line_from_scope_is_protocol_error(transport, mock_scope):
     assert transport._reader_thread is None or not transport._reader_thread.is_alive()
 
 
+@pytest.mark.slow
 def test_busy_link_with_slow_replies_no_spurious_connection_lost(mock_scope, keypair):
     """Heartbeat replies may be slow/dropped on a busy-but-healthy link: liveness
     is last inbound activity, so pending requests must NOT fail with

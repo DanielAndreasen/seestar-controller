@@ -96,6 +96,7 @@ def _entries():
 # --- build_timeline ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_build_timeline_contents():
     entries = _entries()
     model = build_timeline(entries, MUNICH, NIGHT)
@@ -154,6 +155,7 @@ def test_build_timeline_accepts_settings_mapping_and_datetime_night():
     assert model.order == (0,)
 
 
+@pytest.mark.slow
 def test_build_timeline_empty_and_all_unresolved():
     empty = build_timeline([], MUNICH, NIGHT)
     assert empty.curves == () and empty.curve_indices == () and empty.order == ()
@@ -335,6 +337,7 @@ def test_render_timeline_png_validation():
             render_timeline_png(model, dpi=bad)  # ty: ignore[invalid-argument-type]
 
 
+@pytest.mark.slow
 def test_render_timeline_png_edge_cases():
     # no resolved targets (empty curves) still renders
     empty = build_timeline([QueueEntry(name="Unresolved")], MUNICH, NIGHT)

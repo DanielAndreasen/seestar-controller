@@ -41,3 +41,29 @@ Done in a **scratch copy** (`git archive 390f885` → `/tmp`, never in a checkou
 - `uv lock --upgrade --dry-run`: **No lockfile changes detected**.
 
 A new contributor can therefore clone, `uv sync`, run the suite, and launch the GUI on the new versions.
+
+## Issue 05 — test-suite performance (2026-11-21, branch `wt/dependency-upgrade-05`)
+
+Goal: reduce wall-clock of `uv run pytest -q` without weakening tests. Reference tree: main @ `95813e0`, headless sandbox venv (CPython 3.14, no gi → 19 gi-gated skips; the 2 known pre-existing failures listed above are present on main too and were left untouched).
+
+### `--durations` analysis (before)
+
+Baseline `uv run pytest -q` on main @ `95813e0`: **505.14s — 2586 passed, 19 skipped, 2 failed** (the 2 known). Slowest ~10 tests were the analysis suites (`test_analysis_fold/periodogram/export`, 15–17s each). Root cause: the `_project_with_sinusoid` fixture builds a 710-point lightcurve where each point costs a `store_frame` (FITS write + `os.fsync` + sqlite commit ≈ 21ms) plus an `add_measurement` (sqlite commit ≈ 11ms) → ~32ms/point, ~22s per test. Measured breakdown: FITS bytes 0.6ms, `store_frame` 21.4ms (≈11ms file fsync + ≈10ms sqlite commit), `add_measurement` 10.8ms (all sqlite commit).
+
+### Fixes applied
+
+1. **Test-only I/O shims in `tests/conftest.py`** (session-scoped, restored on teardown): `os.fsync` → no-op and a `sqlite3.connect` wrapper executing `PRAGMA synchronous=OFF` per connection. Cost per fixture point drops 32ms → 0.95ms (34×). Safe because: durability against power loss is unobservable in-process; atomicity (temp + `os.replace`, no partial files) is still fully exercised by the failure-path tests that monkeypatch `os.fsync` themselves (verified passing); `journal_mode` is untouched (`test_store_project.py` asserts WAL); all src modules call `sqlite3.connect` at call time. Result: the 15–22s analysis tests are now 1.1–1.7s (remaining time is genuine Lomb-Scargle compute).
+2. **pytest-xdist (`-n auto`) added to the dev dependency group** and verified reliable: hazard scan found no fixed ports (all bind port 0), no cross-test env mutation (all via `monkeypatch`), `SEESTAR_PROTOCOL_LOG=0` set per worker, no network. Two order-racy listener assertions in `tests/test_enhance_editor.py` flaked once under CPU contention (with the direct `invoke_on_main` test double, the render worker's apply-notification can be reordered before the synchronous "rendering started" one); fixed test-side to be order-agnostic — no src change. After that, **3 consecutive `-n auto` runs gave the identical pass/fail set as serial** (2586 passed, 19 skipped, 2 known failed).
+3. **`slow` marker** registered in `pyproject.toml`; the 7 tests ≥ ~2s serial (visibility_planner ×2, visibility_timeline ×3, preview ×1, transport ×1 — genuine astropy/scipy compute or timing tests) are marked `@pytest.mark.slow`. They always run in the full suite; `-m "not slow"` deselects exactly those 7 for a fast loop.
+
+### Before/after timing table (2026-11-21)
+
+| run | command | wall-clock | result |
+|---|---|---|---|
+| before — main @ `95813e0` | `uv run pytest -q` (serial) | **505.14s** | 2586 passed, 19 skipped, 2 failed (known) |
+| after — `wt/dependency-upgrade-05` | `uv run pytest -q` (serial, run 1) | **165.18s** | 2586 passed, 19 skipped, 2 failed (identical set) |
+| after — `wt/dependency-upgrade-05` | `uv run pytest -q` (serial, run 2, `--durations=20`) | **154.03s** | 2586 passed, 19 skipped, 2 failed (identical set) |
+| after — `wt/dependency-upgrade-05` | `uv run pytest -q -n auto` (3 consecutive runs) | **20.6–21.7s** | 2586 passed, 19 skipped, 2 failed — identical set every run |
+| after — fast loop | `uv run pytest -q -n auto -m "not slow"` | **20.58s** | 2579 passed, 19 skipped, 2 failed (7 `slow` deselected) |
+
+After the fix the serial duration distribution is flat (slowest single test 3.9s, down from 22s). The parallel invocation is the documented default (see AGENTS.md "Running tests"); the ticket commit is the head of `wt/dependency-upgrade-05` (merge hash recorded on merge, as for issues 01–03).
