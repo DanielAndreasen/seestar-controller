@@ -4,7 +4,7 @@
 
 **Blocked by:** None (project-store, photometry detection patterns done)
 
-**Status:** done
+**Status:** implemented in e754922 (merged)
 
 - [x] Pure `moving_objects/` package, no gi (subprocess boundary test); astropy/photutils lazy
 - [x] `detect_in_subs(project, session_id)` -> per-frame detections; `link_tracks(detections, max_motion_px)` -> tracks; `flag_linear_movers(tracks, min_frames)` -> mover reports (start/end pos+time, speed px/frame or arcsec/frame if WCS, direction, residual)
