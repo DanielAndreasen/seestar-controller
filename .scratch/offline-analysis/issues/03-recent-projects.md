@@ -4,7 +4,7 @@
 
 **Blocked by:** offline-analysis 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 3d6a6a4 (merged)
 
 - [ ] Recent-projects persistence in app config dir (atomic, capped, most-recent-first, dedup)
 - [ ] UI: recent projects menu/dialog entries
