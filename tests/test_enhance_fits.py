@@ -23,8 +23,13 @@ Covers the pure layer of ``seestar_controller.enhance``:
   :func:`~seestar_controller.enhance.render.render_preview` — modes, mean
   pooling, downscale-before-tonemap fast path (a 2048² stack renders in well
   under 0.5 s);
+- :func:`~seestar_controller.enhance.fits_io.list_project_frames` — ALL stored
+  frames of a project (subs, stacks, enhanced) ordered by jd with their
+  ``kind``; :func:`~seestar_controller.enhance.fits_io.list_project_stacks`
+  stays the stack-only view;
 - :class:`~seestar_controller.enhance.viewer_controller.ViewerController` —
-  stack listing, open_stack (current image + preview), the path+mtime FITS
+  frame listing (all stored frames — subs included, sub-frames ticket 01),
+  open_stack on any frame id (current image + preview), the path+mtime FITS
   cache, unknown id / corrupt file / no project errors recorded in the
   snapshot, set_project, frozen snapshots, listener add/remove/idempotency and
   isolation of a raising listener;
@@ -566,14 +571,17 @@ def test_render_preview_passes_tonemap_params():
 
 
 def test_controller_lists_stacks_on_init(project, stored_stacks):
-    stack_frames, _sub = stored_stacks
+    stack_frames, sub = stored_stacks
     vc = ViewerController(project)
     assert vc.project is project
-    assert [s.frame_id for s in vc.stacks] == [f.id for f in stack_frames]
+    # sub-frames ticket 01: ALL stored frames are listed (subs included),
+    # ordered by jd — the two stacks (DATE1, DATE2) then the sub (DATE3)
+    assert [s.frame_id for s in vc.stacks] == [f.id for f in stack_frames] + [sub.id]
+    assert [s.kind for s in vc.stacks] == ["stack", "stack", "sub"]
     snap = vc.snapshot
     assert isinstance(snap, ViewerSnapshot)
     assert snap.project_name == "M 42 night"
-    assert len(snap.stacks) == 2
+    assert len(snap.stacks) == 3
     assert snap.current is None and snap.image is None and snap.preview is None
     assert snap.error is None
 
@@ -615,7 +623,7 @@ def test_controller_open_unknown_id_raises_and_records(project, stored_stacks):
     vc.add_listener(seen.append)
     with pytest.raises(EnhanceError) as excinfo:
         vc.open_stack(99999)
-    assert "no stack with frame id" in str(excinfo.value)
+    assert "no frame with frame id" in str(excinfo.value)
     assert vc.snapshot.error is not None and "99999" in vc.snapshot.error
     assert vc.current_stack is None
     assert seen and seen[-1].error is not None  # listeners notified of the error
@@ -648,7 +656,7 @@ def test_controller_set_project_and_clear(project, stored_stacks, root):
     seen = []
     vc.add_listener(seen.append)
     vc.set_project(project)
-    assert len(vc.stacks) == 2
+    assert len(vc.stacks) == 3  # 2 stacks + 1 sub (all stored frames)
     assert vc.snapshot.project_name == "M 42 night"
     # open a stack, then switch project: the open stack is closed
     vc.open_stack(vc.stacks[0].frame_id)

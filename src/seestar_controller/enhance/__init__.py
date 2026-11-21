@@ -5,15 +5,18 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
 
 - **Pure layer** — :mod:`.fits_io` (:func:`~.fits_io.load_fits` ->
   :class:`~.fits_io.FitsImage` with astropy, BZERO/BSCALE/BLANK handled
-  manually and NaN-safe; :func:`~.fits_io.list_project_stacks` ->
-  :class:`~.fits_io.StackInfo` via the store's frames/sessions;
+  manually and NaN-safe; :func:`~.fits_io.list_project_frames` ->
+  :class:`~.fits_io.StackInfo` via the store's frames/sessions — ALL stored
+  frames (subs, stacks, enhanced; :func:`~.fits_io.list_project_stacks` is
+  the stack-only view);
   :class:`~.fits_io.EnhanceError`), :mod:`.render` (:func:`~.render.tonemap`
   percentile tone mapping with linear/asinh/log/sqrt stretches + gamma,
   :func:`~.render.to_pil_image`, :func:`~.render.downscale`,
   :func:`~.render.render_preview` — downscale first, then tone-map, so slider
   interaction stays smooth), :mod:`.viewer_controller`
   (:class:`~.viewer_controller.ViewerController` — the app-level shared
-  controller: current project, stack list, open_stack with a path+mtime FITS
+  controller: current project, the frame list (all stored frames — subs
+  included, sub-frames ticket 01), open_stack with a path+mtime FITS
   cache, frozen :class:`~.viewer_controller.ViewerSnapshot` listener
   notifications), :mod:`.editor_controller` (ticket 03 —
   :class:`~.editor_controller.EditorController`: the editing state of the
@@ -40,8 +43,8 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   stdlib + numpy/PIL + store only — fully unit-testable headless; a
   subprocess test enforces the boundary.
 - **Widget layer** — :mod:`.viewer` (:class:`~.viewer.ImageViewer`, the
-  stack list + tone-mapped Gtk.Picture) and :mod:`.enhance_view` (ticket 03 —
-  :class:`~.enhance_view.EnhanceEditor`, the full Enhance view: stack list +
+  frame list + tone-mapped Gtk.Picture) and :mod:`.enhance_view` (ticket 03 —
+  :class:`~.enhance_view.EnhanceEditor`, the full Enhance view: frame list +
   per-op parameter sliders on the left, before/after preview + undo/redo/reset
   on the right). Both import ``gi`` at module top and are re-exported here
   **lazily** (PEP 562 ``__getattr__``), so
@@ -74,6 +77,7 @@ from .fits_io import (
     EnhanceError,
     FitsImage,
     StackInfo,
+    list_project_frames,
     list_project_stacks,
     load_fits,
 )
@@ -203,6 +207,7 @@ __all__ = [
     "delete_preset_for",
     "downscale",
     "export_render",
+    "list_project_frames",
     "list_project_stacks",
     "load_fits",
     "load_preset_for",
