@@ -1,6 +1,6 @@
 # Spec: astrometry
 
-Status: ready-for-agent (3 issues; blocked by gaia-crossmatch)
+Status: completed 2026-11-20 (01: 8f671c1; 02: a6f531a; 03: 4954e2d+599f950)
 
 ## Problem Statement
 

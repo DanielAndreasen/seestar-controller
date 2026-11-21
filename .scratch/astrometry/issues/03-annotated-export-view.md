@@ -4,7 +4,7 @@
 
 **Blocked by:** astrometry 01, astrometry 02, gaia-crossmatch 03 (labels)
 
-**Status:** ready-for-agent
+**Status:** implemented in 4954e2d+599f950 (merged)
 
 - [ ] Annotated PNG export (PIL/matplotlib over tone-mapped image): labels, mags, FOV rectangle, scale bar
 - [ ] "Solve" action in the image viewer (worker thread, clear failure toast)
