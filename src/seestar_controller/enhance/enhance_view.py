@@ -21,9 +21,11 @@ one shared
 window passes them down via
 :func:`seestar_controller.ui.views.build_view`):
 
-- **left pane** — the project's **stacks** as a :class:`Gtk.ListBox` (one row
-  per :class:`~seestar_controller.enhance.fits_io.StackInfo`, selecting a row
-  opens the stack via the viewer controller) with a **Refresh** button, and
+- **left pane** — the project's stored **frames** (subs, stacks, enhanced —
+  sub-frames ticket 01) as a :class:`Gtk.ListBox` (one row per
+  :class:`~seestar_controller.enhance.fits_io.StackInfo`, subtitle with the
+  frame kind; selecting a row opens the frame via the viewer controller) with
+  a **Refresh** button, and
   below it the **per-op parameter sliders**: one
   :class:`Adw.PreferencesGroup` per pipeline op (from the
   :data:`~seestar_controller.enhance.ops.OPS` registry + the params dataclass
@@ -115,8 +117,9 @@ GAINS_CHANNELS = ("r", "g", "b")
 
 
 class EnhanceEditor(Gtk.Box):
-    """The Enhance-view editor: stack list + per-op sliders on the left,
-    before/after preview + undo/redo/reset on the right.
+    """The Enhance-view editor: frame list (all stored frames — subs included)
+    + per-op sliders on the left, before/after preview + undo/redo/reset on
+    the right.
 
     Constructed with the two controllers (the app passes its shared
     instances; fresh ones are created when omitted, so the widget also works
@@ -178,7 +181,7 @@ class EnhanceEditor(Gtk.Box):
         left.set_hexpand(False)
         left.set_vexpand(True)
 
-        heading = Gtk.Label(label="Stacks", xalign=0.0, css_classes=["heading"])
+        heading = Gtk.Label(label="Frames", xalign=0.0, css_classes=["heading"])
         left.append(heading)
 
         self._list_box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
@@ -195,7 +198,7 @@ class EnhanceEditor(Gtk.Box):
 
         self._refresh_button = Gtk.Button(
             label="Refresh",
-            tooltip_text="Re-list the stacks of the current project",
+            tooltip_text="Re-list the frames of the current project",
         )
         self._refresh_button.connect("clicked", self._on_refresh_clicked)
         left.append(self._refresh_button)
@@ -298,7 +301,7 @@ class EnhanceEditor(Gtk.Box):
         self._view_stack.add_named(self._after_picture, "after")
         self._view_stack.set_visible_child_name("after")
         self._placeholder = Gtk.Label(
-            label="no stack open",
+            label="no frame open",
             halign=Gtk.Align.CENTER,
             valign=Gtk.Align.CENTER,
             css_classes=["dim-label", "heading"],
@@ -329,7 +332,7 @@ class EnhanceEditor(Gtk.Box):
 
     @property
     def viewer_controller(self) -> ViewerController:
-        """The pure-layer viewer controller (stack list) backing this widget."""
+        """The pure-layer viewer controller (frame list) backing this widget."""
         return self._viewer_controller
 
     @property
@@ -431,17 +434,27 @@ class EnhanceEditor(Gtk.Box):
         return titles
 
     def row_count(self) -> int:
-        """The number of stack rows currently shown (test helper)."""
+        """The number of frame rows currently shown (test helper)."""
         return len(self._rows)
 
     def row_label(self, index: int) -> str:
-        """The label of the stack row at ``index`` (test helper)."""
+        """The label of the frame row at ``index`` (test helper)."""
         row = self._list_box.get_row_at_index(index)
         if row is None:
             return ""
         child = row.get_child()
         label = child.get_first_child() if child is not None else None
         return label.get_label() if label is not None else ""
+
+    def row_subtitle(self, index: int) -> str:
+        """The subtitle (kind · session · jd · …) of the frame row at
+        ``index`` (test helper)."""
+        row = self._list_box.get_row_at_index(index)
+        if row is None:
+            return ""
+        child = row.get_child()
+        subtitle = child.get_last_child() if child is not None else None
+        return subtitle.get_label() if subtitle is not None else ""
 
     # -- slider construction ---------------------------------------------------------
 
@@ -675,7 +688,7 @@ class EnhanceEditor(Gtk.Box):
     # -- rendering ---------------------------------------------------------------------
 
     def _on_viewer_snapshot(self, snapshot: ViewerSnapshot) -> None:
-        """Viewer listener: re-render the stack list + selection + status."""
+        """Viewer listener: re-render the frame list + selection + status."""
         self._viewer_snapshot = snapshot
         ids = tuple(s.frame_id for s in snapshot.stacks)
         if ids != self._stack_ids:
@@ -721,7 +734,7 @@ class EnhanceEditor(Gtk.Box):
             self._placeholder.set_label("no project — open one in the Projects view")
             self._placeholder.set_visible(True)
         elif snapshot.stack is None:
-            self._placeholder.set_label("no stack open — select one on the left")
+            self._placeholder.set_label("no frame open — select one on the left")
             self._placeholder.set_visible(True)
         elif snapshot.original_preview is None and snapshot.enhanced_preview is None:
             self._placeholder.set_label("rendering…")
@@ -765,7 +778,7 @@ class EnhanceEditor(Gtk.Box):
             self._set_status("", error=False)
 
     def _rebuild_rows(self, stacks: tuple[StackInfo, ...]) -> None:
-        """Rebuild the stack list rows from ``stacks``."""
+        """Rebuild the frame list rows from ``stacks`` (one row per stored frame)."""
         self._rows = {}
         while (row := self._list_box.get_row_at_index(0)) is not None:
             self._list_box.remove(row)

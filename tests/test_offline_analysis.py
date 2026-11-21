@@ -302,11 +302,19 @@ def test_open_project_offline_switches_mode_and_pushes_project_to_all_controller
 def test_viewer_lists_and_opens_stored_stacks_offline(opened):
     app = opened.app
     stacks = app.viewer.refresh_stacks()
-    assert [s.frame_id for s in stacks] == [opened.stored.stack.id]
+    # sub-frames ticket 01: the viewer lists ALL stored frames — the 8 subs
+    # (date_obs_str(0..7)) then the stack (date_obs_str(50)), ordered by jd
+    assert [s.kind for s in stacks] == ["sub"] * N_SUBS + ["stack"]
+    assert stacks[-1].frame_id == opened.stored.stack.id
     image = app.viewer.open_stack(opened.stored.stack.id)
     assert image.data.shape == (SIZE, SIZE)
     assert app.viewer.current_stack is not None
     assert app.viewer.current_stack.frame_id == opened.stored.stack.id
+    # a sub opens exactly like a stack
+    sub_image = app.viewer.open_stack(stacks[0].frame_id)
+    assert sub_image.data.shape == (SIZE, SIZE)
+    assert app.viewer.current_stack is not None
+    assert app.viewer.current_stack.kind == "sub"
     _assert_link_untouched(app)
 
 

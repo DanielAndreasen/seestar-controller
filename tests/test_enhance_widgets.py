@@ -179,7 +179,7 @@ def test_viewer_lists_stacks(viewer, viewer_controller):
     # nothing open yet: placeholder visible, no paintable
     assert viewer.picture.get_paintable() is None
     assert viewer.placeholder.get_visible()
-    assert "no stack open" in viewer.placeholder.get_label()
+    assert "no frame open" in viewer.placeholder.get_label()
 
 
 def test_viewer_open_stack_shows_texture(viewer, viewer_controller):

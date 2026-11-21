@@ -695,6 +695,11 @@ class SeestarWindow(Adw.ApplicationWindow):
                     # stored-data actions (Stitch mosaic / Session report)
                     # marshal onto the GLib main loop like every store call.
                     invoke_on_main=_invoke_on_main,
+                    # Sub-frames ticket 01: the Projects view's stored-data
+                    # frame rows open the clicked frame in the shared viewer
+                    # controller and then switch to the Enhance view via
+                    # select_view, so the opened frame is visible.
+                    show_view=self.select_view,
                 ),
                 view.id,
                 view.title,

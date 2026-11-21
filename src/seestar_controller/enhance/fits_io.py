@@ -22,14 +22,17 @@ What lives here:
   ``do_not_scale_image_data=True`` so the raw storage values come through and
   the physical values are computed here — NaN-safe: non-finite pixels become
   NaN);
-- :class:`StackInfo` — one **Stack** (GLOSSARY.md) of a project as listed by
-  :func:`list_project_stacks`: the store :class:`~seestar_controller.store.frames.Frame`
-  fields plus the absolute file ``path`` (via
+- :class:`StackInfo` — one stored **frame** of a project as listed by
+  :func:`list_project_frames`: the store :class:`~seestar_controller.store.frames.Frame`
+  fields (including the frame ``kind`` — ``"sub"`` / ``"stack"`` /
+  ``"enhanced"``) plus the absolute file ``path`` (via
   :func:`~seestar_controller.store.frames.get_frame_path`) and the session's
   start time;
-- :func:`list_project_stacks` — all stacks of a project across all sessions
-  (``store.frames.list_frames(project, kind="stack")`` + the session records),
+- :func:`list_project_frames` — all stored frames of a project across all
+  sessions (``store.frames.list_frames(project)`` + the session records),
   ordered by ``jd``; store errors are wrapped into :class:`EnhanceError`.
+  :func:`list_project_stacks` is the ``kind="stack"``-only view of the same
+  listing (kept for the stack-only callers).
 
 Synthetic-FITS helpers for tests live in the tests, not here (this package
 only reads).
@@ -98,18 +101,21 @@ class FitsImage:
 
 @dataclass(frozen=True)
 class StackInfo:
-    """One **Stack** (GLOSSARY.md) of a project, as listed by
-    :func:`list_project_stacks`.
+    """One stored **frame** of a project, as listed by
+    :func:`list_project_frames` (any ``kind`` — sub, stack, or enhanced;
+    sub-frames ticket 01: the viewer lists and opens all of them).
 
     - ``frame_id`` — the store frame row id (the id :meth:`ViewerController.open_stack`
       takes);
-    - ``session_id`` — the session the stack belongs to;
+    - ``session_id`` — the session the frame belongs to;
     - ``session_started_at`` — the session's start (UTC ISO), None when the
       session row is missing (hand-edited db);
     - ``path`` — the absolute path of the FITS file;
     - ``jd`` / ``utc`` — the observation time (Julian Date / UTC ISO-8601);
     - ``target`` / ``exposure`` / ``gain`` — the frame metadata (None when
-      unknown).
+      unknown);
+    - ``kind`` — the frame kind (``"sub"`` / ``"stack"`` / ``"enhanced"``);
+      defaults to ``"stack"`` so stack-only constructions keep working.
     """
 
     frame_id: int
@@ -121,14 +127,16 @@ class StackInfo:
     target: str | None
     exposure: float | None
     gain: float | None
+    kind: str = KIND_STACK
 
     def label(self) -> str:
         """The one-line list label: ``"2026-11-20T22:00:00.000+00:00 — M 42"``."""
         return f"{self.utc} — {self.target or 'no target'}"
 
     def subtitle(self) -> str:
-        """The second list line: session, jd, exposure/gain when known."""
-        parts = [f"session {self.session_id}", f"jd {self.jd:.6f}"]
+        """The second list line: the frame kind, session, jd, and
+        exposure/gain when known."""
+        parts = [self.kind, f"session {self.session_id}", f"jd {self.jd:.6f}"]
         if self.exposure is not None:
             parts.append(f"{self.exposure:g} s")
         if self.gain is not None:
@@ -221,12 +229,19 @@ def load_fits(path: str | Path) -> FitsImage:
     return FitsImage(data=data, header=header, path=file_path)
 
 
-def list_project_stacks(project: Project | None) -> list[StackInfo]:
-    """List all **Stacks** (GLOSSARY.md) of ``project`` across all sessions,
-    ordered by ``jd`` (the store's frame order).
+def list_project_frames(
+    project: Project | None, *, kind: str | None = None
+) -> list[StackInfo]:
+    """List the stored **frames** of ``project`` across all sessions, ordered
+    by ``jd`` (the store's frame order).
 
-    Uses :func:`seestar_controller.store.frames.list_frames` with
-    ``kind="stack"`` plus the session records (for the session start time) and
+    With ``kind=None`` (the default) ALL frames are listed — subs, stacks,
+    and enhanced frames alike (sub-frames ticket 01: the image viewer lists
+    and opens any stored frame); pass ``kind="stack"`` (or another
+    :data:`~seestar_controller.store.frames.KINDS` member) to restrict.
+
+    Uses :func:`seestar_controller.store.frames.list_frames` plus the session
+    records (for the session start time) and
     :func:`seestar_controller.store.frames.get_frame_path` for the absolute
     file path. Raises :class:`EnhanceError` when ``project`` is None or a
     store error occurs (wrapped, with the cause chained).
@@ -237,13 +252,13 @@ def list_project_stacks(project: Project | None) -> list[StackInfo]:
             "(the Projects view is a later ticket)"
         )
     try:
-        frames: list[Frame] = list_frames(project, kind=KIND_STACK)
+        frames: list[Frame] = list_frames(project, kind=kind)
         sessions = {s.id: s for s in list_sessions(project)}
-        stacks: list[StackInfo] = []
+        infos: list[StackInfo] = []
         for frame in frames:
             path = get_frame_path(project, frame)
             session = sessions.get(frame.session_id)
-            stacks.append(
+            infos.append(
                 StackInfo(
                     frame_id=frame.id,
                     session_id=frame.session_id,
@@ -254,10 +269,18 @@ def list_project_stacks(project: Project | None) -> list[StackInfo]:
                     target=frame.target,
                     exposure=frame.exposure,
                     gain=frame.gain,
+                    kind=frame.kind,
                 )
             )
     except ProjectError as exc:
         raise EnhanceError(
-            f"cannot list the stacks of project {project.slug!r}: {exc}"
+            f"cannot list the frames of project {project.slug!r}: {exc}"
         ) from exc
-    return stacks
+    return infos
+
+
+def list_project_stacks(project: Project | None) -> list[StackInfo]:
+    """List only the **Stacks** (GLOSSARY.md) of ``project`` — the
+    ``kind="stack"`` view of :func:`list_project_frames` (kept for the
+    stack-only callers)."""
+    return list_project_frames(project, kind=KIND_STACK)

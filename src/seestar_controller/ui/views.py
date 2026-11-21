@@ -124,7 +124,11 @@ from seestar_controller.astrometry.view import (
 from seestar_controller.astrometry.view import (
     SolvePanel as SolvePanelWidget,
 )
-from seestar_controller.enhance import EditorController, ViewerController
+from seestar_controller.enhance import (
+    EditorController,
+    EnhanceError,
+    ViewerController,
+)
 from seestar_controller.enhance.enhance_view import (
     EnhanceEditor as EnhanceEditorWidget,
 )
@@ -502,7 +506,8 @@ class EnhanceView(_PlaceholderView):
     """Enhance view (image-enhance tickets 01 + 03 + 04, gaia-crossmatch
     ticket 03): wraps the
     :class:`~seestar_controller.enhance.enhance_view.EnhanceEditor` widget —
-    the project's stack list + per-op parameter sliders on the left, the
+    the project's frame list (all stored frames — subs included) + per-op
+    parameter sliders on the left, the
     live before/after preview with undo/redo/reset on the right, plus the
     ticket-04 persistence buttons (Save enhanced / Save preset / Export PNG /
     Export JPEG, exposed as pass-through properties) — and below it the
@@ -1109,7 +1114,12 @@ class ProjectsView(_PlaceholderView):
       ``kind='stack'`` frame in ``stacks/<session>/``,
       :func:`~seestar_controller.report.generate_report` →
       ``reports/<session>.html``), reporting the outcome (or the error) in
-      the data status label.
+      the data status label. Sub-frames ticket 01: each **frame row is a
+      button** — clicking it opens the frame in the shared image viewer
+      (``viewer_controller.open_stack`` — any kind, subs included) on the
+      main loop through ``invoke_on_main`` and, when the app passes
+      ``show_view``, switches to the Enhance view so the opened frame is
+      visible immediately.
 
     The view re-renders on every controller event (it registers as a
     listener), so changes from anywhere show up.
@@ -1123,6 +1133,8 @@ class ProjectsView(_PlaceholderView):
         project_controller: ProjectController | None = None,
         *,
         invoke_on_main: Callable[[Callable[[], None]], Any] | None = None,
+        viewer_controller: ViewerController | None = None,
+        show_view: Callable[[str], None] | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -1134,6 +1146,16 @@ class ProjectsView(_PlaceholderView):
         #: marshals the stored-data actions onto the main loop (the app
         #: window binds GLib.idle_add; standalone/tests call directly)
         self._invoke_on_main = invoke_on_main or _direct_invoke
+        #: the shared image-viewer controller the frame rows open frames in
+        #: (sub-frames ticket 01; the app passes its shared instance via
+        #: :func:`build_view`; a fresh one is created when omitted)
+        self._viewer_controller = (
+            viewer_controller if viewer_controller is not None else ViewerController()
+        )
+        #: optional ``show_view(view_id)`` callback (the app passes its
+        #: ``select_view``): called with the Enhance view's id after a frame
+        #: row opened a frame in the viewer, so the opened frame is visible
+        self._show_view = show_view
         #: per-row Open buttons, rebuilt with the list
         self._row_buttons: list[Gtk.Button] = []
         #: per-row "current" badges, rebuilt with the list
@@ -1214,6 +1236,12 @@ class ProjectsView(_PlaceholderView):
     def controller(self) -> ProjectController:
         """The pure-layer project controller backing this view."""
         return self._project_controller
+
+    @property
+    def viewer_controller(self) -> ViewerController:
+        """The shared image-viewer controller the stored-data frame rows open
+        frames in (sub-frames ticket 01)."""
+        return self._viewer_controller
 
     @property
     def list_box(self) -> Gtk.ListBox:
@@ -1315,6 +1343,17 @@ class ProjectsView(_PlaceholderView):
     def frame_row_label(self, index: int, frame: int) -> str:
         """The label of the ``frame``-th frame row under session ``index``."""
         return self._session_records[index]["frame_labels"][frame]
+
+    def frame_button(self, index: int, frame: int) -> Gtk.Button:
+        """The clickable frame row (a button) of the ``frame``-th frame under
+        session ``index`` — sub-frames ticket 01: clicking it opens the frame
+        in the image viewer."""
+        return self._session_records[index]["frame_buttons"][frame]
+
+    def click_frame(self, index: int, frame: int) -> None:
+        """Click the ``frame``-th frame row under session ``index`` (opens the
+        frame in the image viewer)."""
+        self.frame_button(index, frame).emit("clicked")
 
     def stitch_button(self, index: int) -> Gtk.Button:
         """The Stitch mosaic button of the session at ``index``."""
@@ -1460,6 +1499,7 @@ class ProjectsView(_PlaceholderView):
         box.append(report_button)
         self._sessions_box.append(Gtk.ListBoxRow(child=box, activatable=False))
         frame_labels: list[str] = []
+        frame_buttons: list[Gtk.Button] = []
         for frame in frames:
             exposure = f"{frame.exposure:g} s" if frame.exposure is not None else "?"
             target = frame.target or ""
@@ -1468,17 +1508,25 @@ class ProjectsView(_PlaceholderView):
                 f"{exposure} · {target}"
             )
             frame_labels.append(label)
+            # sub-frames ticket 01: the frame row is a button — clicking it
+            # opens the frame in the image viewer (any kind, subs included)
+            frame_button = Gtk.Button(
+                label=label,
+                halign=Gtk.Align.START,
+                valign=Gtk.Align.CENTER,
+                margin_start=24,
+                css_classes=["flat", "dim-label"],
+                tooltip_text=(
+                    f"Open this {frame.kind} (frame #{frame.id}) in the "
+                    "image viewer (Enhance view)"
+                ),
+            )
+            frame_button.connect(
+                "clicked", lambda _btn, fid=frame.id: self._on_frame_clicked(fid)
+            )
+            frame_buttons.append(frame_button)
             self._sessions_box.append(
-                Gtk.ListBoxRow(
-                    child=Gtk.Label(
-                        label=label,
-                        xalign=0.0,
-                        halign=Gtk.Align.START,
-                        margin_start=24,
-                        css_classes=["dim-label"],
-                    ),
-                    activatable=False,
-                )
+                Gtk.ListBoxRow(child=frame_button, activatable=False)
             )
         self._session_records.append(
             {
@@ -1489,6 +1537,7 @@ class ProjectsView(_PlaceholderView):
                 "stack_button": stack_button,
                 "report_button": report_button,
                 "frame_labels": frame_labels,
+                "frame_buttons": frame_buttons,
             }
         )
 
@@ -1653,6 +1702,38 @@ class ProjectsView(_PlaceholderView):
                 f"{kind} of {session_id} failed: {exc}", error=True
             )
 
+    # -- frame rows -> image viewer (sub-frames ticket 01) ---------------------------
+
+    def _on_frame_clicked(self, frame_id: int) -> None:
+        """A stored-data frame row was clicked: open the frame in the shared
+        image viewer on the main loop via ``invoke_on_main`` (the store
+        connection is main-thread-bound, exactly like the stored-data
+        actions above). Never raises."""
+        self._invoke_on_main(lambda: self._open_frame_in_viewer(frame_id))
+
+    def _open_frame_in_viewer(self, frame_id: int) -> None:
+        """Open frame ``frame_id`` of the current project in the shared viewer
+        controller (any kind — subs included) and, when the app passed
+        ``show_view``, switch to the Enhance view so the frame is visible.
+        Reports the outcome in the data status label; never raises."""
+        project = self._project_controller.current
+        if project is None:
+            self._set_data_status("no project open", error=True)
+            return
+        viewer = self._viewer_controller
+        try:
+            if viewer.project is None or Path(viewer.project.path) != Path(project.path):
+                viewer.set_project(project)
+            viewer.open_stack(frame_id)
+        except EnhanceError as exc:
+            self._set_data_status(f"cannot open frame {frame_id}: {exc}", error=True)
+            return
+        self._set_data_status(
+            f"opened frame {frame_id} in the image viewer", error=False
+        )
+        if self._show_view is not None:
+            self._show_view(EnhanceView.view_id)
+
 
 #: view id -> widget class (one entry per pure-layer view).
 VIEW_CLASSES: dict[str, type[_PlaceholderView]] = {
@@ -1692,6 +1773,7 @@ def build_view(
     project: Any = None,
     app_state: AppState | None = None,
     invoke_on_main: Callable[[Callable[[], None]], Any] | None = None,
+    show_view: Callable[[str], None] | None = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
 
@@ -1724,7 +1806,12 @@ def build_view(
     them. ``invoke_on_main`` is forwarded to the Projects view's stored-data
     actions (offline-analysis ticket 02 — the app window binds
     ``GLib.idle_add``, so the Stitch mosaic / Session report actions run on
-    the GLib main loop like every other store call).
+    the GLib main loop like every other store call). ``viewer_controller``
+    and ``show_view`` are also forwarded to the Projects view (sub-frames
+    ticket 01): its stored-data frame rows open the clicked frame in the
+    shared viewer controller and then call ``show_view("enhance")`` (the app
+    window passes its ``select_view``) so the opened frame is visible in the
+    Enhance view.
     """
     view_by_id(view_id)  # validate (raises UnknownViewError)
     if view_id == ObserveView.view_id:
@@ -1763,6 +1850,9 @@ def build_view(
         return HrDiagramView(hr_diagram_controller=hr_diagram_controller)
     if view_id == ProjectsView.view_id:
         return ProjectsView(
-            project_controller=project_controller, invoke_on_main=invoke_on_main
+            project_controller=project_controller,
+            invoke_on_main=invoke_on_main,
+            viewer_controller=viewer_controller,
+            show_view=show_view,
         )
     return VIEW_CLASSES[view_id]()

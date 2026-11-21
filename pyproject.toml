@@ -78,6 +78,7 @@ include = [
     "tests/test_photometry_widgets.py",
     "tests/test_recent_widgets.py",
     "tests/test_report_widgets.py",
+    "tests/test_sub_frames_widgets.py",
     "tests/test_ui_widgets.py",
     "tests/test_variable_scan_view_widgets.py",
     "tests/test_visibility_widgets.py",

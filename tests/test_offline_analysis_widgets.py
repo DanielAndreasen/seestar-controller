@@ -266,7 +266,10 @@ def test_analysis_views_render_stored_data_offline(app, gtk, stored_project):
     # the shared controllers all carry the offline-opened project
     assert app.viewer_controller.project is project
     stacks = app.viewer_controller.refresh_stacks()
-    assert [s.frame_id for s in stacks] == [stored_project["stack"].id]
+    # sub-frames ticket 01: the viewer lists ALL stored frames — the 8 subs
+    # then the stack, ordered by jd
+    assert [s.kind for s in stacks] == ["sub"] * N_SUBS + ["stack"]
+    assert stacks[-1].frame_id == stored_project["stack"].id
 
     cases = (
         ("enhance", EnhanceView),
