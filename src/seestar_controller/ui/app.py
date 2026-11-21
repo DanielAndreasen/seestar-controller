@@ -691,6 +691,10 @@ class SeestarWindow(Adw.ApplicationWindow):
                     project_controller=self._project_controller,
                     project=self._project_controller.current,
                     app_state=state,
+                    # Offline-analysis ticket 02: the Projects view's
+                    # stored-data actions (Stitch mosaic / Session report)
+                    # marshal onto the GLib main loop like every store call.
+                    invoke_on_main=_invoke_on_main,
                 ),
                 view.id,
                 view.title,
