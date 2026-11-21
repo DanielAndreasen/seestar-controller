@@ -55,6 +55,21 @@ Modules:
 - :mod:`.persistence` — the project-store glue of issue 02:
   :func:`~.persistence.save_crossmatch`, :func:`~.persistence.load_crossmatch`,
   :func:`~.persistence.list_crossmatched_stacks`.
+
+Issue 03 adds the overlay layer:
+
+- :mod:`.overlay` — the PURE render + controller layer:
+  :func:`~.overlay.tonemap_gray` / :func:`~.overlay.render_stack_overlay`
+  draw the cross-match on the tone-mapped stack (matched detections ringed
+  and labelled with their Gaia G magnitude, unmatched detections flagged
+  with a distinct X marker), and :class:`~.overlay.CrossmatchController` is
+  the app-level shared controller (following the shared viewer controller's
+  open stack) that runs the pipeline with the configurable match radius +
+  G limit (cache-first re-query on change), persists the table, and renders
+  the annotated overlay;
+- :mod:`.overlay_view` — the WIDGET layer (imports ``gi`` at module top,
+  re-exported lazily below): :class:`~.overlay_view.CrossmatchOverlayView`,
+  the cross-match panel of the image viewer.
 """
 
 from .detect import (
@@ -81,6 +96,27 @@ from .matching import (
     CrossmatchRow,
     crossmatch,
     crossmatch_stack,
+)
+from .overlay import (
+    DB_CALL_TIMEOUT_S,
+    DEFAULT_HI_PERCENTILE,
+    DEFAULT_LO_PERCENTILE,
+    DEFAULT_MAX_OVERLAY_SIZE,
+    LINE_WIDTH,
+    MATCHED_COLOR,
+    MAX_G_LIMIT,
+    MAX_MATCH_RADIUS_ARCSEC,
+    MIN_G_LIMIT,
+    MIN_MATCH_RADIUS_ARCSEC,
+    POINT_RADIUS,
+    RING_RADIUS,
+    UNMATCHED_COLOR,
+    CrossmatchController,
+    CrossmatchListener,
+    CrossmatchSnapshot,
+    InvokeOnMain,
+    render_stack_overlay,
+    tonemap_gray,
 )
 from .persistence import (
     list_crossmatched_stacks,
@@ -110,32 +146,68 @@ from .query import (
     query_gaia_cached,
 )
 
+#: Widget-layer exports, re-exported LAZILY (PEP 562): the widget modules
+#: import ``gi`` at module top, so they must never be imported eagerly here —
+#: only the attribute lookup triggers the import (and needs GTK, see
+#: docs/wiki/assumptions.md).
+_WIDGET_EXPORTS = {
+    "CrossmatchOverlayView": "overlay_view",
+}
+
+
+def __getattr__(name: str):
+    if name in _WIDGET_EXPORTS:
+        from importlib import import_module
+
+        module = import_module(f".{_WIDGET_EXPORTS[name]}", __name__)
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "ARCSEC_PER_DEG",
     "CACHE_DIR_ENV_VAR",
+    "DB_CALL_TIMEOUT_S",
     "DEFAULT_CACHE_DIR",
     "DEFAULT_FWHM_PX",
     "DEFAULT_G_LIMIT",
+    "DEFAULT_HI_PERCENTILE",
+    "DEFAULT_LO_PERCENTILE",
     "DEFAULT_MARGIN_DEG",
     "DEFAULT_MATCH_RADIUS_ARCSEC",
     "DEFAULT_MAXREC",
+    "DEFAULT_MAX_OVERLAY_SIZE",
     "DEFAULT_THRESHOLD_SIGMA",
     "DEFAULT_TIMEOUT_S",
     "DEFAULT_TTL_S",
     "GAIA_COLUMNS",
     "GAIA_DR3_TABLE",
     "KEY_ROUND_DIGITS",
+    "LINE_WIDTH",
+    "MATCHED_COLOR",
     "MAX_FWHM_PX",
+    "MAX_G_LIMIT",
+    "MAX_MATCH_RADIUS_ARCSEC",
     "MAX_RADIUS_DEG",
     "MIN_FWHM_PX",
+    "MIN_G_LIMIT",
+    "MIN_MATCH_RADIUS_ARCSEC",
+    "POINT_RADIUS",
+    "RING_RADIUS",
+    "UNMATCHED_COLOR",
     "VIZIER_TAP_SYNC_URL",
+    "CrossmatchController",
+    "CrossmatchListener",
+    "CrossmatchOverlayView",
     "CrossmatchRow",
+    "CrossmatchSnapshot",
     "DetectedSource",
     "DetectionError",
     "GaiaError",
     "GaiaResponseError",
     "GaiaStar",
     "GaiaUnavailableError",
+    "InvokeOnMain",
     "WcsMissingError",
     "build_cone_query",
     "crossmatch",
@@ -152,5 +224,7 @@ __all__ = [
     "pixel_to_sky",
     "query_gaia",
     "query_gaia_cached",
+    "render_stack_overlay",
     "save_crossmatch",
+    "tonemap_gray",
 ]
