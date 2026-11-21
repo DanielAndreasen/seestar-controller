@@ -6,11 +6,15 @@ Evidence: `.scratch/mosaic-stitch/spec.md` stories 2-4 + Implementation Decision
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in e8995c2 (pending review)
 
-- [ ] Either: after stitching, the mosaic can be opened in the Enhance view (register the mosaic FITS as a frame — store schema bump — or add an "open file" path to the viewer plus a mosaic row in the Enhance view); or: spec story 4 is moved to Out of Scope with a note
-- [ ] Chosen path covered by tests; `uv run pytest tests/test_mosaic_stitch.py tests/test_enhance_widgets.py -q` passes; full suite green; ty + ruff clean
+- [x] Either: after stitching, the mosaic can be opened in the Enhance view — CHOSEN PATH: open-file path in the viewer + a mosaic row in the Enhance view list (`list_project_mosaics` + `ViewerController.open_path`, rows dispatch on `frame_id=None`; the Projects-view Stitch action opens the mosaic and switches to the Enhance view). Registering the mosaic as a `frames` row was rejected: issue 01 decided "no store schema bump", and a `kind="stack"` row would be re-ingested as a tile on the next stitch.
+- [x] Chosen path covered by tests; `uv run pytest tests/test_mosaic_stitch.py tests/test_enhance_widgets.py -q` passes; full suite green; ty + ruff clean
 
 ## Comments
 
 Audit finding (kind: missing-feature, severity: medium). Spec story vs implementation conflict.
+
+Implemented in e8995c2 on branch wt/app-improvement-08 (open-file path, no descope of spec story 4 needed). Mosaics are file-based entries (`StackInfo` with `frame_id=None`, `kind="mosaic"`): `list_project_mosaics()` lists `mosaics/*.fits`, `ViewerController.stacks` includes them, `open_path()` opens any FITS by path (relative paths resolve against the project dir; listed entry or transient `mosaic`/`file` entry; cached by path+mtime), the viewer/editor rows dispatch `frame_id=None` -> `open_path`, and the Projects view stitch action opens the stitched mosaic in the shared viewer + switches to the Enhance view. Presets stay per stored frame (save/delete raise a clear EnhanceError for file-based entries, load returns None); `save_enhanced` still stores an `enhanced` frame in the mosaic's session.
+
+Tests: `uv run pytest tests/test_mosaic_stitch.py tests/test_enhance_widgets.py -q` -> 54 passed, 1 skipped (pre-existing `reproject` skip). Neighboring suites re-run green: test_enhance_fits.py, test_sub_frames_viewer.py, test_ui_projects_stack_subs.py, test_sub_frames_widgets.py, test_offline_analysis_widgets.py (141 passed, 1 skipped; the one failure in test_offline_analysis_widgets.py::test_photometry_run_button_measures_the_stored_session_offline also fails on clean main ae31075 — pre-existing, unrelated). `uv tool run ruff check` -> All checks passed! `uv tool run ty check` -> 108 diagnostics, identical to the clean-main baseline (107 gi.repository missing-member errors + 1 pre-existing unused-ignore warning; no new diagnostics).
