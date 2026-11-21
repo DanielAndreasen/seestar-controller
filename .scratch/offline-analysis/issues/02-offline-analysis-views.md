@@ -4,7 +4,7 @@
 
 **Blocked by:** offline-analysis 01
 
-**Status:** ready-for-agent
+**Status:** implemented in f81651e (merged)
 
 - [ ] Each analysis view works when the app is in offline mode (no live session required; controllers read from the store only)
 - [ ] Solve/enhance/mosaic/scan/report actions write results back to the project as usual
