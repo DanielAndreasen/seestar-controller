@@ -23,6 +23,7 @@ def test_astrometry_package_imports_no_gi_no_link_no_ui_no_astropy():
         "import seestar_controller.astrometry.wcs;"
         "import seestar_controller.astrometry.solve;"
         "import seestar_controller.astrometry.session;"
+        "import seestar_controller.astrometry.drift;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
@@ -58,7 +59,7 @@ def test_astrometry_modules_source_scan_no_gi_import():
 
 def test_astrometry_package_module_set():
     modules = {path.stem for path in ASTROMETRY_PACKAGE_DIR.glob("*.py")}
-    assert modules == {"__init__", "errors", "wcs", "solve", "session"}
+    assert modules == {"__init__", "drift", "errors", "wcs", "solve", "session"}
 
 
 def test_astrometry_public_api_is_exported_from_package():
@@ -87,7 +88,16 @@ def test_astrometry_public_api_is_exported_from_package():
         "SOLVER_AUTO",
         "SOLVER_SOLVE_FIELD",
         "SOLVER_GAIA",
+        "DriftError",
+        "DriftPoint",
+        "DriftSeries",
+        "PointingError",
+        "drift_series",
+        "pointing_error",
+        "separation_arcsec",
     ):
         assert name in astrometry.__all__, name
     assert issubclass(astrometry.SolveError, ValueError)
     assert issubclass(astrometry.SolveError, astrometry.AstrometryError)
+    assert issubclass(astrometry.DriftError, ValueError)
+    assert issubclass(astrometry.DriftError, astrometry.AstrometryError)

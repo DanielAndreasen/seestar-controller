@@ -30,7 +30,12 @@ inside the functions that need them, and the local astrometry.net
 - :mod:`.session` — the project glue: :func:`~.session.solve_project_frame`
   (solve a stored frame, write the WCS into its FITS header, persist the WCS
   record in the project db — ``frame_wcs`` table, schema v7 — and the
-  cross-match rows) and :func:`~.session.solve_session_frame`.
+  cross-match rows) and :func:`~.session.solve_session_frame`;
+- :mod:`.drift` — the pointing/drift statistics (issue 02, a read-only
+  consumer of the ``frame_wcs`` store): :func:`~.drift.pointing_error`
+  (requested queue-entry target vs. the solved WCS centers, arcsec) and
+  :func:`~.drift.drift_series` (RA/Dec offset vs. frame time across the
+  session's solved frames, plus drift rates in arcsec/hour).
 
 Typical flow::
 
@@ -43,6 +48,15 @@ Typical flow::
     result.center_ra_deg, result.rms_arcsec
 """
 
+from .drift import (
+    DriftError,
+    DriftPoint,
+    DriftSeries,
+    PointingError,
+    drift_series,
+    pointing_error,
+    separation_arcsec,
+)
 from .errors import AstrometryError, SolveError
 from .session import solve_project_frame, solve_session_frame
 from .solve import (
@@ -89,16 +103,23 @@ __all__ = [
     "SOLVER_SOLVE_FIELD",
     "SOLVE_FIELD_BINARY",
     "AstrometryError",
+    "DriftError",
+    "DriftPoint",
+    "DriftSeries",
     "GaiaQuery",
+    "PointingError",
     "SolveError",
     "SolveResult",
     "StarMatch",
     "cards_to_wcs",
+    "drift_series",
     "has_celestial_wcs",
     "header_center",
     "header_pixel_scale_arcsec",
+    "pointing_error",
     "provisional_wcs_cards",
     "read_fits_bytes",
+    "separation_arcsec",
     "solve_fits_file",
     "solve_frame",
     "solve_project_frame",
