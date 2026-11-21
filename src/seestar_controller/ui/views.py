@@ -108,6 +108,13 @@ from seestar_controller.analysis.lightcurve_view import (
 from seestar_controller.analysis.period_view import (
     PeriodView as PeriodViewWidget,
 )
+from seestar_controller.astrometry import DriftController, SolveController
+from seestar_controller.astrometry.view import (
+    DriftPlotView as DriftPlotWidget,
+)
+from seestar_controller.astrometry.view import (
+    SolvePanel as SolvePanelWidget,
+)
 from seestar_controller.enhance import EditorController, ViewerController
 from seestar_controller.enhance.enhance_view import (
     EnhanceEditor as EnhanceEditorWidget,
@@ -260,6 +267,10 @@ class ObserveView(_PlaceholderView):
     :class:`~seestar_controller.ui.state.AppState`; it feeds the night-timeline
     widget's site settings (a default ``AppState()`` is created when omitted,
     so the view also constructs standalone).
+    ``drift_controller`` (astrometry ticket 03) is the app's shared
+    :class:`~seestar_controller.astrometry.DriftController`; when omitted, the
+    view creates its own, so it also constructs standalone. The drift plot
+    widget sits below the night timeline on the same page.
     """
 
     view_id = "observe"
@@ -269,6 +280,7 @@ class ObserveView(_PlaceholderView):
         self,
         queue_controller: PlanQueueController | None = None,
         observe_controller: ObserveController | None = None,
+        drift_controller: DriftController | None = None,
         project: Any = None,
         project_controller: ProjectController | None = None,
         app_state: AppState | None = None,
@@ -285,6 +297,9 @@ class ObserveView(_PlaceholderView):
                 ConnectionController(SettingsController(AppState())),
                 self._queue_controller,
             )
+        )
+        self._drift_controller = (
+            drift_controller if drift_controller is not None else DriftController()
         )
         self._project = project
         self._project_controller = project_controller
@@ -316,6 +331,12 @@ class ObserveView(_PlaceholderView):
             settings=lambda: self._app_state.settings,
         )
         self._content.append(self._visibility_widget)
+        # astrometry ticket 03: the drift plot (RA/Dec offset vs time of the
+        # session's solved frames) below the night timeline, driven by the
+        # shared drift controller (which follows the shared viewer
+        # controller's project).
+        self._drift_plot = DriftPlotWidget(drift_controller=self._drift_controller)
+        self._content.append(self._drift_plot)
 
     @property
     def queue_controller(self) -> PlanQueueController:
@@ -354,6 +375,17 @@ class ObserveView(_PlaceholderView):
         """The night-timeline widget (visibility-planner ticket 02)."""
         return self._visibility_widget
 
+    @property
+    def drift_controller(self) -> DriftController:
+        """The shared drift controller (astrometry ticket 03) driving this
+        view's drift plot."""
+        return self._drift_controller
+
+    @property
+    def drift_plot(self) -> DriftPlotWidget:
+        """The drift plot widget (astrometry ticket 03)."""
+        return self._drift_plot
+
 
 class EnhanceView(_PlaceholderView):
     """Enhance view (image-enhance tickets 01 + 03 + 04, gaia-crossmatch
@@ -376,7 +408,14 @@ class EnhanceView(_PlaceholderView):
     ``crossmatch_controller`` is the app's shared
     :class:`~seestar_controller.gaia.overlay.CrossmatchController` (the
     gaia-crossmatch ticket 03) driving the cross-match overlay panel; when
-    omitted, the view creates its own. With no project set on the viewer
+    omitted, the view creates its own. ``solve_controller`` is the app's
+    shared :class:`~seestar_controller.astrometry.SolveController` (astrometry
+    ticket 03) driving the solve panel below the overlay (Solve + Export
+    annotated PNG of the stack open in the viewer); when omitted, the view
+    creates its own following its viewer controller. ``show_toast`` is an
+    optional ``show_toast(title)`` callable the solve panel reports its
+    outcomes through (the window passes its toast overlay). With no project
+    set on the viewer
     controller the view shows a "no project" placeholder (the Projects view
     is a later ticket; the project can be set later via
     :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.set_project`).
@@ -390,6 +429,8 @@ class EnhanceView(_PlaceholderView):
         viewer_controller: ViewerController | None = None,
         editor_controller: EditorController | None = None,
         crossmatch_controller: CrossmatchController | None = None,
+        solve_controller: SolveController | None = None,
+        show_toast: Any = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -406,6 +447,12 @@ class EnhanceView(_PlaceholderView):
             if crossmatch_controller is not None
             else CrossmatchController(viewer_controller=self._viewer_controller)
         )
+        self._solve_controller = (
+            solve_controller
+            if solve_controller is not None
+            else SolveController(viewer_controller=self._viewer_controller)
+        )
+        self._show_toast = show_toast
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
@@ -419,6 +466,13 @@ class EnhanceView(_PlaceholderView):
             crossmatch_controller=self._crossmatch_controller
         )
         self._content.append(self._crossmatch_overlay)
+        # astrometry ticket 03: the solve panel (Solve + Export annotated
+        # PNG of the stack open in the viewer) below the cross-match overlay
+        self._solve_panel = SolvePanelWidget(
+            solve_controller=self._solve_controller,
+            show_toast=self._show_toast,
+        )
+        self._content.append(self._solve_panel)
 
     @property
     def viewer_controller(self) -> ViewerController:
@@ -440,6 +494,18 @@ class EnhanceView(_PlaceholderView):
     def crossmatch_overlay(self) -> CrossmatchOverlayWidget:
         """The cross-match overlay panel (gaia-crossmatch ticket 03)."""
         return self._crossmatch_overlay
+
+    @property
+    def solve_controller(self) -> SolveController:
+        """The shared solve controller (astrometry ticket 03) driving this
+        view's solve panel."""
+        return self._solve_controller
+
+    @property
+    def solve_panel(self) -> SolvePanelWidget:
+        """The solve panel (astrometry ticket 03 — Solve + Export annotated
+        PNG of the stack open in the image viewer)."""
+        return self._solve_panel
 
     @property
     def editor_widget(self) -> EnhanceEditorWidget:
@@ -1217,6 +1283,9 @@ def build_view(
     mover_controller: MoverController | None = None,
     scan_controller: ScanController | None = None,
     crossmatch_controller: CrossmatchController | None = None,
+    solve_controller: SolveController | None = None,
+    drift_controller: DriftController | None = None,
+    show_toast: Any = None,
     project_controller: ProjectController | None = None,
     project: Any = None,
     app_state: AppState | None = None,
@@ -1231,7 +1300,11 @@ def build_view(
     ``viewer_controller`` /
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
     ``crossmatch_controller`` to the Enhance view's cross-match overlay panel
-    (gaia-crossmatch ticket 03),
+    (gaia-crossmatch ticket 03), ``solve_controller`` / ``show_toast`` to the
+    Enhance view's solve panel (astrometry ticket 03 — Solve + Export
+    annotated PNG of the stack open in the image viewer), ``drift_controller``
+    to the Observe view's drift plot (astrometry ticket 03 — RA/Dec offset
+    vs time of the session's solved frames),
     ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
     04), ``mover_controller`` to the Photometry view's mover overlay/blink
@@ -1252,6 +1325,7 @@ def build_view(
         return ObserveView(
             queue_controller=queue_controller,
             observe_controller=observe_controller,
+            drift_controller=drift_controller,
             project_controller=project_controller,
             project=project,
             app_state=app_state,
@@ -1261,6 +1335,8 @@ def build_view(
             viewer_controller=viewer_controller,
             editor_controller=editor_controller,
             crossmatch_controller=crossmatch_controller,
+            solve_controller=solve_controller,
+            show_toast=show_toast,
         )
     if view_id == PhotometryView.view_id:
         return PhotometryView(

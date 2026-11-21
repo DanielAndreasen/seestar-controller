@@ -19,3 +19,13 @@ class SolveError(AstrometryError, ValueError):
     failed solve is a value problem, so callers may catch either. The
     message always says WHY the frame could not be solved.
     """
+
+
+class ExportError(AstrometryError, ValueError):
+    """The annotated export / plot render failed: an unknown frame id, an
+    unreadable FITS file, a malformed cross-match row, a bad render size,
+    or a failed file write.
+
+    Subclasses both :class:`AstrometryError` and :class:`ValueError` — a
+    bad export argument is a value problem, so callers may catch either.
+    """
