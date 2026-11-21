@@ -83,3 +83,41 @@ Baseline `uv run pytest -q` on main @ `95813e0`: **505.14s — 2586 passed, 19 s
 | after — fast loop | `uv run pytest -q -n auto -m "not slow"` | **20.58s** | 2579 passed, 19 skipped, 2 failed (7 `slow` deselected) |
 
 After the fix the serial duration distribution is flat (slowest single test 3.9s, down from 22s). The parallel invocation is the documented default (see AGENTS.md "Running tests"); the ticket commit is the head of `wt/dependency-upgrade-05` (merge hash recorded on merge, as for issues 01–03).
+
+## Issue 06 — working `gi` (PyGObject) for the Python 3.14 venv (dated 2026-11-21, branch `wt/dependency-upgrade-06`)
+
+Problem: since the 3.12→3.14 bump, `uv run seestar-controller gui` fails with `No module named 'gi'`. The system PyGObject (`/usr/lib/python3/dist-packages/gi`, `_gi.cpython-312-x86_64-linux-gnu.so`, gi 3.48.2) is built for CPython 3.12 only, so it cannot load in the 3.14.7 project venv even with `uv venv --system-site-packages`.
+
+### Investigation (facts checked 2026-11-21)
+
+- **This machine**: system python is 3.12.3 with `python3-gi` 3.48.2 (cp312-only); `gir1.2-gtk-4.0` 4.14.5 + `gir1.2-adw-1` 1.5.0 typelibs present. No 3.14 system python packages exist here, so option (a) is not available *on this box* (it is on desktops whose system python3 is 3.14).
+- **Option (b) — pip wheel for cp314: DOES NOT EXIST.** PyPI has PyGObject **3.58.1 sdist-only** (no wheels of any kind); piwheels.org hosts only ARM linux wheels up to cp313. So there is no cp314 wheel to put in an extra. (pycairo 1.29.2 does ship cp314 wheels, but PyGObject itself does not.)
+- **Option (c) — source build against 3.14: WORKS, verified live on this machine 2026-11-21.** With `libgirepository-2.0-dev` 2.80.0 + `libcairo2-dev` 1.18.0 already installed: `uv venv --python 3.14 /tmp/gi-test-venv && uv pip install --python /tmp/gi-test-venv/bin/python pygobject pycairo` → pygobject 3.58.1 built in ~5 s (meson), and `import gi; gi.require_version('Gtk','4.0'); from gi.repository import Gtk, Adw; import cairo` all succeed under CPython 3.14.7 (gi 3.58.1, Gtk 4.0, Adw 1).
+
+### Chosen mechanism (cheapest first)
+
+- **A — system packages, when the desktop's system python3 IS 3.14** (cheapest, no build):
+  ```
+  sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+  uv venv --system-site-packages --clear .venv && uv sync
+  ```
+- **B — source build into the venv via the new optional `gui` extra** (fallback; verified working):
+  ```
+  sudo apt install build-essential pkg-config libgirepository-2.0-dev libcairo2-dev
+  uv sync --extra gui          # builds pygobject 3.58.1 + pycairo from source into .venv
+  # equivalently: uv pip install --python .venv/bin/python pygobject pycairo
+  ```
+
+Option (b) (cp314 wheel) is ruled out — none exists on PyPI as of 2026-11-21.
+
+### What changed in the repo
+
+- `pyproject.toml`: new `[project.optional-dependencies] gui = ["pygobject>=3.50", "pycairo>=1.27"]` — **optional extra only, never a hard dep**; `uv.lock` gained exactly those two packages, both gated on `extra == 'gui'`. Plain `uv sync` (headless) is unchanged: verified 2026-11-21 that after `uv sync` neither pygobject nor pycairo is installed and `import gi` still fails → the clean error path below is what headless machines get. `uv add pygobject` as a hard dependency remains forbidden.
+- `src/seestar_controller/cli.py`: the `gui` subcommand's clean-error message (`_gui_missing_gi_message`) now names the chosen fix — option A (`python3-gi gir1.2-gtk-4.0 gir1.2-adw-1` + `uv venv --system-site-packages --clear .venv && uv sync`) or option B (`libgirepository-2.0-dev libcairo2-dev` + `uv sync --extra gui`) — plus a pointer to this wiki entry; module docstring and `--help` text updated to match.
+- `tests/test_cli_gui_gi_error.py` (new, pure, no gi, no network): the clean error path (message names both fixes, rc=1), the launch path (fake `ui.app` module → `gui_main()`'s return code propagates), and a guard that pygobject/pycairo stay in `optional-dependencies.gui` and out of hard `dependencies`.
+- Pure/widget split and `pytest.importorskip("gi")` behavior untouched: widget suites still skip when gi is absent and run when present (e.g. after option A/B on the desktop).
+
+### Demo / verification
+
+- Headless (this sandbox, no gi): `uv run seestar-controller gui` → rc 1, clean multi-line error naming fixes A and B (no traceback); full suite green except the known pre-existing failures; ty + ruff clean.
+- Source-build path verified live 2026-11-21 in a throwaway 3.14 venv (see Investigation): `import gi` + Gtk 4.0 + Adw 1 + cairo OK. On the desktop, after A or B, `uv run seestar-controller gui` opens the window under Python 3.14 and the gi-gated widget tests run instead of skipping.
