@@ -4,7 +4,7 @@
 
 **Blocked by:** sub-frames 01
 
-**Status:** ready-for-agent
+**Status:** implemented in fbc19ec (merged)
 
 - [ ] SolveController accepts any open frame; store.wcs persists/loads WCS for sub ids (schema check — bump + migrate only if needed)
 - [ ] Crossmatch overlay + H-R view frame selector include solved subs (WCS + crossmatch present)
