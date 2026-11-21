@@ -71,3 +71,10 @@ class QualityError(ProjectError):
     :mod:`.quality`): the frame FK does not exist, a metric value is invalid
     (non-numeric, non-finite, or a negative star count), the flag/reasons are
     malformed, or a stored row is corrupt."""
+
+
+class CrossmatchError(ProjectError):
+    """A Gaia cross-match table could not be saved or read (see
+    :mod:`.crossmatch`): the frame FK does not exist, a row value is invalid
+    (non-numeric/non-finite coordinates or magnitudes, a bad ``source_id``,
+    a negative separation), or a stored row is corrupt."""

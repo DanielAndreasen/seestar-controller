@@ -67,6 +67,15 @@ Pure Python, no GTK, no link (module boundary per
   % rejected, ...), the :class:`~.quality.FrameQuality` record (frame FK +
   joined session_id, fwhm, bg_median, bg_std, star_count, flagged,
   flag_reasons, scored_at), and :class:`~.errors.QualityError`
+- :mod:`.crossmatch` — persisted Gaia cross-match tables (gaia-crossmatch
+  ticket 02): :func:`~.crossmatch.save_crossmatch` (validated upsert of one
+  frame's whole table in one db transaction, duck-typed rows),
+  :func:`~.crossmatch.load_crossmatch` (one frame's table, empty tuple when
+  it has none), :func:`~.crossmatch.list_crossmatched_stacks` (the frames
+  that have a table, as :class:`~.crossmatch.CrossmatchedStack` summaries),
+  the :class:`~.crossmatch.CrossmatchRecord` row (frame FK, detected x/y +
+  RA/Dec, matched flag, Gaia source_id, G/BP/RP, parallax + error,
+  pmra/pmdec + errors, separation), and :class:`~.errors.CrossmatchError`
 - :mod:`.csv_export` — CSV export: :func:`~.csv_export.export_csv` (atomic
   write of ``lightcurve.csv`` with header :data:`~.csv_export.CSV_HEADER`,
   excluded points omitted unless ``include_excluded=True``), the default
@@ -77,8 +86,16 @@ Module boundary (see ``.scratch/project-store/spec.md``): nothing in this
 package imports GTK or :mod:`seestar_controller.link`.
 """
 
+from .crossmatch import (
+    CrossmatchedStack,
+    CrossmatchRecord,
+    list_crossmatched_stacks,
+    load_crossmatch,
+    save_crossmatch,
+)
 from .csv_export import CSV_FILE, CSV_HEADER, export_csv
 from .errors import (
+    CrossmatchError,
     FrameStoreError,
     InvalidProjectError,
     MeasurementError,
@@ -192,6 +209,9 @@ __all__ = [
     "STACKS_DIR",
     "STAR_PICK_FIELDS",
     "SUBS_DIR",
+    "CrossmatchError",
+    "CrossmatchRecord",
+    "CrossmatchedStack",
     "Frame",
     "FrameQuality",
     "FrameStoreError",
@@ -224,10 +244,12 @@ __all__ = [
     "get_open_session",
     "initialize_db",
     "lightcurve",
+    "list_crossmatched_stacks",
     "list_frames",
     "list_presets",
     "list_projects",
     "list_sessions",
+    "load_crossmatch",
     "load_preset",
     "load_star_picks",
     "measurements_for_frame",
@@ -236,6 +258,7 @@ __all__ = [
     "normalize_role",
     "open_project",
     "read_frame_bytes",
+    "save_crossmatch",
     "save_frame_quality",
     "save_preset",
     "save_star_picks",

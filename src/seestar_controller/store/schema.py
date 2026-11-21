@@ -30,7 +30,16 @@ One project database holds the whole observing campaign (GLOSSARY.md):
 - ``frame_quality`` — one per-frame quality record (frame-quality ticket 01,
   see :mod:`.quality`): the frame id (INTEGER primary key), the metrics
   (``fwhm``, ``bg_median``, ``bg_std``, ``star_count``), the outlier flag
-  (``flagged`` + the JSON ``flag_reasons`` list), and the scoring time.
+  (``flagged`` + the JSON ``flag_reasons`` list), and the scoring time;
+- ``crossmatch`` — the persisted Gaia cross-match table of a stack
+  (gaia-crossmatch ticket 02, see :mod:`.crossmatch`): one row per detected
+  source, keyed by the frame FK (``frame_id``, cascade-deleted with the
+  frame): the detected pixel position (``x``/``y``) and sky position
+  (``ra_deg``/``dec_deg``), the ``matched`` flag, and the matched Gaia DR3
+  fields (``source_id``, ``g``/``bp``/``rp``, ``parallax`` +
+  ``parallax_error``, ``pmra``/``pmra_error``, ``pmdec``/``pmdec_error``,
+  all nullable — NULL when unmatched) plus the match
+  ``separation_arcsec``.
 
 All writes go through SQLite transactions (``with conn:``); the database runs
 in WAL mode (``PRAGMA journal_mode=WAL``, set once by :func:`initialize_db`,
@@ -83,6 +92,11 @@ Migration history:
   index, ``PRAGMA foreign_key_check`` proves nothing was lost). The rebuild
   runs with foreign-key enforcement OFF (see :func:`migrate_db`) and is
   skipped when the table already allows ``'check'`` (idempotence guard).
+- **5 -> 6** — gaia-crossmatch ticket 02: create the ``crossmatch`` table
+  (the persisted Gaia cross-match table of a stack: one row per detected
+  source, keyed by the ``frame_id`` FK with ``ON DELETE CASCADE``) plus its
+  ``frame_id`` index. ``IF NOT EXISTS`` keeps the step idempotent, exactly
+  like 3 -> 4.
 
 :func:`initialize_db` creates the current schema by running the migrations
 on a fresh db (0 -> 1 -> ... -> :data:`SCHEMA_VERSION`).
@@ -96,7 +110,7 @@ from collections.abc import Callable
 from .errors import InvalidProjectError
 
 #: The schema version this build writes and supports.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 #: The tables every project database must have (checked on open).
 SCHEMA_TABLES = ("sessions", "frames", "stars", "measurements")
@@ -272,6 +286,43 @@ CREATE TABLE stars__v5 (
 )
 """
 
+#: The ``crossmatch`` table DDL (v6, gaia-crossmatch ticket 02): the persisted
+#: Gaia cross-match table of ONE stack — one row per detected source,
+#: keyed by ``frame_id`` (INTEGER, REFERENCES frames ON DELETE CASCADE, so the
+#: table is cascade-deleted with its frame). Each row carries the detection's
+#: pixel position (``x``/``y``) and J2000 sky position (``ra_deg``/``dec_deg``),
+#: the ``matched`` flag, and the matched Gaia DR3 fields — ``source_id``,
+#: ``g``/``bp``/``rp``, ``parallax`` + ``parallax_error`` (mas),
+#: ``pmra``/``pmra_error``, ``pmdec``/``pmdec_error`` (mas/yr) — all nullable
+#: and NULL for an unmatched detection, plus the match ``separation_arcsec``.
+_CROSSMATCH_DDL = """
+CREATE TABLE IF NOT EXISTS crossmatch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    frame_id INTEGER NOT NULL REFERENCES frames (id) ON DELETE CASCADE,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    ra_deg REAL NOT NULL,
+    dec_deg REAL NOT NULL,
+    matched INTEGER NOT NULL DEFAULT 0 CHECK (matched IN (0, 1)),
+    source_id INTEGER,
+    g REAL,
+    bp REAL,
+    rp REAL,
+    parallax REAL,
+    parallax_error REAL,
+    pmra REAL,
+    pmra_error REAL,
+    pmdec REAL,
+    pmdec_error REAL,
+    separation_arcsec REAL
+)
+"""
+
+#: The ``crossmatch`` frame index (v6): every per-frame lookup (load, upsert
+#: delete, cascade bookkeeping) goes through ``frame_id``.
+_CROSSMATCH_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_crossmatch_frame_id ON crossmatch (frame_id)"
+)
 
 def _migrate_2_to_3(conn: sqlite3.Connection) -> None:
     """Migration step 2 -> 3 (image-enhance ticket 04): create the
@@ -359,6 +410,7 @@ MIGRATIONS: dict[int, tuple[MigrationStep, ...]] = {
     2: (_migrate_2_to_3,),  # v2 -> v3: presets table + frames.kind 'enhanced'
     3: (_FRAME_QUALITY_DDL,),  # v3 -> v4: frame_quality table (ticket 01)
     4: (_migrate_4_to_5,),  # v4 -> v5: stars.role CHECK allows 'check'
+    5: (_CROSSMATCH_DDL, _CROSSMATCH_INDEX_DDL),  # v5 -> v6: crossmatch table
 }
 
 

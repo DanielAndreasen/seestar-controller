@@ -32,9 +32,9 @@ Covers:
   current pipeline, ``save_enhanced`` stores an enhanced frame (original hash
   unchanged, snapshot ``saved_frame``), ``export`` writes PNG/JPEG; all raise
   :class:`EnhanceError` with no stack open;
-- the schema — a fresh db is at v4 with the ``presets`` table; a simulated old
+- the schema — a fresh db is at v6 with the ``presets`` table; a simulated old
   v2 db (presets dropped, frames CHECK rebuilt without ``'enhanced'``,
-  ``user_version=2``) migrates to v5 on open with frames + measurements rows
+  ``user_version=2``) migrates to v6 on open with frames + measurements rows
   preserved and ``enhanced`` frames storable afterwards;
 - the package boundary: a subprocess test (no ``gi``, no ``link``, no
   ``ui``) + a source-scan of the new pure modules.
@@ -478,14 +478,14 @@ def test_editor_persistence_methods_require_open_stack(project):
         ec.export("x.png")
 
 
-# --- schema v4 + migration ------------------------------------------------------------------------------
+# --- schema v6 + migration ------------------------------------------------------------------------------
 
 
-def test_fresh_db_is_v4_with_presets_table(project):
-    assert store.SCHEMA_VERSION == 5
-    assert set(store.MIGRATIONS) == {0, 1, 2, 3, 4}
-    assert project.db.execute("PRAGMA user_version").fetchone()[0] == 5
-    assert project.config["schema_version"] == 5
+def test_fresh_db_is_v6_with_presets_table(project):
+    assert store.SCHEMA_VERSION == 6
+    assert set(store.MIGRATIONS) == {0, 1, 2, 3, 4, 5}
+    assert project.db.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert project.config["schema_version"] == 6
     tables = {
         row[0]
         for row in project.db.execute(
@@ -540,7 +540,7 @@ def _downgrade_to_v2(project) -> None:
     project.config_path.write_text(json.dumps(config), encoding="utf-8")
 
 
-def test_old_v2_db_migrates_to_v4_preserving_rows(project, stored_stacks, tmp_path):
+def test_old_v2_db_migrates_to_v6_preserving_rows(project, stored_stacks, tmp_path):
     from seestar_controller.store import add_measurement
 
     add_measurement(project, stored_stacks[0].id, mag=12.5, mag_err=0.05)
@@ -551,10 +551,10 @@ def test_old_v2_db_migrates_to_v4_preserving_rows(project, stored_stacks, tmp_pa
 
     reopened = open_project(project.path)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 5
-        assert reopened.config["schema_version"] == 5
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert reopened.config["schema_version"] == 6
         on_disk = json.loads(reopened.config_path.read_text(encoding="utf-8"))
-        assert on_disk["schema_version"] == 5  # mirrored into project.json
+        assert on_disk["schema_version"] == 6  # mirrored into project.json
         tables = {
             row[0]
             for row in reopened.db.execute(
