@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in 1818a75+0ddf1e9 (merged)
 
 - [ ] `open_project_offline(path)` path in ui-shell: opens store project, sets mode flag, never touches link/
 - [ ] Mode flag on app + window; offline banner/indicator in the UI
