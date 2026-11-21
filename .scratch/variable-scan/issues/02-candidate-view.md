@@ -4,7 +4,7 @@
 
 **Blocked by:** variable-scan 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 3124427 (merged)
 
 - [ ] Widget `VariableScanView`: ranked list (Gtk.ListBox) with scatter-ratio column, threshold control, per-candidate lightcurve (reuse LightcurveView) and blink (animated GIF of cutouts rendered via PIL, shown in the image viewer path)
 - [ ] CSV export of candidates (reuse analysis/export.py)

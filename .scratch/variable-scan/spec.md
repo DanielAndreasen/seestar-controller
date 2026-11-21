@@ -1,6 +1,6 @@
 # Spec: variable-scan
 
-Status: ready-for-agent (2 issues; blocked by gaia-crossmatch tickets, not yet written)
+Status: completed 2026-11-20 (01 13f4a97, 02 3124427)
 
 ## Problem Statement
 
