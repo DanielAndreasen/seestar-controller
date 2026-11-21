@@ -23,7 +23,7 @@ A GTK4/libadwaita application (PyGObject, managed with `uv`) with a header bar (
 
 ## Implementation Decisions
 
-- Toolkit: GTK4 + libadwaita via PyGObject; Python 3.12; `uv` for the venv and dependencies.
+- Toolkit: GTK4 + libadwaita via PyGObject; Python 3.14; `uv` for the venv and dependencies.
 - Architecture: MVC-ish — each view is a widget module; a controller layer holds app state and talks to seestar-link / project-store / etc.; controllers contain the logic, widgets stay thin, so controllers are testable headless.
 - Async: GLib main loop; blocking work (socket IO, photometry) on worker threads with results marshalled back via `GLib.idle_add`.
 - Views: Observe (plan/queue + preview), Enhance (image + sliders), Photometry (star picking + run), Lightcurve (plots), Projects (list/create/open).
