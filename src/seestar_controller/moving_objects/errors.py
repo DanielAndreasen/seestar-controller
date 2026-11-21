@@ -26,3 +26,21 @@ class TrackError(MovingObjectsError, ValueError):
 class PersistenceError(MovingObjectsError, OSError):
     """The per-session tracks file (``subs/<session>/movers.json``) could
     not be written, is missing, or is corrupt/unreadable."""
+
+
+class MpcError(MovingObjectsError):
+    """Base class for the MPC lookup failures (issue 02)."""
+
+
+class MpcLookupError(MpcError, ValueError):
+    """The MPC lookup got a bad argument — e.g. a mover without sky
+    coordinates (no WCS on the subs), so no sky track can be queried."""
+
+
+class MpcUnavailableError(MpcError):
+    """The MPC could not be reached (network/HTTP failure) and the disk
+    cache holds no usable entry for the query."""
+
+
+class MpcResponseError(MpcError, ValueError):
+    """The MPC response was malformed (not the expected JSON shape)."""

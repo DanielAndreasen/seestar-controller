@@ -198,6 +198,7 @@ from seestar_controller.analysis import (
 )
 from seestar_controller.enhance import EditorController, ViewerController
 from seestar_controller.frame_quality import QualityController
+from seestar_controller.moving_objects import MoverController
 from seestar_controller.observing import (
     ObserveController,
     PlanQueueController,
@@ -325,6 +326,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         lightcurve_controller: LightcurveController | None = None,
         period_controller: PeriodController | None = None,
         quality_controller: QualityController | None = None,
+        mover_controller: MoverController | None = None,
         project_controller: ProjectController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
@@ -467,6 +469,19 @@ class SeestarWindow(Adw.ApplicationWindow):
                 viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
             ))
         )
+        # Moving-objects ticket 02: one shared mover controller following the
+        # shared viewer controller (the open project becomes the mover
+        # overlay's project); the Photometry view's mover overlay/blink widget
+        # renders its snapshots. Its invoke_on_main is GLib.idle_add, so
+        # worker-thread store reads/writes + notifications land on the main
+        # loop.
+        self._mover_controller = (
+            mover_controller
+            if mover_controller is not None
+            else _shared_from_app(app, "mover_controller", lambda: MoverController(
+                viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
+            ))
+        )
         # Projects-view ticket 01: the shared project controller. When the app
         # owns one it is used (the app already attached its controllers to it);
         # otherwise (explicit argument, or a standalone window without an app
@@ -532,6 +547,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     lightcurve_controller=self._lightcurve_controller,
                     period_controller=self._period_controller,
                     quality_controller=self._quality_controller,
+                    mover_controller=self._mover_controller,
                     project_controller=self._project_controller,
                     project=self._project_controller.current,
                     app_state=state,
@@ -728,6 +744,13 @@ class SeestarWindow(Adw.ApplicationWindow):
         return self._quality_controller
 
     @property
+    def mover_controller(self) -> MoverController:
+        """The shared mover controller (moving-objects ticket 02 — the
+        Photometry view's mover overlay/blink widget binds to it; it follows
+        the viewer controller's project)."""
+        return self._mover_controller
+
+    @property
     def project_controller(self) -> ProjectController:
         """The shared project controller (projects-view ticket 01 — the
         Projects view lists/creates/opens through it; it is attached to the
@@ -757,6 +780,7 @@ class SeestarWindow(Adw.ApplicationWindow):
             lightcurve=self._lightcurve_controller,
             period=self._period_controller,
             quality=self._quality_controller,
+            movers=self._mover_controller,
         )
 
     def _on_row_selected(self, sidebar: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
@@ -907,6 +931,15 @@ class SeestarApplication(Adw.Application):
         self.quality_controller = QualityController(
             viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
         )
+        # Moving-objects ticket 02: the shared mover controller following the
+        # shared viewer controller (the open project becomes the mover
+        # overlay's project); the window passes it to the Photometry view's
+        # mover overlay/blink widget. Store reads/writes and notifications are
+        # marshalled onto the GLib main loop like the other shared
+        # controllers'.
+        self.mover_controller = MoverController(
+            viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
+        )
         # Projects-view ticket 01: the shared project controller over the same
         # state (project root from settings, last_project persisted). restore()
         # re-opens the last project when it still exists and clears a stale
@@ -917,8 +950,8 @@ class SeestarApplication(Adw.Application):
         # (~/SeestarProjects, created on demand at create time); a changed
         # project_root re-lists the projects under the new root (see
         # _on_settings_changed). The attach list covers the observe / viewer /
-        # picker / run / lightcurve / period / quality controllers, so every
-        # current-project change is pushed to all of them via their
+        # picker / run / lightcurve / period / quality / movers controllers, so
+        # every current-project change is pushed to all of them via their
         # ``set_project``.
         self.project_controller = ProjectController(self._state)
         self.project_controller.restore()
@@ -930,6 +963,7 @@ class SeestarApplication(Adw.Application):
             lightcurve=self.lightcurve_controller,
             period=self.period_controller,
             quality=self.quality_controller,
+            movers=self.mover_controller,
         )
         self.settings_controller.add_listener(self._on_settings_changed)
         self._last_project_root = self._state.get_setting("project_root")

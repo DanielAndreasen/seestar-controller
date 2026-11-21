@@ -116,6 +116,10 @@ from seestar_controller.frame_quality import QualityController
 from seestar_controller.frame_quality.quality_view import (
     SessionQualityView as SessionQualityViewWidget,
 )
+from seestar_controller.moving_objects import MoverController
+from seestar_controller.moving_objects.overlay_view import (
+    MoverOverlayView as MoverOverlayWidget,
+)
 from seestar_controller.observing import (
     ObserveController,
     PlanQueueController,
@@ -427,7 +431,10 @@ class PhotometryView(_PlaceholderView):
     :class:`~seestar_controller.photometry.star_picker.StarPickerView` widget —
     the project's stack list + role selector + aperture spins + picks list +
     Save picks + catalog-comps panel on the left, the clickable preview with
-    the aperture overlay on the right.
+    the aperture overlay on the right. Below the paned it also carries the
+    moving-objects ticket-02
+    :class:`~seestar_controller.moving_objects.overlay_view.MoverOverlayView`
+    widget — the annotated overlay/blink view of the session's movers.
 
     ``picker_controller`` is the app's shared
     :class:`~seestar_controller.photometry.picking.PickController` (it follows
@@ -443,6 +450,10 @@ class PhotometryView(_PlaceholderView):
     the view shows a "no stack open" placeholder (the Projects view is a
     later ticket; the project can be set later via
     :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.set_project`).
+    ``mover_controller`` is the app's shared
+    :class:`~seestar_controller.moving_objects.overlay.MoverController`
+    (moving-objects ticket 02) driving the mover overlay/blink widget — also
+    passed in via :func:`build_view`, also defaulted when omitted.
     """
 
     view_id = "photometry"
@@ -454,6 +465,7 @@ class PhotometryView(_PlaceholderView):
         viewer_controller: ViewerController | None = None,
         suggest_controller: SuggestionController | None = None,
         run_controller: RunController | None = None,
+        mover_controller: MoverController | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -473,6 +485,9 @@ class PhotometryView(_PlaceholderView):
             if run_controller is not None
             else RunController(picker_controller=self._picker_controller)
         )
+        self._mover_controller = (
+            mover_controller if mover_controller is not None else MoverController()
+        )
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
@@ -491,6 +506,10 @@ class PhotometryView(_PlaceholderView):
             wide_handle=True,
         )
         self._content.append(paned)
+        # moving-objects ticket 02: the annotated overlay/blink view of the
+        # session's movers below the photometry results panel
+        self._mover_overlay = MoverOverlayWidget(mover_controller=self._mover_controller)
+        self._content.append(self._mover_overlay)
 
     @property
     def picker_controller(self) -> PickController:
@@ -513,6 +532,17 @@ class PhotometryView(_PlaceholderView):
         """The shared pure-layer run + results controller (ticket 04) driving
         this view's results panel."""
         return self._run_controller
+
+    @property
+    def mover_controller(self) -> MoverController:
+        """The shared pure-layer moving-objects controller (moving-objects
+        ticket 02) driving this view's mover overlay/blink widget."""
+        return self._mover_controller
+
+    @property
+    def mover_overlay(self) -> MoverOverlayWidget:
+        """The mover overlay/blink widget (moving-objects ticket 02)."""
+        return self._mover_overlay
 
     @property
     def results_panel(self) -> ResultsPanelWidget:
@@ -1066,6 +1096,7 @@ def build_view(
     lightcurve_controller: LightcurveController | None = None,
     period_controller: PeriodController | None = None,
     quality_controller: QualityController | None = None,
+    mover_controller: MoverController | None = None,
     project_controller: ProjectController | None = None,
     project: Any = None,
     app_state: AppState | None = None,
@@ -1081,7 +1112,9 @@ def build_view(
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
     ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
-    04), ``lightcurve_controller`` / ``period_controller`` /
+    04), ``mover_controller`` to the Photometry view's mover overlay/blink
+    widget (moving-objects ticket 02), ``lightcurve_controller`` /
+    ``period_controller`` /
     ``quality_controller`` to the Lightcurve view (period-analysis tickets
     01 + 03 + 04 and frame-quality ticket 02), and
     ``project_controller`` to the Projects view (projects-view ticket 01) —
@@ -1108,6 +1141,7 @@ def build_view(
             viewer_controller=viewer_controller,
             suggest_controller=suggest_controller,
             run_controller=run_controller,
+            mover_controller=mover_controller,
         )
     if view_id == LightcurveView.view_id:
         return LightcurveView(

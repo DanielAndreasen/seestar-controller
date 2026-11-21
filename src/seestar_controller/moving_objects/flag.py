@@ -43,12 +43,15 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from seestar_controller.catalog.coords import angular_distance
 
 from .errors import TrackError
 from .link import Track
+
+if TYPE_CHECKING:
+    from .mpc import MpcMatch
 
 #: Default minimum number of frames for a track to be flagged as a mover.
 DEFAULT_MIN_FRAMES = 5
@@ -87,6 +90,10 @@ class MoverReport:
     start_dec_deg: float | None
     end_ra_deg: float | None
     end_dec_deg: float | None
+    #: The MPC lookup result for this mover (issue 02), ``None`` until the
+    #: MPC lookup ran (or when no known object matched). Persisted in the
+    #: ``movers.json`` sidecar at schema_version 2.
+    mpc_match: MpcMatch | None = None
 
 
 def _validate(name: str, value: Any, *, minimum: float, allow_equal: bool) -> float:

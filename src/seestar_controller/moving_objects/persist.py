@@ -36,12 +36,18 @@ from .detect import Detection
 from .errors import PersistenceError
 from .flag import MoverReport
 from .link import Track
+from .mpc import MpcMatch
 
 #: The sidecar file name under ``<project>/subs/<session_id>/``.
 MOVERS_FILE = "movers.json"
 
-#: Schema version of the sidecar JSON payload.
-SCHEMA_VERSION = 1
+#: Schema version of the sidecar JSON payload. Version 2 adds the optional
+#: ``mpc_match`` field on each mover entry (the MPC lookup result, issue 02).
+SCHEMA_VERSION = 2
+
+#: Schema versions accepted on load: version 1 files (no ``mpc_match``) are
+#: migrated on read — their movers get ``mpc_match=None``.
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
 
 #: session ids are directory names — keep them slug-safe.
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -141,7 +147,29 @@ _MOVER_FIELDS = (
     "start_dec_deg",
     "end_ra_deg",
     "end_dec_deg",
+    "mpc_match",
 )
+
+#: The fields of a serialized :class:`~.mpc.MpcMatch` (``mpc_match``).
+_MPC_MATCH_FIELDS = frozenset(
+    {"designation", "name", "offset_arcsec", "motion_arcsec_per_min", "pa_deg", "v_mag"}
+)
+
+
+def _mpc_match_from_dict(d: Any) -> MpcMatch:
+    if not isinstance(d, dict) or not _MPC_MATCH_FIELDS.issubset(d):
+        raise PersistenceError(f"mpc_match entry is not an object: {d!r}")
+    try:
+        return MpcMatch(
+            designation=str(d["designation"]),
+            name=None if d.get("name") is None else str(d["name"]),
+            offset_arcsec=float(d["offset_arcsec"]),
+            motion_arcsec_per_min=float(d["motion_arcsec_per_min"]),
+            pa_deg=float(d["pa_deg"]),
+            v_mag=None if d.get("v_mag") is None else float(d["v_mag"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PersistenceError(f"corrupt mpc_match entry {d!r}: {exc}") from exc
 
 
 def _mover_from_dict(d: Any) -> MoverReport:
@@ -150,8 +178,11 @@ def _mover_from_dict(d: Any) -> MoverReport:
     try:
         values: dict[str, Any] = {}
         for name in _MOVER_FIELDS:
-            v = d[name]
-            if name in {"track_id", "n_frames"}:
+            v = d.get(name) if name == "mpc_match" else d[name]
+            if name == "mpc_match":
+                # schema_version 1 files have no mpc_match -> None (migrated).
+                values[name] = None if v is None else _mpc_match_from_dict(v)
+            elif name in {"track_id", "n_frames"}:
                 values[name] = int(v)
             elif name in {"start_utc", "end_utc"}:
                 values[name] = str(v)
@@ -241,9 +272,11 @@ def load_tracks(project: Any, session_id: str) -> SessionTracks:
         raise PersistenceError(f"cannot read movers file {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise PersistenceError(f"corrupt movers file {path}: not a JSON object")
-    if payload.get("schema_version") != SCHEMA_VERSION:
+    version = payload.get("schema_version")
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
         raise PersistenceError(
-            f"unsupported movers schema_version {payload.get('schema_version')!r} in {path}"
+            f"unsupported movers schema_version {version!r} in {path} "
+            f"(supported: {SUPPORTED_SCHEMA_VERSIONS})"
         )
     if payload.get("session_id") != sid:
         raise PersistenceError(
@@ -269,6 +302,7 @@ def load_tracks(project: Any, session_id: str) -> SessionTracks:
 __all__ = [
     "MOVERS_FILE",
     "SCHEMA_VERSION",
+    "SUPPORTED_SCHEMA_VERSIONS",
     "SessionTracks",
     "load_tracks",
     "save_tracks",
