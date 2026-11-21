@@ -39,6 +39,8 @@ def test_report_package_imports_no_gi_no_link_no_ui_no_enhance_no_photometry_no_
         "assert 'seestar_controller.enhance' not in sys.modules, 'enhance imported eagerly';"
         "assert 'seestar_controller.photometry' not in sys.modules, 'photometry imported';"
         "assert 'seestar_controller.observing' not in sys.modules, 'observing imported';"
+        "assert 'seestar_controller.moving_objects' not in sys.modules, 'moving_objects imported eagerly (lazy in data.load_movers)';"
+        "assert 'seestar_controller.frame_quality' not in sys.modules, 'frame_quality imported eagerly (report reads store.quality directly)';"
         "print('clean')"
     )
     result = subprocess.run(
@@ -74,6 +76,9 @@ def test_report_public_api_is_exported_from_package():
     for name in (
         "LogEntry",
         "MeasurementsSummary",
+        "MoverDetection",
+        "QualityPoint",
+        "QualitySummary",
         "ReportData",
         "ReportError",
         "collect_report_data",
@@ -82,8 +87,10 @@ def test_report_public_api_is_exported_from_package():
         "generate_report",
         "lightcurve_png",
         "list_session_reports",
+        "load_movers",
         "load_session_log",
         "pdf_path",
+        "quality_trend_png",
         "render_html",
         "render_pdf",
         "report_path",
@@ -96,3 +103,10 @@ def test_report_public_api_is_exported_from_package():
     assert report.REPORT_FILE_SUFFIX == ".html"
     assert report.PDF_FILE_SUFFIX == ".pdf"
     assert report.SESSION_LOG_FILE == "session_log.jsonl"
+    # ticket 02: the optional sections' constants
+    assert report.SECTION_QUALITY == "frame-quality"
+    assert report.SECTION_MOVERS == "movers"
+    assert report.OPTIONAL_SECTION_IDS == (report.SECTION_QUALITY, report.SECTION_MOVERS)
+    assert report.IMAGE_QUALITY in report.IMAGE_KEYS
+    assert report.SECTION_QUALITY not in report.SECTION_IDS
+    assert report.SECTION_MOVERS not in report.SECTION_IDS

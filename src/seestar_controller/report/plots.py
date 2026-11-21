@@ -20,9 +20,12 @@ What lives here:
   error bars when ``mag_err`` is known, excluded outliers in the excluded
   color with an ``x`` marker) as PNG bytes;
 - :func:`fold_png` — the phase-fold overlay plot (mag vs phase in ``[0, 1)``,
-  same conventions, titled with the period) as PNG bytes.
+  same conventions, titled with the period) as PNG bytes;
+- :func:`quality_trend_png` (ticket 02) — the frame-quality SPARKLINE: FWHM
+  (px) vs JD over the session's scored frames, flagged (rejected) frames in
+  the excluded color with an ``x`` marker, as PNG bytes.
 
-Both render a valid PNG even for an EMPTY point set (an axes with a "no
+All render a valid PNG even for an EMPTY point set (an axes with a "no
 data" note), so the HTML always has an image for the section.
 """
 
@@ -41,6 +44,8 @@ from seestar_controller.analysis.lightcurve import (
 LIGHTCURVE_FIGSIZE = (7.2, 3.6)
 #: Figure size (inches) of the fold plot.
 FOLD_FIGSIZE = (4.8, 3.6)
+#: Figure size (inches) of the frame-quality sparkline (wide and short).
+QUALITY_FIGSIZE = (7.2, 1.8)
 #: DPI of the rendered PNGs.
 PNG_DPI = 110
 
@@ -182,5 +187,49 @@ def fold_png(folded: Iterable[Any], period: float, *, title: str | None = None) 
     ax.set_xlabel("phase")
     ax.set_ylabel("differential mag")
     ax.set_title(title or f"Phase fold — P = {period:.6g} d")
+    ax.grid(True, alpha=0.3)
+    return _fig_to_png(fig)
+
+
+def quality_trend_png(points: Iterable[Any], *, title: str | None = None) -> bytes:
+    """Render the frame-quality sparkline of ``points`` (FWHM in px vs JD)
+    to PNG bytes (ticket 02).
+
+    ``points`` are duck-typed quality points (anything with ``jd`` / ``fwhm``
+    / ``flagged`` — e.g. :class:`~seestar_controller.report.data.QualityPoint`).
+    Points without a FWHM (``fwhm`` None) are skipped; flagged (rejected)
+    frames are drawn in :data:`~seestar_controller.analysis.lightcurve.EXCLUDED_COLOR`
+    with an ``x`` marker, the rest as plain dots. An empty point set (or no
+    FWHM at all) still renders a valid PNG (axes + a "no FWHM" note).
+    """
+    plt = _pyplot()
+    pts = tuple(points)
+    fig, ax = plt.subplots(figsize=QUALITY_FIGSIZE)
+    xs: list[float] = []
+    ys: list[float] = []
+    colors: list[Any] = []
+    markers: list[str] = []
+    for p in pts:
+        fwhm = getattr(p, "fwhm", None)
+        if fwhm is None:
+            continue
+        xs.append(float(p.jd))
+        ys.append(float(fwhm))
+        if getattr(p, "flagged", False):
+            colors.append(EXCLUDED_COLOR)
+            markers.append("x")
+        else:
+            colors.append("tab:blue")
+            markers.append("o")
+    if not xs:
+        ax.text(0.5, 0.5, "no FWHM measurements", transform=ax.transAxes,
+                ha="center", va="center", color="0.45")
+    else:
+        _scatter_points(ax, xs, ys, [None] * len(xs), colors, markers)
+        span = max(xs) - min(xs)
+        ax.set_xlim(min(xs) - 0.02 * (span or 1.0), max(xs) + 0.02 * (span or 1.0))
+    ax.set_xlabel("JD")
+    ax.set_ylabel("FWHM (px)")
+    ax.set_title(title or "Frame quality trend")
     ax.grid(True, alpha=0.3)
     return _fig_to_png(fig)
