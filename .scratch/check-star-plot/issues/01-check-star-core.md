@@ -4,7 +4,7 @@
 
 **Blocked by:** None (photometry 01-04, project-store 04 done)
 
-**Status:** ready-for-agent
+**Status:** implemented in cad0b2e (merged)
 
 - [ ] Pure change in photometry (picking/measure/run), no gi; role vocabulary extended in store/stars.py (ROLE_CHECK) with migration-free storage (picks table role column)
 - [ ] `measure_frame_data` / run report expose per-frame check differential mag + err and target-minus-check; ensemble math provably excludes the check
