@@ -81,7 +81,6 @@ from seestar_controller.store.crossmatch import (
     load_crossmatch,
 )
 from seestar_controller.store.frames import (
-    KIND_STACK,
     Frame,
     list_frames,
     read_frame_bytes,
@@ -431,7 +430,8 @@ class HrDiagramController:
         return self._stack_label
 
     def refresh_stacks(self) -> tuple[CrossmatchedStack, ...]:
-        """(Re-)list the project's cross-matched stacks via the store;
+        """(Re-)list the project's cross-matched frames via the store — any
+        kind (a solved + cross-matched sub included, sub-frames ticket 02);
         notifies and returns them. Raises :class:`HrError` when no project
         is set or the store call fails."""
         project = self._require_project()
@@ -448,13 +448,14 @@ class HrDiagramController:
         return self._stacks
 
     def select_stack(self, frame_id: int) -> HrDiagramSnapshot:
-        """Select the cross-matched stack with frame id ``frame_id``: load
-        its cross-match table, compute the membership + CMD/H-R points, read
-        the persisted isochrone params + overlay, load + tone-map the stack
-        image, notify, and return the snapshot.
+        """Select the cross-matched frame with frame id ``frame_id`` — any
+        kind (a solved + cross-matched sub included, sub-frames ticket 02):
+        load its cross-match table, compute the membership + CMD/H-R points,
+        read the persisted isochrone params + overlay, load + tone-map the
+        frame image, notify, and return the snapshot.
 
         Raises :class:`HrError` when no project is set, ``frame_id`` is not
-        an int, or the frame is not a stack of the project. Runtime failures
+        an int, or the frame is not a frame of the project. Runtime failures
         (unreadable table/FITS, isochrone) are recorded in the snapshot's
         ``error`` — never raised.
         """
@@ -464,14 +465,14 @@ class HrDiagramController:
         frame = next(
             (
                 f
-                for f in self._call_store(lambda: list_frames(project, kind=KIND_STACK))
+                for f in self._call_store(lambda: list_frames(project))
                 if f.id == frame_id
             ),
             None,
         )
         if frame is None:
             raise HrError(
-                f"project {project.name!r} has no stack with frame id {frame_id!r}"
+                f"project {project.name!r} has no frame with frame id {frame_id!r}"
             )
         error: str | None = None
         try:

@@ -60,7 +60,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from seestar_controller.store.frames import (
-    KIND_STACK,
     Frame,
     header_to_dict,
     list_frames,
@@ -532,19 +531,22 @@ class CrossmatchController:
 
     @property
     def stacks(self) -> tuple[Frame, ...]:
-        """The current project's stacks (ordered by ``jd``)."""
+        """The current project's frames (all kinds — subs, stacks, enhanced;
+        ordered by ``jd``)."""
         return self._stacks
 
     def refresh_stacks(self) -> tuple[Frame, ...]:
-        """(Re-)list the project's stacks via the store; notifies and
-        returns them. Raises :class:`~.errors.GaiaError` when no project is
-        set or the store call fails."""
+        """(Re-)list the project's frames via the store — ALL kinds (subs
+        included, sub-frames ticket 02: a solved sub is a valid cross-match
+        target); notifies and returns them. Raises
+        :class:`~.errors.GaiaError` when no project is set or the store call
+        fails."""
         project = self._require_project()
         try:
-            stacks = self._call_store(lambda: tuple(list_frames(project, kind=KIND_STACK)))
+            stacks = self._call_store(lambda: tuple(list_frames(project)))
         except Exception as exc:
             raise GaiaError(
-                f"cannot list the stacks of project {project.name!r}: {exc}"
+                f"cannot list the frames of project {project.name!r}: {exc}"
             ) from exc
         with self._lock:
             self._stacks = stacks
@@ -563,13 +565,15 @@ class CrossmatchController:
         return self._stack_label
 
     def select_stack(self, frame_id: int) -> CrossmatchSnapshot:
-        """Select the stack with frame id ``frame_id`` (standalone use —
-        with a viewer attached the viewer's open stack drives the overlay):
+        """Select the frame with frame id ``frame_id`` (standalone use —
+        with a viewer attached the viewer's open frame drives the overlay):
         load its image + header from the store, load any persisted
-        cross-match table, render, notify, and return the snapshot.
+        cross-match table, render, notify, and return the snapshot. Any
+        frame kind is accepted — a solved sub included (sub-frames ticket
+        02).
 
         Raises :class:`~.errors.GaiaError` when no project is set, the id is
-        not a stack of the project, or the FITS cannot be read.
+        not a frame of the project, or the FITS cannot be read.
         """
         if isinstance(frame_id, bool) or not isinstance(frame_id, int):
             raise GaiaError(f"frame_id must be an int, got {frame_id!r}")
@@ -577,12 +581,12 @@ class CrossmatchController:
         frame = next((f for f in self._stacks if f.id == frame_id), None)
         if frame is None:
             frame = next(
-                (f for f in self._call_store(lambda: list_frames(project, kind=KIND_STACK)) if f.id == frame_id),
+                (f for f in self._call_store(lambda: list_frames(project)) if f.id == frame_id),
                 None,
             )
         if frame is None:
             raise GaiaError(
-                f"project {project.name!r} has no stack with frame id {frame_id!r} "
+                f"project {project.name!r} has no frame with frame id {frame_id!r} "
                 f"(listed: {[f.id for f in self._stacks] or 'none'})"
             )
         try:
