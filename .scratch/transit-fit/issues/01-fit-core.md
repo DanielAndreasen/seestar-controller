@@ -4,7 +4,7 @@
 
 **Blocked by:** None (period-analysis, project-store done)
 
-**Status:** ready-for-agent
+**Status:** implemented in b0628df (merged)
 
 - [ ] Pure `transit/` package, no gi (subprocess boundary test); scipy/numpy; analytic transit model (no batman dependency)
 - [ ] `transit_model(phase, t0, depth, duration)` -> model mags; `fit_transit(phases, mags, errs, period, ...)` -> FitResult(params, errors, residuals, chi2) via scipy least_squares + covariance

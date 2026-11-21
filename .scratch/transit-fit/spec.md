@@ -1,6 +1,6 @@
 # Spec: transit-fit
 
-Status: ready-for-agent (1 issue)
+Status: completed 2026-11-20 (issue 01 implemented in b0628df)
 
 ## Problem Statement
 
