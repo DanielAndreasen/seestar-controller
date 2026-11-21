@@ -154,13 +154,21 @@ def test_mover_overlay_view_detect_button_finds_mover(gtk, project, tmp_path):
     from seestar_controller.moving_objects.overlay_view import MoverOverlayView
 
     sid = make_session_with_subs(project, wcs=True, n=6)
-    mc = MoverController(project, cache=QueryCache(cache_dir=tmp_path / "mpc-cache"))
+    # the app binds GLib.idle_add: store calls made from the worker thread are
+    # marshalled to the (pumped) main loop — the store's sqlite connection is
+    # thread-bound
+    mc = MoverController(
+        project,
+        cache=QueryCache(cache_dir=tmp_path / "mpc-cache"),
+        invoke_on_main=lambda cb: GLib.idle_add(cb),
+    )
     view = MoverOverlayView(mover_controller=mc)
     pump_main()
     assert view.selected_session_id() == sid
     # click Detect: the pipeline runs on a worker thread, the render lands on
-    # the main loop via GLib.idle_add
-    view.detect_button.clicked()
+    # the main loop via GLib.idle_add (emit("clicked") — Gtk.Button has no
+    # .clicked() method on PyGObject/GTK4)
+    view.detect_button.emit("clicked")
     assert wait_until(lambda: mc.snapshot.movers and view.movers_list.get_row_at_index(0) is not None)
     pump_main()
     row = view.movers_list.get_row_at_index(0)
@@ -169,14 +177,21 @@ def test_mover_overlay_view_detect_button_finds_mover(gtk, project, tmp_path):
     assert "T" in label and "px/f" in label
     assert "1 mover(s)" in view.status_label.get_label()
     assert view.picture.get_paintable() is not None
-    view.destroy()
+    view._on_destroy()  # GTK4 has no Widget.destroy()
 
 
 def test_mover_overlay_view_lookup_button_records_match(gtk, project, tmp_path, monkeypatch):
     from seestar_controller.moving_objects.overlay_view import MoverOverlayView
 
     make_session_with_subs(project, wcs=True, n=6)
-    mc = MoverController(project, cache=QueryCache(cache_dir=tmp_path / "mpc-cache"))
+    # the app binds GLib.idle_add: store calls made from the worker thread are
+    # marshalled to the (pumped) main loop — the store's sqlite connection is
+    # thread-bound
+    mc = MoverController(
+        project,
+        cache=QueryCache(cache_dir=tmp_path / "mpc-cache"),
+        invoke_on_main=lambda cb: GLib.idle_add(cb),
+    )
     view = MoverOverlayView(mover_controller=mc)
     pump_main()
     mc.analyze_session()
@@ -199,14 +214,14 @@ def test_mover_overlay_view_lookup_button_records_match(gtk, project, tmp_path, 
         }
 
     monkeypatch.setattr(mpc_module, "fetch_mpc_checker_json", fake_fetch)
-    view.lookup_button.clicked()
+    view.lookup_button.emit("clicked")  # Gtk.Button has no .clicked() on GTK4
     assert wait_until(lambda: mc.snapshot.movers[0].mpc_match is not None)
     pump_main()
     assert "MPC: 1/1 matched" in view.status_label.get_label()
     row = view.movers_list.get_row_at_index(0)
     assert row is not None
     assert "(99999) 2026 XX" in row.get_child().get_label()
-    view.destroy()
+    view._on_destroy()  # GTK4 has no Widget.destroy()
 
 
 def test_mover_overlay_view_blink_steps_frames(gtk, project, tmp_path):
@@ -224,7 +239,7 @@ def test_mover_overlay_view_blink_steps_frames(gtk, project, tmp_path):
     assert mc.frame_index is not None and mc.frame_index > 0
     # destroy stops the blink source and removes the listener
     n_listeners = len(mc.listeners)
-    view.destroy()
+    view._on_destroy()  # GTK4 has no Widget.destroy()
     assert len(mc.listeners) == n_listeners - 1
 
 
@@ -240,4 +255,4 @@ def test_mover_overlay_view_refresh_and_selection(gtk, project, tmp_path):
     view.session_dropdown.set_selected(0)
     pump_main()
     assert mc.session_id == sid
-    view.destroy()
+    view._on_destroy()  # GTK4 has no Widget.destroy()
