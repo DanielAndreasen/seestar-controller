@@ -198,6 +198,7 @@ from seestar_controller.analysis import (
 )
 from seestar_controller.enhance import EditorController, ViewerController
 from seestar_controller.frame_quality import QualityController
+from seestar_controller.gaia import CrossmatchController
 from seestar_controller.moving_objects import MoverController
 from seestar_controller.observing import (
     ObserveController,
@@ -327,6 +328,7 @@ class SeestarWindow(Adw.ApplicationWindow):
         period_controller: PeriodController | None = None,
         quality_controller: QualityController | None = None,
         mover_controller: MoverController | None = None,
+        crossmatch_controller: CrossmatchController | None = None,
         project_controller: ProjectController | None = None,
     ) -> None:
         super().__init__(application=app, title=APP_NAME)
@@ -482,6 +484,19 @@ class SeestarWindow(Adw.ApplicationWindow):
                 viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
             ))
         )
+        # Gaia-crossmatch ticket 03: one shared cross-match controller
+        # following the shared viewer controller (the stack open in the image
+        # viewer becomes the cross-match target); the Enhance view's
+        # cross-match overlay panel renders its snapshots. Its invoke_on_main
+        # is GLib.idle_add, so worker-thread store reads/writes + the Gaia
+        # query results + notifications land on the main loop.
+        self._crossmatch_controller = (
+            crossmatch_controller
+            if crossmatch_controller is not None
+            else _shared_from_app(app, "crossmatch_controller", lambda: CrossmatchController(
+                viewer_controller=self._viewer_controller, invoke_on_main=_invoke_on_main
+            ))
+        )
         # Projects-view ticket 01: the shared project controller. When the app
         # owns one it is used (the app already attached its controllers to it);
         # otherwise (explicit argument, or a standalone window without an app
@@ -548,6 +563,7 @@ class SeestarWindow(Adw.ApplicationWindow):
                     period_controller=self._period_controller,
                     quality_controller=self._quality_controller,
                     mover_controller=self._mover_controller,
+                    crossmatch_controller=self._crossmatch_controller,
                     project_controller=self._project_controller,
                     project=self._project_controller.current,
                     app_state=state,
@@ -751,6 +767,13 @@ class SeestarWindow(Adw.ApplicationWindow):
         return self._mover_controller
 
     @property
+    def crossmatch_controller(self) -> CrossmatchController:
+        """The shared cross-match controller (gaia-crossmatch ticket 03 —
+        the Enhance view's cross-match overlay panel binds to it; it follows
+        the viewer controller's project and open stack)."""
+        return self._crossmatch_controller
+
+    @property
     def project_controller(self) -> ProjectController:
         """The shared project controller (projects-view ticket 01 — the
         Projects view lists/creates/opens through it; it is attached to the
@@ -781,6 +804,7 @@ class SeestarWindow(Adw.ApplicationWindow):
             period=self._period_controller,
             quality=self._quality_controller,
             movers=self._mover_controller,
+            crossmatch=self._crossmatch_controller,
         )
 
     def _on_row_selected(self, sidebar: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
@@ -940,6 +964,15 @@ class SeestarApplication(Adw.Application):
         self.mover_controller = MoverController(
             viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
         )
+        # Gaia-crossmatch ticket 03: the shared cross-match controller
+        # following the shared viewer controller (the stack open in the image
+        # viewer becomes the cross-match target); the window passes it to the
+        # Enhance view's cross-match overlay panel. Store reads/writes and
+        # notifications are marshalled onto the GLib main loop like the other
+        # shared controllers'.
+        self.crossmatch_controller = CrossmatchController(
+            viewer_controller=self.viewer_controller, invoke_on_main=_invoke_on_main
+        )
         # Projects-view ticket 01: the shared project controller over the same
         # state (project root from settings, last_project persisted). restore()
         # re-opens the last project when it still exists and clears a stale
@@ -950,9 +983,9 @@ class SeestarApplication(Adw.Application):
         # (~/SeestarProjects, created on demand at create time); a changed
         # project_root re-lists the projects under the new root (see
         # _on_settings_changed). The attach list covers the observe / viewer /
-        # picker / run / lightcurve / period / quality / movers controllers, so
-        # every current-project change is pushed to all of them via their
-        # ``set_project``.
+        # picker / run / lightcurve / period / quality / movers / crossmatch
+        # controllers, so every current-project change is pushed to all of
+        # them via their ``set_project``.
         self.project_controller = ProjectController(self._state)
         self.project_controller.restore()
         self.project_controller.attach_controllers(
@@ -964,6 +997,7 @@ class SeestarApplication(Adw.Application):
             period=self.period_controller,
             quality=self.quality_controller,
             movers=self.mover_controller,
+            crossmatch=self.crossmatch_controller,
         )
         self.settings_controller.add_listener(self._on_settings_changed)
         self._last_project_root = self._state.get_setting("project_root")

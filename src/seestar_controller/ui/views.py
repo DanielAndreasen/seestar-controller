@@ -116,6 +116,10 @@ from seestar_controller.frame_quality import QualityController
 from seestar_controller.frame_quality.quality_view import (
     SessionQualityView as SessionQualityViewWidget,
 )
+from seestar_controller.gaia import CrossmatchController
+from seestar_controller.gaia.overlay_view import (
+    CrossmatchOverlayView as CrossmatchOverlayWidget,
+)
 from seestar_controller.moving_objects import MoverController
 from seestar_controller.moving_objects.overlay_view import (
     MoverOverlayView as MoverOverlayWidget,
@@ -344,21 +348,29 @@ class ObserveView(_PlaceholderView):
 
 
 class EnhanceView(_PlaceholderView):
-    """Enhance view (image-enhance tickets 01 + 03 + 04): wraps the
+    """Enhance view (image-enhance tickets 01 + 03 + 04, gaia-crossmatch
+    ticket 03): wraps the
     :class:`~seestar_controller.enhance.enhance_view.EnhanceEditor` widget —
     the project's stack list + per-op parameter sliders on the left, the
     live before/after preview with undo/redo/reset on the right, plus the
     ticket-04 persistence buttons (Save enhanced / Save preset / Export PNG /
-    Export JPEG, exposed as pass-through properties).
+    Export JPEG, exposed as pass-through properties) — and below it the
+    gaia-crossmatch ticket-03 panel
+    (:class:`~seestar_controller.gaia.overlay_view.CrossmatchOverlayView`),
+    the cross-match overlay of the stack open in the viewer.
 
     ``viewer_controller`` is the app's shared
     :class:`~seestar_controller.enhance.viewer_controller.ViewerController`
     and ``editor_controller`` the shared
     :class:`~seestar_controller.enhance.editor_controller.EditorController`
     (the app window passes both via :func:`build_view`); when omitted, the
-    view creates its own, so it also constructs standalone. With no project
-    set on the viewer controller the view shows a "no project" placeholder
-    (the Projects view is a later ticket; the project can be set later via
+    view creates its own, so it also constructs standalone.
+    ``crossmatch_controller`` is the app's shared
+    :class:`~seestar_controller.gaia.overlay.CrossmatchController` (the
+    gaia-crossmatch ticket 03) driving the cross-match overlay panel; when
+    omitted, the view creates its own. With no project set on the viewer
+    controller the view shows a "no project" placeholder (the Projects view
+    is a later ticket; the project can be set later via
     :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.set_project`).
     """
 
@@ -369,6 +381,7 @@ class EnhanceView(_PlaceholderView):
         self,
         viewer_controller: ViewerController | None = None,
         editor_controller: EditorController | None = None,
+        crossmatch_controller: CrossmatchController | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -380,6 +393,11 @@ class EnhanceView(_PlaceholderView):
             if editor_controller is not None
             else EditorController(self._viewer_controller)
         )
+        self._crossmatch_controller = (
+            crossmatch_controller
+            if crossmatch_controller is not None
+            else CrossmatchController(viewer_controller=self._viewer_controller)
+        )
         super().__init__(**kwargs)
 
     def _build_content(self) -> None:
@@ -387,6 +405,12 @@ class EnhanceView(_PlaceholderView):
             self._viewer_controller, self._editor_controller
         )
         self._content.append(self._editor)
+        # gaia-crossmatch ticket 03: the cross-match overlay panel below the
+        # image editor (the cross-match panel of the image viewer)
+        self._crossmatch_overlay = CrossmatchOverlayWidget(
+            crossmatch_controller=self._crossmatch_controller
+        )
+        self._content.append(self._crossmatch_overlay)
 
     @property
     def viewer_controller(self) -> ViewerController:
@@ -397,6 +421,17 @@ class EnhanceView(_PlaceholderView):
     def editor_controller(self) -> EditorController:
         """The shared pure-layer editor controller driving this view."""
         return self._editor_controller
+
+    @property
+    def crossmatch_controller(self) -> CrossmatchController:
+        """The shared cross-match controller (gaia-crossmatch ticket 03)
+        driving this view's cross-match overlay panel."""
+        return self._crossmatch_controller
+
+    @property
+    def crossmatch_overlay(self) -> CrossmatchOverlayWidget:
+        """The cross-match overlay panel (gaia-crossmatch ticket 03)."""
+        return self._crossmatch_overlay
 
     @property
     def editor_widget(self) -> EnhanceEditorWidget:
@@ -1097,6 +1132,7 @@ def build_view(
     period_controller: PeriodController | None = None,
     quality_controller: QualityController | None = None,
     mover_controller: MoverController | None = None,
+    crossmatch_controller: CrossmatchController | None = None,
     project_controller: ProjectController | None = None,
     project: Any = None,
     app_state: AppState | None = None,
@@ -1110,6 +1146,8 @@ def build_view(
     03, projects-view ticket 01, visibility-planner ticket 02),
     ``viewer_controller`` /
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
+    ``crossmatch_controller`` to the Enhance view's cross-match overlay panel
+    (gaia-crossmatch ticket 03),
     ``picker_controller`` / ``viewer_controller`` / ``suggest_controller``
     / ``run_controller`` to the Photometry view (photometry tickets 01 + 02 +
     04), ``mover_controller`` to the Photometry view's mover overlay/blink
@@ -1134,6 +1172,7 @@ def build_view(
         return EnhanceView(
             viewer_controller=viewer_controller,
             editor_controller=editor_controller,
+            crossmatch_controller=crossmatch_controller,
         )
     if view_id == PhotometryView.view_id:
         return PhotometryView(
