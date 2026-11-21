@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in e216f83 (merged)
 
 - [ ] `enhance/viewer_controller.py` lists all frames (new `list_project_frames` or generalize `list_project_stacks`); `open_stack`/open works for sub frame ids (RGB->luminance path reused)
 - [ ] Enhance view list shows all frames with kind label; click opens in viewer
