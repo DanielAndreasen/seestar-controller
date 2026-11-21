@@ -37,7 +37,15 @@ passes it down via :func:`seestar_controller.ui.views.build_view`):
 - a **scatter plot** of mag vs jd on a :class:`Gtk.DrawingArea` (GTK4 has no
   chart widget, so the draw func paints axes + ticks + points + error bars
   with Cairo directly; the mag axis is inverted — brighter at the top — and
-  excluded points are drawn in red).
+  excluded points are drawn in red). When the last run had a **check star**
+  picked (check-star-plot tickets 01 + 02), the plot carries the check star's
+  differential curve as a **second series** (amber, next to the target's
+  blue) plus a **target − check** toggle (:class:`Gtk.CheckButton`) that adds
+  the target-minus-check curve (purple) — the check curves come from the last
+  :class:`~seestar_controller.photometry.run.RunReport`'s ``frame_results``
+  (the store schema keeps only the target's mag per measurement, so the check
+  series covers the frames of the last run), aligned to the lightcurve points
+  by frame id, with a legend naming each series.
 
 The panel re-renders on every frozen
 :class:`~seestar_controller.photometry.run.RunSnapshot`.
@@ -63,9 +71,13 @@ PLOT_MARGIN_RIGHT = 12
 PLOT_MARGIN_TOP = 12
 PLOT_MARGIN_BOTTOM = 30
 
-#: Plot colors (RGBA): axes/text gray, points blue, excluded points red.
+#: Plot colors (RGBA): axes/text gray, target points blue, the check-star
+#: series amber, the target-minus-check series purple, excluded points red
+#: (check-star-plot ticket 02).
 AXIS_COLOR = (0.55, 0.55, 0.58, 1.0)
 POINT_COLOR = (0.35, 0.60, 0.95, 1.0)
+CHECK_COLOR = (0.98, 0.72, 0.20, 1.0)
+TMC_COLOR = (0.75, 0.45, 0.95, 1.0)
 EXCLUDED_COLOR = (0.90, 0.35, 0.30, 1.0)
 
 #: One plotted point: ``(jd, mag, mag_err, excluded)``.
@@ -74,7 +86,9 @@ PlotPoint = tuple[float, float, float | None, bool]
 
 class ResultsPanel(Gtk.Box):
     """The photometry results panel: session chooser + Run button + progress
-    + per-frame table + mag-vs-jd scatter plot, observing a
+    + per-frame table + mag-vs-jd scatter plot (target series, plus the
+    check-star series and the target-minus-check toggle when the last run had
+    a check star — check-star-plot ticket 02), observing a
     :class:`~seestar_controller.photometry.run.RunController`.
 
     Constructed with the shared run controller (the app passes it; a fresh
@@ -97,6 +111,9 @@ class ResultsPanel(Gtk.Box):
         self._session_ids: list[str] = []
         self._updating = False  # guard against programmatic signal loops
         self._plot_points: tuple[PlotPoint, ...] = ()
+        self._check_points: tuple[PlotPoint, ...] = ()
+        self._tmc_points: tuple[PlotPoint, ...] = ()
+        self._show_tmc = False  # the target-minus-check toggle state
 
         heading = Gtk.Label(label="Results", xalign=0.0, css_classes=["heading"])
         self.append(heading)
@@ -188,8 +205,22 @@ class ResultsPanel(Gtk.Box):
         box.set_margin_end(6)
         box.set_hexpand(True)
         box.set_vexpand(True)
-        box.append(Gtk.Label(label="mag vs jd (brighter at the top)", xalign=0.0,
-                             css_classes=["caption", "dim-label"]))
+        plot_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        plot_header.append(Gtk.Label(label="mag vs jd (brighter at the top)", xalign=0.0,
+                                     hexpand=True, css_classes=["caption", "dim-label"]))
+        # the target-minus-check toggle (check-star-plot ticket 02): adds the
+        # target − check curve as a third series when a check star was picked
+        self._tmc_toggle = Gtk.CheckButton(
+            label="target − check",
+            tooltip_text=(
+                "Also plot the target-minus-check curve (needs a check star in "
+                "the last run)"
+            ),
+        )
+        self._tmc_toggle.set_valign(Gtk.Align.CENTER)
+        self._tmc_toggle.connect("toggled", self._on_tmc_toggled)
+        plot_header.append(self._tmc_toggle)
+        box.append(plot_header)
         self._plot = Gtk.DrawingArea()
         self._plot.set_hexpand(True)
         self._plot.set_vexpand(True)
@@ -266,8 +297,31 @@ class ResultsPanel(Gtk.Box):
         return rows
 
     def plot_points(self) -> tuple[PlotPoint, ...]:
-        """The points currently plotted: ``(jd, mag, mag_err, excluded)``."""
+        """The target series currently plotted: ``(jd, mag, mag_err, excluded)``."""
         return self._plot_points
+
+    def check_plot_points(self) -> tuple[PlotPoint, ...]:
+        """The check-star series currently plotted (empty when the last run had
+        no check star): ``(jd, check_mag, check_mag_err, excluded)``."""
+        return self._check_points
+
+    def tmc_plot_points(self) -> tuple[PlotPoint, ...]:
+        """The target-minus-check series currently plotted (empty when the last
+        run had no check star): ``(jd, target_minus_check, err, excluded)``."""
+        return self._tmc_points
+
+    @property
+    def tmc_toggle(self) -> Gtk.CheckButton:
+        """The target-minus-check toggle checkbox."""
+        return self._tmc_toggle
+
+    def show_target_minus_check(self) -> bool:
+        """Whether the target-minus-check curve is currently shown."""
+        return self._show_tmc
+
+    def set_show_target_minus_check(self, show: bool) -> None:
+        """Set the target-minus-check toggle (same as clicking it)."""
+        self._tmc_toggle.set_active(bool(show))
 
     def selected_session_id(self) -> str | None:
         """The session id currently chosen in the dropdown (None when empty)."""
@@ -400,6 +454,7 @@ class ResultsPanel(Gtk.Box):
         self._plot_points = tuple(
             (m.jd, m.mag, m.mag_err, m.excluded) for m in snapshot.lightcurve
         )
+        self._check_points, self._tmc_points = self._check_series(snapshot)
         self._plot.queue_draw()
         if snapshot.running and snapshot.progress is not None:
             p = snapshot.progress
@@ -425,6 +480,37 @@ class ResultsPanel(Gtk.Box):
                 error=False,
             )
         return GLib.SOURCE_REMOVE
+
+    def _check_series(self, snapshot: RunSnapshot) -> tuple[tuple[PlotPoint, ...], tuple[PlotPoint, ...]]:
+        """The check-star and target-minus-check series of the last run:
+        ``(check_points, tmc_points)``, each ``(jd, mag, mag_err, excluded)``.
+
+        The check curves live in the last :class:`RunReport`'s
+        ``frame_results`` (the store keeps only the target's mag per
+        measurement), zipped with the report's ``measurements`` (same order)
+        and aligned to the lightcurve's excluded flags by frame id. Empty when
+        no report yet or the run had no check star.
+        """
+        report = snapshot.report
+        if report is None:
+            return (), ()
+        excluded_by_frame = {m.frame_id: m.excluded for m in snapshot.lightcurve}
+        check_points: list[PlotPoint] = []
+        tmc_points: list[PlotPoint] = []
+        for measurement, fm in zip(report.measurements, report.frame_results):
+            excluded = excluded_by_frame.get(measurement.frame_id, measurement.excluded)
+            if fm.check_mag is not None and fm.check_mag_err is not None:
+                check_points.append((fm.jd, fm.check_mag, fm.check_mag_err, excluded))
+            if fm.target_minus_check is not None and fm.target_minus_check_err is not None:
+                tmc_points.append(
+                    (fm.jd, fm.target_minus_check, fm.target_minus_check_err, excluded)
+                )
+        return tuple(check_points), tuple(tmc_points)
+
+    def _on_tmc_toggled(self, toggle: Gtk.CheckButton) -> None:
+        """The target-minus-check toggle: show/hide the third series."""
+        self._show_tmc = toggle.get_active()
+        self._plot.queue_draw()
 
     def _make_row(self, m: Any) -> Gtk.ListBoxRow:
         """One table row: jd/utc, mag, mag_err, the excluded checkbox."""
@@ -452,22 +538,32 @@ class ResultsPanel(Gtk.Box):
     # -- the scatter plot (custom Cairo draw: axes + ticks + points + error bars) ------------
 
     def _draw_plot(self, area: Gtk.DrawingArea, cr: Any, width: int, height: int) -> None:
-        """DrawingArea draw func: mag vs jd scatter — axes + ticks, one point
-        per lightcurve point (error bars when ``mag_err`` is known), excluded
-        points in red; the mag axis is inverted (brighter at the top)."""
+        """DrawingArea draw func: mag vs jd scatter — axes + ticks + legend,
+        one point per lightcurve point (error bars when ``mag_err`` is known),
+        plus the check-star series (amber) and, when the toggle is on, the
+        target-minus-check series (purple) — excluded points in red; the mag
+        axis is inverted (brighter at the top)."""
         left, right = PLOT_MARGIN_LEFT, PLOT_MARGIN_RIGHT
         top, bottom = PLOT_MARGIN_TOP, PLOT_MARGIN_BOTTOM
         plot_w = max(width - left - right, 1)
         plot_h = max(height - top - bottom, 1)
-        points = self._plot_points
+        # the visible series: (legend label, color, points)
+        series: list[tuple[str, tuple[float, float, float, float], tuple[PlotPoint, ...]]] = [
+            ("target", POINT_COLOR, self._plot_points)
+        ]
+        if self._check_points:
+            series.append(("check", CHECK_COLOR, self._check_points))
+        if self._show_tmc and self._tmc_points:
+            series.append(("target−check", TMC_COLOR, self._tmc_points))
         cr.set_font_size(9.0)
-        if not points:
+        if not self._plot_points:
             cr.set_source_rgba(*AXIS_COLOR)
             cr.move_to(left, top + plot_h / 2.0)
             cr.show_text("no measurements yet — run a session")
             return
-        jds = [p[0] for p in points]
-        mags = [p[1] for p in points]
+        all_points = [p for _label, _color, points in series for p in points]
+        jds = [p[0] for p in all_points]
+        mags = [p[1] for p in all_points]
         jd_min, jd_max = min(jds), max(jds)
         mag_min, mag_max = min(mags), max(mags)
         if jd_max - jd_min < 1e-9:
@@ -513,19 +609,30 @@ class ResultsPanel(Gtk.Box):
             extents = cr.text_extents(label)
             cr.move_to(left - 6 - extents.width, y + extents.height / 2.0)
             cr.show_text(label)
-        # error bars + points
-        for jd, mag, mag_err, excluded in points:
-            x, y = px(jd), py(mag)
-            color = EXCLUDED_COLOR if excluded else POINT_COLOR
-            if mag_err is not None:
-                cr.set_source_rgba(color[0], color[1], color[2], 0.6)
-                cr.set_line_width(1.0)
-                cr.move_to(x, py(mag + mag_err))
-                cr.line_to(x, py(mag - mag_err))
-                cr.stroke()
+        # legend (top-right inside the plot): one color chip + name per series
+        legend_x = left + plot_w - 92
+        for i, (name, color, _points) in enumerate(series):
+            ly = top + 8 + i * 14
             cr.set_source_rgba(*color)
-            cr.arc(x, y, 3.0, 0.0, 6.2832)
+            cr.rectangle(legend_x, ly, 8, 8)
             cr.fill()
+            cr.set_source_rgba(*AXIS_COLOR)
+            cr.move_to(legend_x + 12, ly + 8)
+            cr.show_text(name)
+        # error bars + points per series (excluded points in red)
+        for _name, color, points in series:
+            for jd, mag, mag_err, excluded in points:
+                x, y = px(jd), py(mag)
+                point_color = EXCLUDED_COLOR if excluded else color
+                if mag_err is not None:
+                    cr.set_source_rgba(point_color[0], point_color[1], point_color[2], 0.6)
+                    cr.set_line_width(1.0)
+                    cr.move_to(x, py(mag + mag_err))
+                    cr.line_to(x, py(mag - mag_err))
+                    cr.stroke()
+                cr.set_source_rgba(*point_color)
+                cr.arc(x, y, 3.0, 0.0, 6.2832)
+                cr.fill()
 
     # -- status ------------------------------------------------------------------------------
 
