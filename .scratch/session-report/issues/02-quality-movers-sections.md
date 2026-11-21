@@ -4,7 +4,7 @@
 
 **Blocked by:** session-report 01, frame-quality 01 (ready-for-agent, not yet implemented), moving-objects 01 (not yet ticketed)
 
-**Status:** ready-for-agent
+**Status:** implemented in e7a1925 (merged)
 
 - [ ] Quality section: pull session_quality (frame-quality 01) into the HTML report
 - [ ] Movers section: pull moving-objects detections into the report
