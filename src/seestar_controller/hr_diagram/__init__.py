@@ -24,7 +24,13 @@ Modules (ticket 01 — the computation core; the view is ticket 03):
   :func:`~.core.cmd_points` and :func:`~.core.hr_points`;
 - :mod:`.export` — :func:`~.export.export_table_csv` (the whole table as a
   CSV, atomic write, ``repr(float)`` round-trip floats) with
-  :class:`~.export.ExportError` and :data:`~.export.CSV_HEADER`.
+  :class:`~.export.ExportError` and :data:`~.export.CSV_HEADER`;
+- :mod:`.isochrone` — ticket 02: the PARSEC isochrone overlay,
+  :func:`~.isochrone.isochrone` (``age``, ``feh``, ``dist_mod`` -> overlay
+  points, abs G vs BP-RP) with the disk cache under the app config dir, the
+  single HTTP boundary :func:`~.isochrone.fetch_isochrone_json` (fixed
+  :data:`~.isochrone.PARSEC_ISOCHRONE_URL`), and the bundled fallback grid
+  (:func:`~.isochrone.fallback_isochrone`).
 
 Ticket 01 is pure-only: there is no widget module yet, so there is no lazy
 PEP 562 export — ``import seestar_controller.hr_diagram`` never imports
@@ -49,6 +55,15 @@ from .export import (
     ExportError,
     export_table_csv,
 )
+from .isochrone import (
+    PARSEC_ISOCHRONE_URL,
+    IsochroneError,
+    IsochroneFetchError,
+    IsochronePoint,
+    fallback_isochrone,
+    fetch_isochrone_json,
+    isochrone,
+)
 
 __all__ = [
     "CSV_HEADER",
@@ -56,13 +71,20 @@ __all__ = [
     "DEFAULT_SIGMA_CLIP",
     "MAD_TO_SIGMA",
     "MIN_MEMBERSHIP_SAMPLE",
+    "PARSEC_ISOCHRONE_URL",
     "ExportError",
     "HrError",
     "HrPoint",
+    "IsochroneError",
+    "IsochroneFetchError",
+    "IsochronePoint",
     "Membership",
     "absolute_g",
     "cmd_points",
     "export_table_csv",
+    "fallback_isochrone",
+    "fetch_isochrone_json",
     "hr_points",
+    "isochrone",
     "membership_filter",
 ]

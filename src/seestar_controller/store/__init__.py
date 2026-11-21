@@ -84,6 +84,12 @@ Pure Python, no GTK, no link (module boundary per
   FK + joined session_id, solver, solved_at, rms_arcsec, n_stars, center
   RA/Dec, the WCS as a dict of FITS cards, :meth:`~.wcs.FrameWcs.to_wcs`),
   and :class:`~.errors.WcsStoreError`
+- :mod:`.isochrone` — the project's persisted isochrone overlay parameters
+  (hr-diagram ticket 02): :func:`~.isochrone.set_isochrone_params` (validated
+  upsert of the singleton project-level row in one db transaction),
+  :func:`~.isochrone.isochrone_params` (the saved record, None when never
+  set), the :class:`~.isochrone.IsochroneParams` record (age = log10(age/yr),
+  feh, dist_mod, updated_at), and :class:`~.errors.IsochroneStoreError`
 - :mod:`.csv_export` — CSV export: :func:`~.csv_export.export_csv` (atomic
   write of ``lightcurve.csv`` with header :data:`~.csv_export.CSV_HEADER`,
   excluded points omitted unless ``include_excluded=True``), the default
@@ -106,6 +112,7 @@ from .errors import (
     CrossmatchError,
     FrameStoreError,
     InvalidProjectError,
+    IsochroneStoreError,
     MeasurementError,
     PresetError,
     ProjectError,
@@ -133,6 +140,7 @@ from .frames import (
     read_frame_bytes,
     store_frame,
 )
+from .isochrone import IsochroneParams, isochrone_params, set_isochrone_params
 from .measurements import (
     Measurement,
     add_measurement,
@@ -227,6 +235,8 @@ __all__ = [
     "FrameStoreError",
     "FrameWcs",
     "InvalidProjectError",
+    "IsochroneParams",
+    "IsochroneStoreError",
     "Measurement",
     "MeasurementError",
     "Preset",
@@ -255,6 +265,7 @@ __all__ = [
     "get_frame_path",
     "get_open_session",
     "initialize_db",
+    "isochrone_params",
     "lightcurve",
     "list_crossmatched_stacks",
     "list_frames",
@@ -279,6 +290,7 @@ __all__ = [
     "save_star_picks",
     "session_quality",
     "set_excluded",
+    "set_isochrone_params",
     "slugify",
     "start_session",
     "store_frame",

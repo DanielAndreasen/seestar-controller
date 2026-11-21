@@ -549,7 +549,7 @@ def test_migration_6_to_7_in_memory():
     conn = sqlite3.connect(":memory:")
     try:
         initialize_db(conn)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 8
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 9
         conn.execute("DROP TABLE scan_results")
         conn.execute("PRAGMA user_version=6")
         assert migrate_db(conn) == SCHEMA_VERSION
@@ -607,9 +607,9 @@ def test_reopen_migrates_v6_db_to_v7_and_preserves_rows(root):
         # existing rows preserved
         assert [f.id for f in list_frames(reopened)] == [frame.id]
         # the new version is mirrored into project.json
-        assert reopened.config["schema_version"] == 8
+        assert reopened.config["schema_version"] == 9
         on_disk = json.loads((root / slug / "project.json").read_text(encoding="utf-8"))
-        assert on_disk["schema_version"] == 8
+        assert on_disk["schema_version"] == 9
         # idempotent re-open after another downgrade (table already exists)
         reopened.db.execute("PRAGMA user_version=6")
     finally:

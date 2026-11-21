@@ -37,7 +37,7 @@ from seestar_controller.hr_diagram import (
 HR_PACKAGE_DIR = Path(hr.__file__).resolve().parent
 
 #: The PURE hr_diagram modules — no ``gi``, no subprocess (subprocess-enforced).
-PURE_HR_MODULES = ("__init__", "core", "export")
+PURE_HR_MODULES = ("__init__", "core", "export", "isochrone")
 
 
 # --- synthetic cross-match table: injected cluster main sequence + field stars ----------------
@@ -499,8 +499,11 @@ def test_every_hr_diagram_module_is_pure_and_the_public_api_is_exported():
         assert hasattr(hr, name), f"hr_diagram.__all__ name {name} missing"
     assert set(hr.__all__) == {
         "CSV_HEADER", "DEFAULT_PARALLAX_SNR", "DEFAULT_SIGMA_CLIP", "MAD_TO_SIGMA",
-        "MIN_MEMBERSHIP_SAMPLE", "ExportError", "HrError", "HrPoint", "Membership",
-        "absolute_g", "cmd_points", "export_table_csv", "hr_points", "membership_filter",
+        "MIN_MEMBERSHIP_SAMPLE", "PARSEC_ISOCHRONE_URL", "ExportError", "HrError",
+        "HrPoint", "IsochroneError", "IsochroneFetchError", "IsochronePoint",
+        "Membership", "absolute_g", "cmd_points", "export_table_csv",
+        "fallback_isochrone", "fetch_isochrone_json", "hr_points", "isochrone",
+        "membership_filter",
     }
     assert hr.DEFAULT_PARALLAX_SNR == 5.0
 
