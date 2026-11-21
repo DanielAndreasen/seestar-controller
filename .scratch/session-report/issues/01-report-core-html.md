@@ -4,7 +4,7 @@
 
 **Blocked by:** None for this slice (project-store, observing, photometry, period-analysis, image-enhance all done). Quality/movers sections are slice 02.
 
-**Status:** ready-for-human
+**Status:** implemented in 0b40b52 (merged)
 
 - [x] Pure `report/` package, no gi (subprocess boundary test); matplotlib Agg for plots, PIL for thumbnails, base64-embedded single HTML
 - [x] `generate_report(project, session_id) -> path`; sections: stack thumbnail, session log table, lightcurve + fold (period-analysis), measurements summary
