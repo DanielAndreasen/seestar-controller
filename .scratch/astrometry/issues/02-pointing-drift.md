@@ -4,7 +4,7 @@
 
 **Blocked by:** astrometry 01, observing queue (done)
 
-**Status:** ready-for-agent
+**Status:** implemented in a6f531a (merged)
 
 - [ ] Pure functions: `pointing_error(project, session_id)` (requested vs solved center, arcsec) and `drift_series(project, session_id)` (offset vs frame time)
 - [ ] Persisted/derived from stored WCS per frame (astrometry 01) + queue entry coords

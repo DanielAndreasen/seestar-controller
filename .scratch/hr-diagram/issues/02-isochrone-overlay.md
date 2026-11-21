@@ -4,7 +4,7 @@
 
 **Blocked by:** hr-diagram 01
 
-**Status:** ready-for-agent
+**Status:** implemented in 376b9cd (merged)
 
 - [ ] Pure isochrone module: `isochrone(age, feh, dist_mod)` -> overlay points (abs G vs BP-RP); HTTP fetch with disk cache under the app config dir + bundled fallback grid; cache keyed by (age, feh)
 - [ ] Project persistence of isochrone params (schema bump + migration per project-store 07 pattern; store API `set_isochrone_params` / `isochrone_params`)
