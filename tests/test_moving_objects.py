@@ -33,6 +33,7 @@ from seestar_controller.moving_objects import (
     FrameDetections,
     MoverReport,
     MovingObjectsError,
+    MpcMatch,
     PersistenceError,
     SessionTracks,
     Track,
@@ -81,11 +82,15 @@ def test_moving_objects_package_imports_no_gi_no_link_no_ui_no_enhance():
         "import seestar_controller.moving_objects.link;"
         "import seestar_controller.moving_objects.flag;"
         "import seestar_controller.moving_objects.persist;"
+        "import seestar_controller.moving_objects.mpc;"
+        "import seestar_controller.moving_objects.overlay;"
         "assert 'gi' not in sys.modules, 'GTK imported';"
         "assert 'seestar_controller.link' not in sys.modules, 'link imported eagerly';"
         "assert 'seestar_controller.ui' not in sys.modules, 'ui imported eagerly';"
         "assert 'seestar_controller.enhance' not in sys.modules, 'enhance imported eagerly';"
         "assert 'seestar_controller.photometry' not in sys.modules, 'photometry imported';"
+        "assert 'seestar_controller.moving_objects.overlay_view' not in sys.modules, ("
+        "'widget module imported eagerly');"
         "print('clean')"
     )
     result = subprocess.run(
@@ -95,9 +100,26 @@ def test_moving_objects_package_imports_no_gi_no_link_no_ui_no_enhance():
     assert "clean" in result.stdout
 
 
+#: Pure modules must never import gi / link / ui / enhance; the widget module
+#: (overlay_view) is the single exception and must import gi at the top,
+#: before any ``from gi.repository`` import.
+PURE_MODULES = {"__init__", "errors", "detect", "link", "flag", "persist", "mpc", "overlay"}
+WIDGET_MODULES = {"overlay_view"}
+
+
 def test_moving_objects_modules_source_scan_no_gi_import():
     for path in sorted(MO_PACKAGE_DIR.glob("*.py")):
         source = path.read_text(encoding="utf-8")
+        if path.stem in WIDGET_MODULES:
+            gi_line = re.search(r"^\s*import gi\b", source, re.MULTILINE)
+            assert gi_line is not None, f"{path.name} must import gi at module top"
+            first_repo = re.search(r"^\s*from gi\.repository", source, re.MULTILINE)
+            assert first_repo is not None, f"{path.name} must use gi.repository"
+            assert gi_line.start() < first_repo.start(), (
+                f"{path.name}: 'import gi' must come before 'from gi.repository'"
+            )
+            continue
+        assert path.stem in PURE_MODULES, f"unexpected module {path.name}"
         assert not re.search(r"^\s*(import gi|from gi)\b", source, re.MULTILINE), (
             f"{path.name} imports gi"
         )
@@ -110,13 +132,25 @@ def test_moving_objects_modules_source_scan_no_gi_import():
 
 def test_moving_objects_package_module_set():
     modules = {path.stem for path in MO_PACKAGE_DIR.glob("*.py")}
-    assert modules == {"__init__", "errors", "detect", "link", "flag", "persist"}
+    assert modules == PURE_MODULES | WIDGET_MODULES
+
+
+def test_moving_objects_widget_exports_lazy():
+    from seestar_controller import moving_objects
+
+    assert moving_objects._WIDGET_EXPORTS == {"MoverOverlayView": "overlay_view"}
+    assert "MoverOverlayView" in moving_objects.__all__
+    # accessing the widget name must NOT happen at import time; only the
+    # attribute lookup triggers the lazy import (and needs gi):
+    assert "overlay_view" not in sys.modules or "gi" in sys.modules
 
 
 def test_moving_objects_public_api_is_exported_from_package():
     from seestar_controller import moving_objects
 
     for name in moving_objects.__all__:
+        if name in moving_objects._WIDGET_EXPORTS:
+            continue  # lazy widget export: importing it needs gi (headless here)
         assert hasattr(moving_objects, name), name
     for name in (
         "Detection",
@@ -128,12 +162,34 @@ def test_moving_objects_public_api_is_exported_from_package():
         "DetectionError",
         "TrackError",
         "PersistenceError",
+        "MpcError",
+        "MpcLookupError",
+        "MpcUnavailableError",
+        "MpcResponseError",
+        "MpcCandidate",
+        "MpcMatch",
+        "MoverController",
+        "MoverSnapshot",
         "detect_in_subs",
         "link_tracks",
         "flag_linear_movers",
         "save_tracks",
         "load_tracks",
         "tracks_path",
+        "fetch_mpc_checker_json",
+        "mover_track_params",
+        "build_checker_params",
+        "parse_mpc_response",
+        "match_mover",
+        "lookup_mover",
+        "lookup_mover_cached",
+        "lookup_movers",
+        "with_matches",
+        "lookup_and_persist",
+        "tonemap_gray",
+        "render_frame_overlay",
+        "SCHEMA_VERSION",
+        "SUPPORTED_SCHEMA_VERSIONS",
     ):
         assert name in moving_objects.__all__, name
 
@@ -523,7 +579,7 @@ def test_persistence_round_trip(project):
     assert path.is_file()
 
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["session_id"] == sid
     assert payload["saved_at"] == saved_at
     assert len(payload["tracks"]) == len(tracks)
@@ -609,3 +665,75 @@ def test_tracks_path_layout(project):
     path = tracks_path(project, sid)
     assert path.name == "movers.json"
     assert path.parent == Path(project.path) / "subs" / sid
+
+
+# --- persistence: schema_version 2 / mpc_match (issue 02) ---------------------------
+
+
+def _sample_match() -> MpcMatch:
+    return MpcMatch(
+        designation="(1234) 2001 AB2",
+        name="Test Asteroid",
+        offset_arcsec=3.5,
+        motion_arcsec_per_min=12.5,
+        pa_deg=95.0,
+        v_mag=18.2,
+    )
+
+
+def test_persistence_mpc_match_round_trip(project):
+    from dataclasses import replace
+
+    sid = make_session_with_subs(project, n=6)
+    frames = detect_in_subs(project, sid)
+    tracks = link_tracks(frames, max_motion_px=5.0)
+    movers = flag_linear_movers(tracks)
+    assert len(movers) == 1
+    match = _sample_match()
+    assert isinstance(match, MpcMatch)
+    movers = tuple(replace(m, mpc_match=match) for m in movers)
+
+    path = save_tracks(project, sid, tracks, movers)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
+    assert payload["movers"][0]["mpc_match"]["designation"] == "(1234) 2001 AB2"
+    assert payload["movers"][0]["mpc_match"]["offset_arcsec"] == pytest.approx(3.5)
+
+    loaded = load_tracks(project, sid)
+    assert loaded.movers[0].mpc_match == match
+
+
+def test_persistence_v1_file_migrates_to_mpc_match_none(project):
+    """A schema_version 1 sidecar (no ``mpc_match``) loads fine; its movers
+    get ``mpc_match=None`` (migrated on read)."""
+    sid = make_session_with_subs(project, n=6)
+    frames = detect_in_subs(project, sid)
+    tracks = link_tracks(frames, max_motion_px=5.0)
+    movers = flag_linear_movers(tracks)
+    assert len(movers) == 1
+    path = save_tracks(project, sid, tracks, movers)
+
+    # rewrite the sidecar as a v1 file: drop mpc_match from the movers
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 1
+    for mover in payload["movers"]:
+        mover.pop("mpc_match", None)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_tracks(project, sid)
+    assert loaded.movers == tuple(movers)
+    assert all(m.mpc_match is None for m in loaded.movers)
+
+
+def test_persistence_corrupt_mpc_match_raises(project):
+    sid = make_session_with_subs(project, n=6)
+    frames = detect_in_subs(project, sid)
+    tracks = link_tracks(frames, max_motion_px=5.0)
+    movers = flag_linear_movers(tracks)
+    path = save_tracks(project, sid, tracks, movers)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["movers"][0]["mpc_match"] = {"designation": "x"}  # missing fields
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(PersistenceError):
+        load_tracks(project, sid)
