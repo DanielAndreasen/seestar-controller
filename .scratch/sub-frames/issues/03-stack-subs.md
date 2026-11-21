@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in 25f50a6 (merged)
 
 - [ ] Pure stacking function (median combine of subs of one session -> stack FITS via store, kind='stack'); per-frame failures skipped, never crash
 - [ ] UI: "Stack subs" button per session row in Projects view Stored-data browser, worker thread + inline status, writes into project
