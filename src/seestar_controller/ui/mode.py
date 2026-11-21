@@ -79,10 +79,12 @@ SCOPE_ACTIONS: tuple[str, ...] = (
     "pause_resume_stop",
 )
 
-#: The offline banner title shown while the mode is ``offline``.
+#: The offline banner title shown while the mode is ``offline`` — it states
+#: plainly that no telescope is connected (offline-analysis ticket 03).
 OFFLINE_BANNER_TITLE = (
-    "Offline mode — project opened without a scope connection; "
-    "scope actions (connect, slew, live preview, night controls) are disabled"
+    "Offline mode — no telescope connected: the project is opened from local "
+    "storage only; scope actions (connect, slew, live preview, night controls) "
+    "are disabled"
 )
 
 #: The tooltip set on every gated scope action while in offline mode.

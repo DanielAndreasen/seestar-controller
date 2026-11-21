@@ -236,7 +236,8 @@ from .connection_panel import ConnectionPanel
 from .mode import OFFLINE_BANNER_TITLE, AppMode, ModeController
 from .notification_log import NotificationLogDialog
 from .notifications import NotificationBus, NotificationController
-from .project_controller import ProjectController
+from .project_controller import ProjectController, ProjectEvent
+from .recent import RECENT_FILE_NAME, RecentProjects
 from .settings import SettingsController, comp_search_radius_deg
 from .settings_dialog import SettingsDialog
 from .state import (
@@ -601,6 +602,16 @@ class SeestarWindow(Adw.ApplicationWindow):
             self._mode_controller = ModeController()
             self._mode_controller.attach_connection(self._connection_controller)
             self._mode_controller.attach_project_controller(self._project_controller)
+        # Offline-analysis ticket 03: the recent-projects list, persisted next
+        # to the settings file (the app config dir by default, a tmp dir in
+        # tests — see ui/recent.py). Every project that becomes current is
+        # recorded; the app menu's "Recent projects" submenu is rebuilt on
+        # every change.
+        self._recent = RecentProjects.load(
+            path=state.settings_path.parent / RECENT_FILE_NAME
+        )
+        self._project_controller.add_listener(self._on_project_event_recent)
+        self._recent.add_listener(self._rebuild_app_menu)
 
         toolbar_view = Adw.ToolbarView()
         # Offline-analysis ticket 01: the offline banner, revealed only in
@@ -637,11 +648,17 @@ class SeestarWindow(Adw.ApplicationWindow):
         open_offline_action = Gio.SimpleAction.new("open-offline", None)
         open_offline_action.connect("activate", self._on_open_offline_action)
         self.add_action(open_offline_action)
-        menu = Gio.Menu()
-        menu.append("Open project (offline)…", "win.open-offline")
-        menu.append("Settings", "win.settings")
+        # Offline-analysis ticket 03: one-click reopening of recent projects
+        # (``win.open-recent`` carries the path as a string parameter) and
+        # clearing the list (``win.clear-recent``).
+        open_recent_action = Gio.SimpleAction.new("open-recent", GLib.VariantType.new("s"))
+        open_recent_action.connect("activate", self._on_open_recent_action)
+        self.add_action(open_recent_action)
+        clear_recent_action = Gio.SimpleAction.new("clear-recent", None)
+        clear_recent_action.connect("activate", self._on_clear_recent_action)
+        self.add_action(clear_recent_action)
         self._settings_button = Gtk.MenuButton(
-            menu_model=menu,
+            menu_model=self._build_app_menu(),
             icon_name="emblem-system-symbolic",
             tooltip_text="Settings",
         )
@@ -920,6 +937,19 @@ class SeestarWindow(Adw.ApplicationWindow):
         observe/viewer/picker/run/lightcurve/period controllers)."""
         return self._project_controller
 
+    @property
+    def recent(self) -> RecentProjects:
+        """The recent-projects list (offline-analysis ticket 03 — persisted
+        next to the settings file; rendered as the app menu's "Recent
+        projects" submenu)."""
+        return self._recent
+
+    @property
+    def settings_button(self) -> Gtk.MenuButton:
+        """The header-bar app-menu button (its menu holds the "Recent
+        projects" submenu)."""
+        return self._settings_button
+
     def _show_toast(self, title: str) -> None:
         """Surface a non-modal toast over the current view (astrometry ticket
         03 — solve/export outcomes). The overlay is created late in the
@@ -960,6 +990,11 @@ class SeestarWindow(Adw.ApplicationWindow):
         project = self._mode_controller.open_project_offline(
             self._project_controller, path
         )
+        # Offline-analysis ticket 03: record the project as most recent with
+        # the offline flag — the project-event listener fired while the mode
+        # was still connected (the offline-open guard), so re-record now that
+        # the mode has switched to offline (record dedups by path).
+        self._recent.record(project.path, project.name, offline=True)
         # show the opened project's data (the Projects view lists it as current)
         self.select_view(ProjectsView.view_id)
         return project
@@ -1034,6 +1069,84 @@ class SeestarWindow(Adw.ApplicationWindow):
             self.open_project_offline(path)
         except (ProjectError, ValueError, OSError) as exc:
             self._toast_overlay.add_toast(Adw.Toast(title=f"Cannot open offline: {exc}"))
+
+    # -- recent projects (offline-analysis ticket 03) ---------------------------
+
+    def _on_project_event_recent(self, event: ProjectEvent) -> None:
+        """Project-controller listener: record the current project in the
+        recent list. The offline flag is the mode at event time — the mode
+        controller's own listener runs first, so a NORMAL open/create has
+        already switched back to connected here; the guarded offline open
+        re-records with ``offline=True`` in :meth:`open_project_offline`."""
+        if event.current is None:
+            return
+        self._recent.record(
+            event.current.path,
+            event.current.name,
+            offline=self._mode_controller.is_offline,
+        )
+
+    def _build_app_menu(self) -> Gio.Menu:
+        """Build the app menu: "Open project (offline)…", the "Recent
+        projects" submenu (one item per entry, most-recent-first, plus a
+        clear item — or a placeholder when the list is empty), and
+        "Settings". Rebuilt on every recent-list change (see
+        :meth:`_rebuild_app_menu`)."""
+        menu = Gio.Menu()
+        menu.append("Open project (offline)…", "win.open-offline")
+        recent_menu = Gio.Menu()
+        entries = self._recent.entries
+        if entries:
+            for entry in entries:
+                label = entry.name or Path(entry.path).name
+                if entry.offline:
+                    label = f"{label} (offline)"
+                # the path travels as a string action parameter; print_()
+                # quotes/escapes it safely into the detailed action name
+                detailed = f"win.open-recent({GLib.Variant('s', entry.path).print_(True)})"
+                recent_menu.append(label, detailed)
+            section = Gio.Menu()
+            section.append("Clear recent projects", "win.clear-recent")
+            recent_menu.append_section(None, section)
+        else:
+            recent_menu.append("No recent projects", None)
+        menu.append_submenu("Recent projects", recent_menu)
+        menu.append("Settings", "win.settings")
+        return menu
+
+    def _rebuild_app_menu(self, *_args) -> None:
+        """Recent-list listener: rebuild the whole app menu (the submenu
+        contents change) and swap it into the menu button. The listener is
+        registered before the button exists (early in the constructor), so a
+        change in between is dropped — the button is built from the current
+        list anyway."""
+        button = getattr(self, "_settings_button", None)
+        if button is None:
+            return
+        button.set_menu_model(self._build_app_menu())
+
+    def _on_open_recent_action(self, _action, param) -> None:
+        """The ``win.open-recent`` action handler: reopen the recent project
+        at the given path — offline entries through the store-only offline
+        path, normal entries through the project controller — with a toast
+        on a store error."""
+        path = param.get_string() if param is not None else ""
+        entry = self._recent.entry_for(path) if path else None
+        if entry is None:
+            self._show_toast(f"Not in recent projects: {path}")
+            return
+        try:
+            if entry.offline:
+                self.open_project_offline(entry.path)
+            else:
+                self._project_controller.open_project(entry.path)
+                self.select_view(ProjectsView.view_id)
+        except (ProjectError, ValueError, OSError) as exc:
+            self._show_toast(f"Cannot open project: {exc}")
+
+    def _on_clear_recent_action(self, *_args) -> None:
+        """The ``win.clear-recent`` action handler: empty the recent list."""
+        self._recent.clear()
 
     def _on_mode_changed(self, mode: AppMode) -> None:
         """Mode listener (offline-analysis ticket 01): offline -> reveal the
