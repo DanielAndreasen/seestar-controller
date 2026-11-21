@@ -6,11 +6,11 @@ Evidence: `.scratch/dependency-upgrade/spec.md` lists "Known pre-existing failur
 
 **Blocked by:** None (can start immediately); should be updated again after issues 01-04 and 09-11 land
 
-**Status:** ready-for-agent
+**Status:** implemented in b2c0f23 (pending review)
 
-- [ ] `docs/wiki/dependency-upgrade.md`, `.scratch/dependency-upgrade/spec.md`, and the AGENTS.md note state both environments explicitly and reference `.scratch/app-improvement/` issues 01-04/09-11 as the known failure root causes
-- [ ] Docs-only change
+- [x] `docs/wiki/dependency-upgrade.md`, `.scratch/dependency-upgrade/spec.md`, and the AGENTS.md note state both environments explicitly and reference `.scratch/app-improvement/` issues 01-04/09-11 as the known failure root causes
+- [x] Docs-only change
 
 ## Comments
 
-Audit finding (kind: incorrect-spec-claim, severity: medium — triage reference is wrong for gi-present environments).
+Implemented in `b2c0f23` on branch `wt/app-improvement-21`. Docs-only: new "Known pre-existing test failures" section in `docs/wiki/dependency-upgrade.md` states both environments (no-gi headless: widget suites skip, 2 pure-test failures; gi-present venv: widget suites run and fail on the app-improvement bugs 01-04/09-11, visibility-planner purity passes), maps each failing suite to its issue as root cause and explicitly marks counts as unstable; the spec.md bullet and the AGENTS.md note were rewritten to match. Verified the gi-present failure set live (pygobject 3.58.1 installed into the worktree venv): `uv run pytest tests/test_observing_widgets.py tests/test_report_widgets.py tests/test_report_sections.py tests/test_moving_objects_widgets.py tests/test_sub_frames_analysis_widgets.py tests/test_offline_analysis_widgets.py tests/test_visibility_planner.py -q` → 13 failed, 79 passed — exactly the tests mapped to issues 01-04/09-11, purity test passing. `uv tool run ruff check`: All checks passed. `uv tool run ty check`: All checks passed with gi absent from the venv (exit 0); with gi installed, ty reports 107 pre-existing `gi.repository` missing-module-member errors + 1 unused-ignore warning — identical on untouched main (pygobject ships no stubs), unrelated to this docs change, left for the coordinator.
