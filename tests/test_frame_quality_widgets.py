@@ -51,11 +51,13 @@ from seestar_controller.frame_quality import (
     MAX_AIRMASS,
     QualityController,
     SessionQualityView,
-    TrendPlot,
     full_trend_window,
 )
 from seestar_controller.frame_quality.quality_view import (
     SessionQualityView as SessionQualityViewDirect,
+)
+from seestar_controller.frame_quality.quality_view import (
+    TrendPlot,
 )
 from seestar_controller.store import (
     KIND_SUB,
@@ -285,7 +287,7 @@ def test_quality_view_refresh_button_reloads(gtk, project, two_session_project):
     assert view.selected_session_id() == session_a
     # a third session appears in the store
     session_c = add_scored_session(project, clock=T0 + timedelta(days=2), n_frames=1)
-    view.refresh_button.clicked()
+    view.refresh_button.emit("clicked")
     pump_main()
     sessions = view.refresh_sessions()
     assert session_c in sessions
