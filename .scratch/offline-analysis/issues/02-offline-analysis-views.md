@@ -6,10 +6,10 @@
 
 **Status:** implemented in f81651e (merged)
 
-- [ ] Each analysis view works when the app is in offline mode (no live session required; controllers read from the store only)
-- [ ] Solve/enhance/mosaic/scan/report actions write results back to the project as usual
-- [ ] Widget/integration tests: synthetic project opened offline, each analysis action exercised with link mocked to fail; full suite green
+- [x] Each analysis view works when the app is in offline mode (no live session required; controllers read from the store only)
+- [x] Solve/enhance/mosaic/scan/report actions write results back to the project as usual
+- [x] Widget/integration tests: synthetic project opened offline, each analysis action exercised with link mocked to fail; full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `f81651e`; test list: `tests/test_offline_analysis.py` and `tests/test_offline_analysis_widgets.py` (added there).

@@ -6,11 +6,11 @@
 
 **Status:** implemented in e7a1925 (merged)
 
-- [ ] Quality section: pull session_quality (frame-quality 01) into the HTML report
-- [ ] Movers section: pull moving-objects detections into the report
-- [ ] Tests: synthetic data -> sections present; missing data -> sections gracefully omitted
-- [ ] Full suite green
+- [x] Quality section: pull session_quality (frame-quality 01) into the HTML report
+- [x] Movers section: pull moving-objects detections into the report
+- [x] Tests: synthetic data -> sections present; missing data -> sections gracefully omitted
+- [x] Full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `e7a1925`; test list: `tests/test_report_sections.py` (added there), with `tests/test_report.py` and `tests/test_report_boundary.py` extended.

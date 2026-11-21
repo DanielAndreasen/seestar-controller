@@ -6,11 +6,11 @@
 
 **Status:** implemented in 8f00932 (merged)
 
-- [ ] `pick_at` works in pixel space on any frame; sky conversion only attempted when a 2D celestial WCS is present (RGB stack: WCS from celestial axes only, SIP dropped or handled); no-WCS frames pick fine, sky fields None
-- [ ] Catalog-assist/suggestion path degrades gracefully without WCS (clear hint, no exception)
-- [ ] Regression tests: synthetic Seestar-style sub (no CTYPE) and RGB stack (NAXIS=3 + SIP) -> pick_at succeeds, picks stored, measure works; WCS-present frame still gets sky coords; optional real-FITS fixture test
-- [ ] Full suite green; ty/ruff clean
+- [x] `pick_at` works in pixel space on any frame; sky conversion only attempted when a 2D celestial WCS is present (RGB stack: WCS from celestial axes only, SIP dropped or handled); no-WCS frames pick fine, sky fields None
+- [x] Catalog-assist/suggestion path degrades gracefully without WCS (clear hint, no exception)
+- [x] Regression tests: synthetic Seestar-style sub (no CTYPE) and RGB stack (NAXIS=3 + SIP) -> pick_at succeeds, picks stored, measure works; WCS-present frame still gets sky coords; optional real-FITS fixture test
+- [x] Full suite green; ty/ruff clean
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `8f00932`; test list: `tests/test_photometry_picking.py` and `tests/test_photometry_suggest.py` extended, new fixture `tests/fixtures/seestar_sub_no_wcs.fits`.

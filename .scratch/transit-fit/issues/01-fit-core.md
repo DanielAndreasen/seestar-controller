@@ -6,12 +6,12 @@
 
 **Status:** implemented in b0628df (merged)
 
-- [ ] Pure `transit/` package, no gi (subprocess boundary test); scipy/numpy; analytic transit model (no batman dependency)
-- [ ] `transit_model(phase, t0, depth, duration)` -> model mags; `fit_transit(phases, mags, errs, period, ...)` -> FitResult(params, errors, residuals, chi2) via scipy least_squares + covariance
-- [ ] Parameters saved in project config (project.json) + JSON export; no store schema bump
-- [ ] Tests: synthetic injected transit -> recovered params within uncertainties; fixed vs free period; persistence round-trip; no-gi boundary; no network
-- [ ] Full suite green
+- [x] Pure `transit/` package, no gi (subprocess boundary test); scipy/numpy; analytic transit model (no batman dependency)
+- [x] `transit_model(phase, t0, depth, duration)` -> model mags; `fit_transit(phases, mags, errs, period, ...)` -> FitResult(params, errors, residuals, chi2) via scipy least_squares + covariance
+- [x] Parameters saved in project config (project.json) + JSON export; no store schema bump
+- [x] Tests: synthetic injected transit -> recovered params within uncertainties; fixed vs free period; persistence round-trip; no-gi boundary; no network
+- [x] Full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `b0628df`; test list: `tests/test_transit_fit.py` (added there).

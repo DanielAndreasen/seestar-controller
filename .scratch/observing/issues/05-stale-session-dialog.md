@@ -6,11 +6,11 @@
 
 **Status:** implemented in 9533c092 (merged)
 
-- [ ] Observe view / observe_controller catches SessionOpenError on start and shows the resume/close dialog (GLib main loop safe)
-- [ ] Resume path reattaches to the open session; close path calls close_session then starts fresh
-- [ ] Tests: stale open session -> dialog shown (widget harness), both paths; no SessionOpenError surfaces raw
-- [ ] Full suite green
+- [x] Observe view / observe_controller catches SessionOpenError on start and shows the resume/close dialog (GLib main loop safe)
+- [x] Resume path reattaches to the open session; close path calls close_session then starts fresh
+- [x] Tests: stale open session -> dialog shown (widget harness), both paths; no SessionOpenError surfaces raw
+- [x] Full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `9533c092`; test list: no new test file — the stale-session dialog tests were added to `tests/test_observing_widgets.py`, alongside `tests/test_observing_executor.py`, `tests/test_observing_observe.py`, `tests/test_observing_queue.py`.

@@ -6,11 +6,11 @@
 
 **Status:** implemented in 1818a75+0ddf1e9 (merged)
 
-- [ ] `open_project_offline(path)` path in ui-shell: opens store project, sets mode flag, never touches link/
-- [ ] Mode flag on app + window; offline banner/indicator in the UI
-- [ ] Scope actions gated on mode (disabled with tooltip in offline mode)
-- [ ] Widget tests via the ui harness (link layer mocked to fail — offline open must still work); full suite green
+- [x] `open_project_offline(path)` path in ui-shell: opens store project, sets mode flag, never touches link/
+- [x] Mode flag on app + window; offline banner/indicator in the UI
+- [x] Scope actions gated on mode (disabled with tooltip in offline mode)
+- [x] Widget tests via the ui harness (link layer mocked to fail — offline open must still work); full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commits `1818a75` + `0ddf1e9`; test list: `tests/test_offline_mode.py` and `tests/test_offline_mode_widgets.py` (added there), plus `tests/test_ui_harness.py`.

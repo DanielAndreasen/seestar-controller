@@ -6,13 +6,13 @@
 
 **Status:** implemented in 13f4a97 (merged)
 
-- [ ] Pure `variable_scan/` package, no gi (subprocess boundary test); reuses photometry measure pipeline and store.frames/measurements
-- [ ] `scan_project(project, threshold=..., min_frames=...)` -> per-star lightcurves + ranking (MAD / median error), target/comps excluded, field-median fallback when no comps
-- [ ] Persistence: scan results table in project DB (schema bump + migration per project-store 07 pattern); query API `scan_results(project)`
-- [ ] Threshold setting stored in project/settings
-- [ ] Tests: synthetic subs with one injected variable -> ranked first; constants below threshold; persistence round-trip; no-gi boundary; no network
-- [ ] Full suite green
+- [x] Pure `variable_scan/` package, no gi (subprocess boundary test); reuses photometry measure pipeline and store.frames/measurements
+- [x] `scan_project(project, threshold=..., min_frames=...)` -> per-star lightcurves + ranking (MAD / median error), target/comps excluded, field-median fallback when no comps
+- [x] Persistence: scan results table in project DB (schema bump + migration per project-store 07 pattern); query API `scan_results(project)`
+- [x] Threshold setting stored in project/settings
+- [x] Tests: synthetic subs with one injected variable -> ranked first; constants below threshold; persistence round-trip; no-gi boundary; no network
+- [x] Full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `13f4a97`; test list: `tests/test_variable_scan.py` and `tests/test_variable_scan_boundary.py` (added there); the schema-v7 migration is covered by `tests/test_store_migrations.py`.

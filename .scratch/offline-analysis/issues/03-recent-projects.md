@@ -6,11 +6,11 @@
 
 **Status:** implemented in 3d6a6a4 (merged)
 
-- [ ] Recent-projects persistence in app config dir (atomic, capped, most-recent-first, dedup)
-- [ ] UI: recent projects menu/dialog entries
-- [ ] Offline banner text/visibility polish
-- [ ] Tests: persistence round-trip, dedup, cap; widget test for the menu; full suite green
+- [x] Recent-projects persistence in app config dir (atomic, capped, most-recent-first, dedup)
+- [x] UI: recent projects menu/dialog entries
+- [x] Offline banner text/visibility polish
+- [x] Tests: persistence round-trip, dedup, cap; widget test for the menu; full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `3d6a6a4`; test list: `tests/test_recent.py` and `tests/test_recent_widgets.py` (added there), plus `tests/test_ui_harness.py`.
