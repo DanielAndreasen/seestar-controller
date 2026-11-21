@@ -4,7 +4,7 @@
 
 **Blocked by:** session-report 01 (02 optional for this slice)
 
-**Status:** implemented in wt/session-report-03-gui (pending merge)
+**Status:** implemented in 0dff36e (merged)
 
 - [x] "Generate report" button wired via the app (worker thread, GLib.idle_add marshalling per existing patterns); opens the HTML; lists saved reports per session
 - [x] PDF export producing a non-empty PDF next to the HTML
