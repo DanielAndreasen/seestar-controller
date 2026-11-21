@@ -1,6 +1,6 @@
 # Spec: dependency-upgrade
 
-Status: ready-for-agent (3 issues)
+Status: completed 2026-11-21 (01: 3c07d0f; 02: 9a3fa47; 03: 3af6e31; 04: 157a1a0; 05: ff3370f; 06: 2241c6b+f622ba1)
 
 ## Problem Statement
 
