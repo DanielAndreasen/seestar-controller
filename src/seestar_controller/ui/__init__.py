@@ -27,7 +27,12 @@ docs/wiki/assumptions.md):
   :func:`~.mode.ModeListener`, :data:`~.mode.SCOPE_ACTIONS`,
   offline-analysis ticket 01 — ``offline`` vs ``connected``, the
   offline-open path that never touches the link layer, and the pure
-  scope-action gating helpers). All import **nothing** from ``gi`` — stdlib
+  scope-action gating helpers), and :mod:`.recent`: the recent-projects
+  list (:class:`~.recent.RecentProjects`, :class:`~.recent.RecentEntry`,
+  :func:`~.recent.load_recent` / :func:`~.recent.save_recent` /
+  :func:`~.recent.record_recent`, offline-analysis ticket 03 — persisted in
+  the app config dir, atomic writes, capped most-recent-first dedup by
+  path). All import **nothing** from ``gi`` — stdlib
   only (the project controller imports only the pure
   :mod:`seestar_controller.store` and :mod:`.state`), fully unit-testable
   headless; a subprocess test enforces the boundary.
@@ -92,6 +97,21 @@ from .project_controller import (
     ProjectController,
     ProjectEvent,
     ProjectListener,
+)
+from .recent import (
+    DEFAULT_RECENT_CAP,
+    RECENT_FILE_NAME,
+    RECENT_PATH_ENV_VAR,
+    RECENT_SCHEMA_VERSION,
+    RecentEntry,
+    RecentListener,
+    RecentProjects,
+    RecentProjectsError,
+    default_recent_path,
+    load_recent,
+    record_recent,
+    resolve_recent_path,
+    save_recent,
 )
 from .settings import (
     SettingsController,
@@ -178,6 +198,7 @@ __all__ = [
     "DEFAULT_KEY_PATH",
     "DEFAULT_LOG_CAPACITY",
     "DEFAULT_PROJECT_ROOT",
+    "DEFAULT_RECENT_CAP",
     "DEFAULT_SETTINGS",
     "DEFAULT_VIEW_ID",
     "DEFAULT_WINDOW_HEIGHT",
@@ -192,6 +213,9 @@ __all__ = [
     "OFFLINE_BANNER_TITLE",
     "OFFLINE_PREVIEW_LABEL",
     "OFFLINE_SCOPE_TOOLTIP",
+    "RECENT_FILE_NAME",
+    "RECENT_PATH_ENV_VAR",
+    "RECENT_SCHEMA_VERSION",
     "RECONNECTED_EVENT",
     "RECONNECTING_EVENT",
     "SCOPE_ACTIONS",
@@ -233,6 +257,10 @@ __all__ = [
     "ProjectEvent",
     "ProjectListener",
     "ProjectsView",
+    "RecentEntry",
+    "RecentListener",
+    "RecentProjects",
+    "RecentProjectsError",
     # widget layer (lazy, imports gi):
     "SeestarApplication",
     "SeestarWindow",
@@ -249,13 +277,18 @@ __all__ = [
     "build_view",
     "default_device_factory",
     "default_event_subscribe",
+    "default_recent_path",
     "default_settings_path",
     "describe_scope_state",
     "flag_settings",
+    "load_recent",
     "load_state",
     "main",
+    "record_recent",
+    "resolve_recent_path",
     "resolve_settings_path",
     "run",
+    "save_recent",
     "validate_comp_search_radius",
     "validate_last_project",
     "validate_path_setting",
