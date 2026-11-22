@@ -65,7 +65,15 @@ What it does:
   :class:`~.capture.SessionCapture` for the opened session (sub-frames /
   Stacks downloaded into the session as they arrive + the per-session event
   log, exposed via :attr:`capture`); DONE/ABORTED stops it. A capture
-  failure pushes a warning notification but never kills the night.
+  failure pushes a warning notification but never kills the night;
+- first-sub preview fallback (ticket 08) — when the capture stores the
+  first sub of the running session (a ``frame`` log event), the stored FITS
+  is loaded ONCE, decoded and downscaled (:func:`load_first_sub_frame`) and
+  kept as :attr:`first_sub_frame`, carried in every
+  :class:`ObserveViewState` as ``first_sub_frame`` — the Observe view shows
+  it in the preview area while the live preview stream has no frame yet
+  (live frames still take over). The load is marshalled through
+  ``invoke_on_main`` and cached, so it is decoded once per night.
 - stale sessions (ticket 05) — when a previous session of the project is
   still marked open (the app was killed mid-night), :meth:`start_night`
   raises :class:`StaleSessionError` (a
@@ -96,6 +104,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+import numpy as np
+from PIL import Image
+
 from seestar_controller.link.image import Frame
 from seestar_controller.link.preview import (
     FrameThrottle,
@@ -104,6 +115,13 @@ from seestar_controller.link.preview import (
     decode_payload,
 )
 from seestar_controller.store.errors import SessionOpenError
+from seestar_controller.store.frames import (
+    KIND_SUB as STORE_KIND_SUB,
+)
+from seestar_controller.store.frames import (
+    get_frame_path,
+    list_frames,
+)
 from seestar_controller.store.sessions import (
     Session,
     close_session,
@@ -116,7 +134,7 @@ from seestar_controller.ui.notifications import (
     NotificationSeverity,
 )
 
-from .capture import SessionCapture
+from .capture import KIND_FRAME, LogEvent, SessionCapture
 from .executor import ExecutorSnapshot, ExecutorState, NightExecutor
 from .queue import QueueEntry, QueueEvent
 from .queue_controller import PlanQueueController
@@ -128,6 +146,18 @@ OBSERVE_SOURCE = "observe"
 
 #: Default display throttle for preview frames (frames per second).
 DEFAULT_PREVIEW_MAX_FPS = 10.0
+
+#: The ``source`` label of the first-sub fallback preview (ticket 08) — shows
+#: up in the Observe view's preview caption ("first sub frame #3 — 512×342").
+FIRST_SUB_SOURCE = "first sub"
+
+#: Maximum width/height (pixels, long side) of the first-sub fallback preview
+#: (ticket 08) — the stored FITS is downscaled to this before it is cached.
+FIRST_SUB_PREVIEW_MAX_PX = 512
+
+#: Percentile stretch bounds (low, high) applied to the stored sub before it
+#: is shown (same robust stretch as the report thumbnail).
+FIRST_SUB_STRETCH_PERCENTILES = (1.0, 99.0)
 
 #: The executor states in which a night is "active" (commands accepted).
 _ACTIVE_EXECUTOR_STATES: tuple[ExecutorState, ...] = (
@@ -189,7 +219,11 @@ class ObserveViewState:
     - ``preview_frame`` — the latest decoded :class:`~seestar_controller.link.preview.PreviewFrame`
       (None until the first frame arrives);
     - ``preview_running`` — whether the preview stream is running;
-    - ``night_active`` — whether a night is in flight (commands accepted).
+    - ``night_active`` — whether a night is in flight (commands accepted);
+    - ``first_sub_frame`` — the first stored sub of the running session as a
+      decoded, downscaled :class:`FirstSubFrame` (ticket 08; None until the
+      capture stored the first sub) — the preview fallback when
+      ``preview_frame`` is None.
     """
 
     executor_state: ExecutorState
@@ -203,6 +237,125 @@ class ObserveViewState:
     preview_frame: Any | None
     preview_running: bool
     night_active: bool
+    first_sub_frame: Any | None = None
+
+
+@dataclass(frozen=True)
+class FirstSubFrame:
+    """The first stored sub-frame of the running session, decoded ONCE and
+    downscaled (ticket 08) — the Observe view's preview fallback while the
+    live preview stream has no frame yet.
+
+    Mirrors the :class:`~seestar_controller.link.preview.PreviewFrame` shape
+    the view renders (``source`` / ``image`` / ``id`` / ``width`` / ``height``)
+    so both go through the same preview-picture path:
+
+    - ``frame_id`` — the store ``frames`` row id of the first sub;
+    - ``path`` — the project-relative FITS path (e.g.
+      ``subs/<session>/<jd>.fits``);
+    - ``image`` — the decoded, percentile-stretched, downscaled uint8 array
+      (grayscale ``(h, w)`` or RGB ``(h, w, 3)``);
+    - ``source`` — :data:`FIRST_SUB_SOURCE` (the caption label).
+    """
+
+    frame_id: int
+    path: str
+    image: np.ndarray
+    source: str = FIRST_SUB_SOURCE
+
+    @property
+    def id(self) -> int:
+        return self.frame_id
+
+    @property
+    def width(self) -> int:
+        return int(self.image.shape[1])
+
+    @property
+    def height(self) -> int:
+        return int(self.image.shape[0])
+
+
+def _read_fits_preview_array(path: Any) -> np.ndarray:
+    """Read the first HDU with image data of the FITS file at ``path`` into a
+    float64 array (2-D, or RGB ``(H, W, 3)``), NaN-safe (non-finite -> NaN).
+    Lazy astropy import (same pattern as :mod:`seestar_controller.store.frames`).
+
+    Raises :class:`ValueError` when the file is unreadable / has no image
+    data / has an unsupported shape.
+    """
+    from astropy.io import fits as pyfits
+
+    with pyfits.open(path, memmap=False) as hdul:
+        hdu = next((h for h in hdul if getattr(h, "data", None) is not None), None)
+        if hdu is None:
+            raise ValueError(f"{path} has no image data in any HDU")
+        raw = np.asarray(hdu.data)
+    arr = np.asarray(raw, dtype=np.float64)
+    if arr.ndim == 2:
+        pass
+    elif arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        arr = arr[..., :3]  # (H, W, 3|4) -> RGB
+    elif arr.ndim == 3 and arr.shape[0] in (3, 4):
+        arr = np.transpose(arr[:3], (1, 2, 0))  # FITS (3|4, H, W) -> (H, W, 3)
+    elif arr.ndim == 3:
+        arr = arr[0]  # unsupported channel count: first 2-D slice
+    else:
+        raise ValueError(f"unsupported FITS data shape {arr.shape} at {path}")
+    arr[~np.isfinite(arr)] = np.nan
+    return arr
+
+
+def _stretch_preview_to_uint8(arr: np.ndarray) -> np.ndarray:
+    """Percentile-stretch ``arr`` (see :data:`FIRST_SUB_STRETCH_PERCENTILES`)
+    to a uint8 array in [0, 255]; NaN pixels map to 0, a degenerate range
+    (flat image) to mid-gray 128."""
+    lo_pct, hi_pct = FIRST_SUB_STRETCH_PERCENTILES
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return np.full(arr.shape, 128, dtype=np.uint8)
+    lo = float(np.percentile(finite, lo_pct))
+    hi = float(np.percentile(finite, hi_pct))
+    if not hi > lo:
+        return np.full(arr.shape, 128, dtype=np.uint8)
+    scaled = np.clip((arr - lo) / (hi - lo), 0.0, 1.0)
+    scaled = np.nan_to_num(scaled, nan=0.0)
+    return (scaled * 255.0).astype(np.uint8)
+
+
+def load_first_sub_frame(
+    project: Any, session_id: str, *, max_px: int = FIRST_SUB_PREVIEW_MAX_PX
+) -> FirstSubFrame | None:
+    """Load the FIRST stored sub-frame of ``session_id`` in ``project`` as a
+    decoded, downscaled :class:`FirstSubFrame` (ticket 08).
+
+    The sub list comes from :func:`~seestar_controller.store.frames.list_frames`
+    (ordered by ``jd``), so ``frames[0]`` is the first sub of the session.
+    The FITS file is read once (lazy astropy), percentile-stretched to uint8
+    and downscaled with PIL to at most ``max_px`` on the long side — cheap
+    enough to run on the main loop once per night.
+
+    Returns None when the session has no sub frame stored yet. Raises
+    :class:`ValueError`/:class:`OSError` when the FITS file is unreadable (the
+    caller — :meth:`ObserveController._load_first_sub_frame` — catches and
+    logs, so a bad frame never breaks the night).
+    """
+    frames = list_frames(project, session_id=session_id, kind=STORE_KIND_SUB)
+    if not frames:
+        return None
+    frame = frames[0]
+    arr = _read_fits_preview_array(get_frame_path(project, frame))
+    stretched = _stretch_preview_to_uint8(arr)
+    if stretched.ndim == 2:
+        image = Image.fromarray(stretched, mode="L")
+    else:
+        image = Image.fromarray(stretched, mode="RGB")
+    image.thumbnail((max_px, max_px), Image.Resampling.LANCZOS)
+    return FirstSubFrame(
+        frame_id=frame.id,
+        path=frame.path,
+        image=np.asarray(image, dtype=np.uint8),
+    )
 
 
 #: A view-state listener: called with an :class:`ObserveViewState` on any
@@ -372,6 +525,7 @@ class ObserveController:
         self._capture: SessionCapture | None = None
         self._stream: Any | None = None
         self._latest_frame: Any | None = None
+        self._first_sub_frame: FirstSubFrame | None = None
         self._project: Any | None = None
         self._listeners: list[ObserveViewListener] = []
         self._preview_listeners: list[PreviewFrameListener] = []
@@ -425,6 +579,14 @@ class ObserveController:
             return self._latest_frame
 
     @property
+    def first_sub_frame(self) -> FirstSubFrame | None:
+        """The first stored sub of the running session as a decoded,
+        downscaled :class:`FirstSubFrame` (ticket 08), None until the
+        capture stored the first sub. Reset on every :meth:`start_night`."""
+        with self._lock:
+            return self._first_sub_frame
+
+    @property
     def project(self) -> Any | None:
         """The project set via :meth:`set_project` (used by :meth:`start_night`
         when no project argument is given)."""
@@ -452,6 +614,7 @@ class ObserveController:
             executor = self._executor
             stream = self._stream
             frame = self._latest_frame
+            first_sub = self._first_sub_frame
         executor_snapshot = executor.snapshot if executor is not None else _idle_snapshot()
         return ObserveViewState(
             executor_state=executor_snapshot.state,
@@ -465,6 +628,7 @@ class ObserveController:
             preview_frame=frame,
             preview_running=stream is not None and bool(getattr(stream, "running", False)),
             night_active=executor_snapshot.state in _ACTIVE_EXECUTOR_STATES,
+            first_sub_frame=first_sub,
         )
 
     def set_project(self, project: Any) -> None:
@@ -635,6 +799,7 @@ class ObserveController:
         with self._lock:
             self._executor = executor
             self._latest_frame = None
+            self._first_sub_frame = None  # ticket 08: per-night first-sub preview
         self._start_preview(device)
         self._notify(
             NotificationSeverity.INFO,
@@ -727,6 +892,8 @@ class ObserveController:
                 old.stop()
             except Exception:
                 logger.exception("stopping the previous session capture failed")
+        if old is not None:
+            old.remove_listener(self._on_capture_log_event)  # ticket 08
         try:
             capture = self._capture_factory(
                 device,
@@ -747,6 +914,9 @@ class ObserveController:
             return
         with self._lock:
             self._capture = capture
+        # ticket 08: the capture's frame-stored events drive the first-sub
+        # preview fallback (the listener marshals via invoke_on_main itself)
+        capture.add_listener(self._on_capture_log_event)
         try:
             capture.start()
         except Exception as exc:  # noqa: BLE001 - warn, never kill the night
@@ -762,11 +932,45 @@ class ObserveController:
         """Stop the session capture (idempotent; never raises)."""
         with self._lock:
             capture = self._capture
-        if capture is not None and capture.running:
-            try:
-                capture.stop()
-            except Exception:
-                logger.exception("stopping the session capture failed")
+        if capture is not None:
+            capture.remove_listener(self._on_capture_log_event)  # ticket 08
+            if capture.running:
+                try:
+                    capture.stop()
+                except Exception:
+                    logger.exception("stopping the session capture failed")
+
+    def _on_capture_log_event(self, event: LogEvent) -> None:
+        """Session-capture log listener (ticket 08): a stored ``frame`` event
+        schedules the first-sub preview load on the main loop (the capture's
+        store step already runs on the db-owning thread, but the decode is
+        marshalled explicitly, like every other callback)."""
+        if event.kind != KIND_FRAME:
+            return
+        self._invoke_on_main(self._load_first_sub_frame)
+
+    def _load_first_sub_frame(self) -> None:
+        """Load the first stored sub of the running session once — decode the
+        FITS, downscale, cache — and re-emit the view state (runs via
+        ``invoke_on_main``). Never raises: a bad frame is logged and the
+        fallback simply stays unset."""
+        with self._lock:
+            if self._first_sub_frame is not None:
+                return  # decoded once per night (cached)
+            capture = self._capture
+        if capture is None:
+            return
+        try:
+            first = load_first_sub_frame(capture.project, capture.session_id)
+        except Exception:
+            logger.exception("could not decode the first stored sub for the preview")
+            return
+        if first is None:
+            return  # no sub stored yet (e.g. only a Stack so far)
+        with self._lock:
+            if self._first_sub_frame is None:
+                self._first_sub_frame = first
+        self._emit()
 
     def _start_preview(self, device: Any) -> None:
         """Start the preview stream best-effort (tele socket); a failure is a
