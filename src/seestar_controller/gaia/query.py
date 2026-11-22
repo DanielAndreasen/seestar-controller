@@ -1,4 +1,4 @@
-"""Gaia DR3 cone search via direct VizieR TAP HTTP, with a disk cache.
+"""Gaia DR3 cone search via Gaia TAP HTTP (VizieR, falling back to the ESA mirror), with a disk cache.
 
 Pure-Python core of the gaia-crossmatch feature (module boundary per
 ``.scratch/gaia-crossmatch/spec.md``): no GTK imports, no
@@ -10,17 +10,21 @@ function, so no test ever touches the network.
 What lives here:
 
 - :class:`GaiaStar` — one Gaia DR3 row: ``source_id``, J2000 position, and
-  the selected columns ``g`` / ``bp`` / ``rp`` / ``parallax`` / ``pmra`` /
-  ``pmdec`` (``None`` when Gaia has no value);
-- :func:`build_cone_query` — the ADQL cone search over the VizieR Gaia DR3
-  table :data:`GAIA_DR3_TABLE` (``I/355/gaiadr3``) around a center with a
-  radius, selecting G/BP/RP/parallax/pmRA/pmDE and ``G < g_limit``;
-- :func:`fetch_gaia_tap_json` — POST one ADQL query to the VizieR TAP
-  ``sync`` endpoint (:data:`VIZIER_TAP_SYNC_URL`) and return the parsed
-  JSON body — **the single HTTP boundary**;
+  the selected columns ``g`` / ``bp`` / ``rp`` / ``parallax`` +
+  ``parallax_error`` / ``pmra`` + ``pmra_error`` / ``pmdec`` +
+  ``pmdec_error`` (``None`` when Gaia has no value);
+- :func:`build_cone_query` — the ADQL cone search over the Gaia DR3 table of
+  the queried endpoint (VizieR's :data:`GAIA_DR3_TABLE` ``I/355/gaiadr3`` or
+  the ESA archive's :data:`ESA_GAIA_DR3_TABLE` ``gaiadr3.gaia_source``)
+  around a center with a radius, selecting G/BP/RP/parallax(+error)/
+  pmRA(+error)/pmDE(+error) and ``G < g_limit``;
+- :func:`fetch_gaia_tap_json` — POST one ADQL query to one Gaia TAP
+  ``sync`` endpoint (``url=``, default :data:`VIZIER_TAP_SYNC_URL`) and
+  return the parsed JSON body — **the single HTTP boundary**;
 - :func:`parse_gaia_response` — parse the TAP JSON payload into
   :class:`GaiaStar` rows (the one place wire values become floats);
-- :func:`query_gaia` — the raw, uncached cone search;
+- :func:`query_gaia` — the raw, uncached cone search over the endpoint chain
+  :data:`GAIA_TAP_SYNC_URLS` (or a single pinned ``url=``);
 - :func:`query_gaia_cached` — the cached variant: the response is stored on
   disk under the app config dir (``<config>/cache/gaia/``) keyed by the
   **rounded** field center + radius (+ g_limit + maxrec) with a TTL, reusing
@@ -30,14 +34,18 @@ What lives here:
   entry when one exists, and raises :class:`~.errors.GaiaUnavailableError`
   when no cache exists.
 
-ENDPOINT (verified live 2026-11-20, see docs/wiki/progress.md): CDS
+ENDPOINTS (verified live 2026-11-20, see docs/wiki/progress.md): CDS
 Strasbourg — including ``tapvizier.cds.unistra.fr`` — has been down since
 the 2026-10-29 security incident, and the official VizieR mirrors (Harvard
-CfA, IDIA) expose no TAP interface, so :data:`VIZIER_TAP_SYNC_URL` is the
-single endpoint, kept for when Strasbourg returns; until then every query
-fails with :class:`~.errors.GaiaUnavailableError` (or is served from the
-cache). VizieR serves ICRS, which coincides with J2000 at the precision we
-need — the same convention as :mod:`seestar_controller.catalog`.
+CfA, IDIA) expose no TAP interface, so :data:`VIZIER_TAP_SYNC_URL` alone is
+not enough: :func:`query_gaia` / :func:`query_gaia_cached` try
+:data:`GAIA_TAP_SYNC_URLS` in order — VizieR first (kept for when Strasbourg
+returns), then the ESA Gaia TAP mirror :data:`ESA_GAIA_TAP_SYNC_URL`
+(``gea.esac.esa.int``, the Gaia archive at ESAC, verified HTTP 200) — and
+the first endpoint that answers wins. Each endpoint is queried with the ADQL
+dialect of its own schema (:func:`build_cone_query`); an explicit ``url=``
+pins a single endpoint. Both serve ICRS, which coincides with J2000 at the
+precision we need — the same convention as :mod:`seestar_controller.catalog`.
 
 Cache-key rounding: the center and radius are rounded to
 :data:`KEY_ROUND_DIGITS` decimals of a degree (~0.4 arcsec) before both the
@@ -65,11 +73,27 @@ from .errors import GaiaResponseError, GaiaUnavailableError
 
 #: VizieR's public TAP synchronous endpoint (CDS Strasbourg; down since the
 #: 2026-10-29 security incident, no TAP mirrors exist — kept for when it
-#: returns; see module docstring).
+#: returns; see module docstring). Queried with the VizieR ADQL dialect.
 VIZIER_TAP_SYNC_URL = "https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync"
+
+#: The ESA Gaia TAP mirror's ``sync`` endpoint — the Gaia archive at ESAC
+#: (verified HTTP 200 on 2026-11-20, see docs/wiki/progress.md): the fallback
+#: endpoint while VizieR is down. Queried with the Gaia-archive ADQL dialect.
+ESA_GAIA_TAP_SYNC_URL = "https://gea.esac.esa.int/tap-server/tap/sync"
+
+#: Gaia TAP ``sync`` endpoints tried in order by :func:`query_gaia` /
+#: :func:`query_gaia_cached` when no explicit ``url=`` is given: VizieR first
+#: (for when Strasbourg returns), then the ESA Gaia TAP mirror.
+GAIA_TAP_SYNC_URLS = (
+    VIZIER_TAP_SYNC_URL,
+    ESA_GAIA_TAP_SYNC_URL,
+)
 
 #: The VizieR table queried: Gaia DR3 (Gaia Data Release 3 source table).
 GAIA_DR3_TABLE = "I/355/gaiadr3"
+
+#: The Gaia DR3 source table on the ESA Gaia archive (schema-qualified).
+ESA_GAIA_DR3_TABLE = "gaiadr3.gaia_source"
 
 #: Default Gaia magnitude limit of the cone search: ``G < g_limit``.
 DEFAULT_G_LIMIT = 20.0
@@ -96,7 +120,7 @@ DEFAULT_CACHE_DIR = DEFAULT_CONFIG_DIR / "cache" / "gaia"
 #: Environment variable that overrides the default Gaia cache dir.
 CACHE_DIR_ENV_VAR = "SEESTAR_GAIA_CACHE_DIR"
 
-#: User-Agent sent to VizieR (polite-identification convention).
+#: User-Agent sent to the Gaia TAP endpoints (polite-identification convention).
 USER_AGENT = "seestar-controller (Gaia DR3 cross-match)"
 
 #: Largest cone-search radius ADQL accepts, in degrees.
@@ -106,11 +130,39 @@ MAX_RADIUS_DEG = 180.0
 ARCSEC_PER_DEG = 3600.0
 
 #: The Gaia DR3 columns selected by the cone search, in SELECT order.
-GAIA_COLUMNS = ("RAJ2000", "DEJ2000", "Source", "Gmag", "BPmag", "RPmag", "Plx", "pmRA", "pmDE")
+GAIA_COLUMNS = (
+    "RAJ2000",
+    "DEJ2000",
+    "Source",
+    "Gmag",
+    "BPmag",
+    "RPmag",
+    "Plx",
+    "PlxError",
+    "pmRA",
+    "pmRAError",
+    "pmDE",
+    "pmDEError",
+)
+
+#: The Gaia DR3 columns selected by the cone search on the ESA Gaia archive,
+#: in SELECT order (the archive's own spellings, parsed via the same aliases).
+ESA_GAIA_COLUMNS = (
+    "ra",
+    "dec",
+    "source_id",
+    "phot_g_mean_mag",
+    "phot_bp_mean_mag",
+    "phot_rp_mean_mag",
+    "parallax",
+    "pmra",
+    "pmdec",
+)
 
 #: Accepted wire-name aliases per GaiaStar field (VizieR TAP spells them
-#: ``RAJ2000``/``Source``/``Gmag``/``Plx``/``pmRA``/``pmDE``; the Gaia archive
-#: spells them ``ra``/``source_id``/``phot_g_mean_mag``/``parallax``/...).
+#: ``RAJ2000``/``Source``/``Gmag``/``Plx``/``PlxError``/``pmRA``/``pmRAError``/
+#: ``pmDE``/``pmDEError``; the Gaia archive spells them
+#: ``ra``/``source_id``/``phot_g_mean_mag``/``parallax``/``parallax_error``/...).
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "ra": ("RAJ2000", "RA_ICRS", "ra", "RA"),
     "dec": ("DEJ2000", "DE_ICRS", "dec", "DEC"),
@@ -119,12 +171,49 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "bp": ("BPmag", "BP", "phot_bp_mean_mag"),
     "rp": ("RPmag", "RP", "phot_rp_mean_mag"),
     "parallax": ("Plx", "parallax"),
+    "parallax_error": ("PlxError", "parallax_error"),
     "pmra": ("pmRA", "pmra", "PMRA"),
+    "pmra_error": ("pmRAError", "pmra_error", "PMRAError"),
     "pmdec": ("pmDE", "pmDE", "pmdec", "PMDE"),
+    "pmdec_error": ("pmDEError", "pmdec_error", "PMDEError"),
 }
 
 #: Fields without which a response cannot be parsed at all.
 _REQUIRED_FIELDS = ("ra", "dec", "source_id")
+
+
+@dataclass(frozen=True)
+class _TapDialect:
+    """The ADQL dialect of one Gaia TAP endpoint: its table and column names.
+
+    VizieR spells the Gaia DR3 table ``I/355/gaiadr3`` with columns
+    ``RAJ2000``/``DEJ2000``/``Gmag``/...; the ESA Gaia archive spells it
+    ``gaiadr3.gaia_source`` with ``ra``/``dec``/``phot_g_mean_mag``/... — the
+    same cone search needs a per-endpoint query (:func:`build_cone_query`),
+    while the *response* parsing accepts both spellings (:data:`_COLUMN_ALIASES`).
+    """
+
+    table: str
+    columns: tuple[str, ...]
+    ra: str
+    dec: str
+    g: str
+
+
+#: The ADQL dialect per known endpoint URL; an unknown ``url=`` gets the
+#: VizieR dialect (the schema of :data:`GAIA_DR3_TABLE`).
+_TAP_DIALECTS: dict[str, _TapDialect] = {
+    VIZIER_TAP_SYNC_URL: _TapDialect(
+        table=GAIA_DR3_TABLE, columns=GAIA_COLUMNS, ra="RAJ2000", dec="DEJ2000", g="Gmag"
+    ),
+    ESA_GAIA_TAP_SYNC_URL: _TapDialect(
+        table=ESA_GAIA_DR3_TABLE,
+        columns=ESA_GAIA_COLUMNS,
+        ra="ra",
+        dec="dec",
+        g="phot_g_mean_mag",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -133,9 +222,11 @@ class GaiaStar:
 
     ``source_id`` is the Gaia DR3 source identifier; ``ra_deg`` / ``dec_deg``
     the J2000 position in degrees; ``g`` / ``bp`` / ``rp`` the G / BP / RP
-    magnitudes; ``parallax`` in mas; ``pmra`` / ``pmdec`` the proper motion
-    in mas/yr (RA includes the cos(Dec) factor, as Gaia publishes it). The
-    photometric / astrometric fields are ``None`` when Gaia has no value.
+    magnitudes; ``parallax`` / ``parallax_error`` the parallax in mas and its
+    1-sigma error; ``pmra`` / ``pmra_error``, ``pmdec`` / ``pmdec_error`` the
+    proper motion in mas/yr (RA includes the cos(Dec) factor, as Gaia
+    publishes it) and its 1-sigma error. The photometric / astrometric
+    fields are ``None`` when Gaia has no value.
     """
 
     source_id: int
@@ -145,8 +236,11 @@ class GaiaStar:
     bp: float | None = None
     rp: float | None = None
     parallax: float | None = None
+    parallax_error: float | None = None
     pmra: float | None = None
+    pmra_error: float | None = None
     pmdec: float | None = None
+    pmdec_error: float | None = None
 
     @property
     def coord(self) -> J2000Coord:
@@ -262,24 +356,30 @@ def build_cone_query(
     radius_deg: float,
     *,
     g_limit: float = DEFAULT_G_LIMIT,
+    url: str = VIZIER_TAP_SYNC_URL,
 ) -> str:
     """Build the ADQL Gaia DR3 cone-search query — the one place the wire
     query lives.
 
-    Cone search (``CONTAINS(POINT(...), CIRCLE(...))``) over
-    :data:`GAIA_DR3_TABLE` around ``(center_ra, center_dec)`` with
-    ``radius_deg``, selecting the Gaia columns :data:`GAIA_COLUMNS`,
-    restricted to ``Gmag < g_limit``, brightest first.
+    Cone search (``CONTAINS(POINT(...), CIRCLE(...))``) around
+    ``(center_ra, center_dec)`` with ``radius_deg``, selecting the Gaia
+    columns and restricted to the G magnitude ``< g_limit``, brightest
+    first. The table and column names follow the endpoint ``url`` (the ADQL
+    dialect of its schema — :data:`VIZIER_TAP_SYNC_URL` queries
+    :data:`GAIA_DR3_TABLE` with the VizieR spellings, :data:`ESA_GAIA_TAP_SYNC_URL`
+    the ESA archive table :data:`ESA_GAIA_DR3_TABLE` with the archive
+    spellings; any other URL gets the VizieR dialect).
     """
     ra, dec, radius = _validate_center_radius(center_ra, center_dec, radius_deg)
     checked_g = _validate_g_limit(g_limit)
-    columns = ", ".join(f'"{name}"' for name in GAIA_COLUMNS)
+    dialect = _TAP_DIALECTS.get(url, _TAP_DIALECTS[VIZIER_TAP_SYNC_URL])
+    columns = ", ".join(f'"{name}"' for name in dialect.columns)
     return (
-        f"SELECT {columns} FROM \"{GAIA_DR3_TABLE}\" "
-        f"WHERE CONTAINS(POINT('ICRS', \"RAJ2000\", \"DEJ2000\"), "
+        f'SELECT {columns} FROM "{dialect.table}" '
+        f"WHERE CONTAINS(POINT('ICRS', \"{dialect.ra}\", \"{dialect.dec}\"), "
         f"CIRCLE('ICRS', {ra!r}, {dec!r}, {radius!r})) = 1 "
-        f'AND "Gmag" < {checked_g!r} '
-        f'ORDER BY "Gmag"'
+        f'AND "{dialect.g}" < {checked_g!r} '
+        f'ORDER BY "{dialect.g}"'
     )
 
 
@@ -293,10 +393,14 @@ def fetch_gaia_tap_json(
     timeout: float = DEFAULT_TIMEOUT_S,
     url: str = VIZIER_TAP_SYNC_URL,
 ) -> dict[str, Any]:
-    """POST one ADQL ``query`` to the VizieR TAP sync endpoint; return parsed JSON.
+    """POST one ADQL ``query`` to one Gaia TAP sync endpoint; return parsed JSON.
 
     This is the single HTTP boundary of the Gaia query — tests monkeypatch
     this function (or :func:`urllib.request.urlopen`) instead of the network.
+    ``url`` is the endpoint to POST to (:data:`VIZIER_TAP_SYNC_URL` by
+    default, :data:`ESA_GAIA_TAP_SYNC_URL` for the ESA mirror, or any other
+    mirror pinned by the caller); the endpoint *chain* itself is walked one
+    level up, in :func:`query_gaia` / :func:`query_gaia_cached`.
 
     Raises :class:`~.errors.GaiaUnavailableError` on network/HTTP failure and
     :class:`~.errors.GaiaResponseError` when the body is not a JSON object.
@@ -327,17 +431,17 @@ def fetch_gaia_tap_json(
             body = response.read()
     except urllib.error.HTTPError as exc:
         raise GaiaUnavailableError(
-            f"VizieR Gaia TAP returned HTTP {exc.code} ({exc.reason}) for the query"
+            f"Gaia TAP at {url} returned HTTP {exc.code} ({exc.reason}) for the query"
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise GaiaUnavailableError(f"could not reach VizieR Gaia TAP at {url}: {exc}") from exc
+        raise GaiaUnavailableError(f"could not reach Gaia TAP at {url}: {exc}") from exc
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise GaiaResponseError(f"VizieR Gaia TAP response is not valid JSON: {exc}") from exc
+        raise GaiaResponseError(f"Gaia TAP at {url} response is not valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise GaiaResponseError(
-            f"VizieR Gaia TAP response is not a JSON object but {type(payload).__name__}"
+            f"Gaia TAP at {url} response is not a JSON object but {type(payload).__name__}"
         )
     return payload
 
@@ -353,7 +457,7 @@ def _column_index(metadata: Any) -> dict[str, int]:
     metadata is missing or lacks a required column.
     """
     if not isinstance(metadata, list) or not metadata:
-        raise GaiaResponseError("VizieR Gaia TAP response has no 'metadata' column list")
+        raise GaiaResponseError("Gaia TAP response has no 'metadata' column list")
     lowered: dict[str, int] = {}
     for pos, column in enumerate(metadata):
         if isinstance(column, dict) and isinstance(column.get("name"), str):
@@ -368,7 +472,7 @@ def _column_index(metadata: Any) -> dict[str, int]:
     missing = [f for f in _REQUIRED_FIELDS if f not in index]
     if missing:
         raise GaiaResponseError(
-            f"VizieR Gaia TAP response metadata is missing column(s) {missing}"
+            f"Gaia TAP response metadata is missing column(s) {missing}"
         )
     return index
 
@@ -419,13 +523,16 @@ def _tap_row_to_star(row: Any, columns: Mapping[str, int]) -> GaiaStar:
         bp=_optional_float(cell("bp"), field="BPmag"),
         rp=_optional_float(cell("rp"), field="RPmag"),
         parallax=_optional_float(cell("parallax"), field="Plx"),
+        parallax_error=_optional_float(cell("parallax_error"), field="PlxError"),
         pmra=_optional_float(cell("pmra"), field="pmRA"),
+        pmra_error=_optional_float(cell("pmra_error"), field="pmRAError"),
         pmdec=_optional_float(cell("pmdec"), field="pmDE"),
+        pmdec_error=_optional_float(cell("pmdec_error"), field="pmDEError"),
     )
 
 
 def parse_gaia_response(payload: Any) -> list[GaiaStar]:
-    """Parse a VizieR Gaia TAP JSON payload into :class:`GaiaStar` rows.
+    """Parse a Gaia TAP JSON payload into :class:`GaiaStar` rows.
 
     An empty ``data`` list parses to ``[]`` — a normal outcome (an empty
     field), not an error. Malformed payloads raise
@@ -434,15 +541,15 @@ def parse_gaia_response(payload: Any) -> list[GaiaStar]:
     """
     if not isinstance(payload, dict):
         raise GaiaResponseError(
-            f"VizieR Gaia TAP response is not a JSON object but {type(payload).__name__}"
+            f"Gaia TAP response is not a JSON object but {type(payload).__name__}"
         )
     columns = _column_index(payload.get("metadata"))
     data = payload.get("data")
     if data is None:
-        raise GaiaResponseError("VizieR Gaia TAP response has no 'data' rows")
+        raise GaiaResponseError("Gaia TAP response has no 'data' rows")
     if not isinstance(data, list):
         raise GaiaResponseError(
-            f"VizieR Gaia TAP 'data' is not a list but {type(data).__name__}"
+            f"Gaia TAP 'data' is not a list but {type(data).__name__}"
         )
     stars = [_tap_row_to_star(row, columns) for row in data]
     stars.sort(key=lambda s: (s.g is None, s.g if s.g is not None else 0.0))
@@ -453,8 +560,27 @@ def parse_gaia_response(payload: Any) -> list[GaiaStar]:
 
 #: The fields of a serialized :class:`GaiaStar` cache row.
 _STAR_FIELDS = frozenset(
-    {"source_id", "ra_deg", "dec_deg", "g", "bp", "rp", "parallax", "pmra", "pmdec"}
+    {
+        "source_id",
+        "ra_deg",
+        "dec_deg",
+        "g",
+        "bp",
+        "rp",
+        "parallax",
+        "parallax_error",
+        "pmra",
+        "pmra_error",
+        "pmdec",
+        "pmdec_error",
+    }
 )
+
+#: The cache-row fields every entry has carried since the cache format was
+#: introduced — cache entries written before the error columns were selected
+#: (``parallax_error`` / ``pmra_error`` / ``pmdec_error``) are still valid,
+#: the error fields just read back as ``None``.
+_REQUIRED_STAR_FIELDS = _STAR_FIELDS - {"parallax_error", "pmra_error", "pmdec_error"}
 
 
 def _star_to_row(star: GaiaStar) -> dict[str, Any]:
@@ -467,13 +593,20 @@ def _star_to_row(star: GaiaStar) -> dict[str, Any]:
         "bp": star.bp,
         "rp": star.rp,
         "parallax": star.parallax,
+        "parallax_error": star.parallax_error,
         "pmra": star.pmra,
+        "pmra_error": star.pmra_error,
         "pmdec": star.pmdec,
+        "pmdec_error": star.pmdec_error,
     }
 
 
 def _row_to_star(row: Mapping[str, Any]) -> GaiaStar:
-    """Rebuild a :class:`GaiaStar` from a cache row (inverse of :func:`_star_to_row`)."""
+    """Rebuild a :class:`GaiaStar` from a cache row (inverse of :func:`_star_to_row`).
+
+    The error fields are read with ``.get``: a cache row written before the
+    error columns were selected has no such keys and yields ``None``.
+    """
     return GaiaStar(
         source_id=int(row["source_id"]),
         ra_deg=float(row["ra_deg"]),
@@ -482,15 +615,66 @@ def _row_to_star(row: Mapping[str, Any]) -> GaiaStar:
         bp=row["bp"],
         rp=row["rp"],
         parallax=row["parallax"],
+        parallax_error=row.get("parallax_error"),
         pmra=row["pmra"],
+        pmra_error=row.get("pmra_error"),
         pmdec=row["pmdec"],
+        pmdec_error=row.get("pmdec_error"),
     )
 
 
 def _is_gaia_rows(payload: Any) -> bool:
-    """Validate a cached Gaia payload: a list of star-row dicts."""
+    """Validate a cached Gaia payload: a list of star-row dicts whose keys are
+    the required star fields plus at most the optional error fields."""
     return isinstance(payload, list) and all(
-        isinstance(row, dict) and set(row) == _STAR_FIELDS for row in payload
+        isinstance(row, dict) and _REQUIRED_STAR_FIELDS <= set(row) <= _STAR_FIELDS
+        for row in payload
+    )
+
+
+# --- the endpoint chain -----------------------------------------------------------------------
+
+
+def _cone_search(
+    ra: float,
+    dec: float,
+    radius: float,
+    *,
+    g_limit: float,
+    maxrec: int,
+    timeout: float,
+    url: str | None,
+) -> list[GaiaStar]:
+    """Run the cone search over the endpoint chain; return the parsed rows.
+
+    ``url=None`` tries :data:`GAIA_TAP_SYNC_URLS` in order — VizieR first,
+    then the ESA Gaia mirror — and the first endpoint that answers wins; an
+    explicit ``url`` pins exactly that one endpoint (no fallback). Each
+    endpoint is POSTed the ADQL of its own dialect (:func:`build_cone_query`)
+    via the single HTTP boundary :func:`fetch_gaia_tap_json`.
+
+    A network/HTTP failure (:class:`~.errors.GaiaUnavailableError`) moves on
+    to the next endpoint; when **every** endpoint is unreachable, one
+    aggregated :class:`~.errors.GaiaUnavailableError` naming all endpoints
+    tried is raised. A malformed response from an endpoint that did answer
+    raises :class:`~.errors.GaiaResponseError` immediately (no fallback —
+    that is a response problem, not an unreachable endpoint).
+    """
+    endpoints = (url,) if url is not None else GAIA_TAP_SYNC_URLS
+    failures: list[str] = []
+    for endpoint in endpoints:
+        adql = build_cone_query(ra, dec, radius, g_limit=g_limit, url=endpoint)
+        try:
+            payload = fetch_gaia_tap_json(adql, maxrec=maxrec, timeout=timeout, url=endpoint)
+        except GaiaUnavailableError as exc:
+            failures.append(f"{endpoint}: {exc}")
+            continue
+        return parse_gaia_response(payload)
+    raise GaiaUnavailableError(
+        "could not reach the Gaia TAP at any endpoint ("
+        + ", ".join(endpoints)
+        + "): "
+        + "; ".join(failures)
     )
 
 
@@ -505,10 +689,19 @@ def query_gaia(
     g_limit: float = DEFAULT_G_LIMIT,
     maxrec: int = DEFAULT_MAXREC,
     timeout: float = DEFAULT_TIMEOUT_S,
+    url: str | None = None,
 ) -> list[GaiaStar]:
     """Query Gaia DR3 for all sources with ``G < g_limit`` within
     ``radius_deg`` of ``(center_ra, center_dec)`` — the raw, uncached cone
     search.
+
+    Endpoints are tried in order — :data:`GAIA_TAP_SYNC_URLS` (VizieR, then
+    the ESA Gaia mirror) unless ``url`` pins a single one — each with the
+    ADQL dialect of its schema and its own ``timeout``; the first success
+    wins. :class:`~.errors.GaiaUnavailableError` is raised only when **every**
+    endpoint is unreachable (network/HTTP failure); a malformed response from
+    an endpoint that did answer raises :class:`~.errors.GaiaResponseError`
+    immediately.
 
     Returns the :class:`GaiaStar` rows sorted brightest-first; an empty
     field returns ``[]`` (a normal outcome, never an error).
@@ -517,15 +710,15 @@ def query_gaia(
         TypeError: non-numeric center / radius (nothing is sent);
         ValueError: out-of-range center / radius / ``g_limit`` / ``maxrec``
             (nothing is sent);
-        GaiaUnavailableError: network/HTTP failure reaching VizieR;
-        GaiaResponseError: malformed VizieR response.
+        GaiaUnavailableError: no endpoint could be reached;
+        GaiaResponseError: malformed response from the endpoint that answered.
     """
     ra, dec, radius = _validate_center_radius(center_ra, center_dec, radius_deg)
     checked_g = _validate_g_limit(g_limit)
     checked_maxrec = _validate_maxrec(maxrec)
-    adql = build_cone_query(ra, dec, radius, g_limit=checked_g)
-    payload = fetch_gaia_tap_json(adql, maxrec=checked_maxrec, timeout=timeout)
-    return parse_gaia_response(payload)
+    return _cone_search(
+        ra, dec, radius, g_limit=checked_g, maxrec=checked_maxrec, timeout=timeout, url=url
+    )
 
 
 def query_gaia_cached(
@@ -538,6 +731,7 @@ def query_gaia_cached(
     maxrec: int = DEFAULT_MAXREC,
     timeout: float = DEFAULT_TIMEOUT_S,
     digits: int = KEY_ROUND_DIGITS,
+    url: str | None = None,
 ) -> list[GaiaStar]:
     """Cached variant of :func:`query_gaia` — same result, same errors.
 
@@ -547,7 +741,13 @@ def query_gaia_cached(
     configured on the cache, pass your own ``QueryCache(ttl=...)`` to
     change it). The cache key is the **rounded** center + radius (see
     :func:`gaia_cache_key`), so repeat lookups of the same field are served
-    from disk with no HTTP at all and work offline.
+    from disk with no HTTP at all and work offline — the cache always wins
+    before any endpoint is contacted.
+
+    The fetch walks the same endpoint chain as :func:`query_gaia`
+    (:data:`GAIA_TAP_SYNC_URLS`, or the single pinned ``url=``): an
+    unreachable endpoint falls back to the next one (e.g. VizieR -> the ESA
+    Gaia mirror), and only when every endpoint fails does the error surface.
 
     Only validated results are cached (the TAP response is parsed before it
     is stored, and a cached payload is shape-checked on read), so a malformed
@@ -574,12 +774,13 @@ def query_gaia_cached(
     dec_r = round(dec, digits)
     radius_r = round(radius, digits) or radius  # never round a tiny radius down to 0
     key = gaia_cache_key(ra, dec, radius, g_limit=checked_g, maxrec=checked_maxrec, digits=digits)
-    adql = build_cone_query(ra_r, dec_r, radius_r, g_limit=checked_g)
 
     def fetch() -> list[dict[str, Any]]:
-        payload = fetch_gaia_tap_json(adql, maxrec=checked_maxrec, timeout=timeout)
-        # Parse BEFORE caching: a malformed response is never stored.
-        return [_star_to_row(s) for s in parse_gaia_response(payload)]
+        stars = _cone_search(
+            ra_r, dec_r, radius_r, g_limit=checked_g, maxrec=checked_maxrec, timeout=timeout, url=url
+        )
+        # Parsed BEFORE caching: a malformed response is never stored.
+        return [_star_to_row(s) for s in stars]
 
     stale: list[dict[str, Any]] | None = None
     found = cache.get_any(key)

@@ -20,11 +20,12 @@ a list of :class:`~.matching.CrossmatchRow` — can be persisted directly:
 Row mapping: the store rows are duck-typed, so a
 :class:`~.matching.CrossmatchRow` passes as-is — its ``x``/``y``/
 ``ra_deg``/``dec_deg``/``matched``/``source_id``/``g``/``bp``/``rp``/
-``parallax``/``pmra``/``pmdec``/``separation_arcsec`` map one-to-one. The
-error columns (``parallax_error``, ``pmra_error``, ``pmdec_error``) are
-optional on the input rows: a plain ``CrossmatchRow`` has no such attributes,
-so they are stored as NULL; any row object that does carry them (e.g. a Gaia
-row with the error columns selected) has them persisted.
+``parallax``/``parallax_error``/``pmra``/``pmra_error``/``pmdec``/
+``pmdec_error``/``separation_arcsec`` map one-to-one onto the store columns.
+The error fields are ``None`` whenever the matched Gaia row had no value
+for them (or the row is unmatched), so they are stored as NULL then; when
+the Gaia row carries them, they are persisted and the H-R diagram's
+parallax-SNR cut can use them.
 """
 
 from __future__ import annotations
