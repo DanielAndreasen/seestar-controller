@@ -523,6 +523,10 @@ class StubObserveController:
 
     def stop(self):
         self.calls.append(("stop",))
+        # ticket 09: like the real controller, a stop on an active night marks
+        # the snapshot ``stopping`` and emits it right away (the busy state)
+        if self._snapshot.night_active:
+            self.set_snapshot(stopping=True)
 
     def park(self):
         self.calls.append(("park",))
@@ -676,6 +680,65 @@ def test_snapshot_updates_progress_labels_preview_and_buttons(gtk, controller, o
     )
     assert "slew failed" in widget.status_label.get_label()
     assert widget.status_label.has_css_class("error")
+
+
+def test_stop_in_flight_shows_busy_state_and_gates_night_controls(
+    gtk, controller, observe_stub
+):
+    """Ticket 09: clicking Stop while a night runs puts the view into the busy
+    state immediately — the night controls (Start/Pause/Skip/Stop/Park) are
+    insensitized and the status row shows the "Stopping…" text — and the
+    terminal snapshot (executor DONE, final frames stored) clears it again."""
+    from seestar_controller.observing.observe_view import STOPPING_STATUS_TEXT
+    from seestar_controller.ui.views import build_view
+
+    view = build_view(
+        "observe", queue_controller=controller, observe_controller=observe_stub
+    )
+    widget = view.observe_widget
+    entry = QueueEntry.resolved("M 42", COORD_A)
+    observe_stub.set_snapshot(
+        executor_state=ExecutorState.STACKING,
+        queue_index=0,
+        entry=entry,
+        session="sess-1",
+        queue_entries=(entry,),
+        night_active=True,
+    )
+    # night active: stop/park/pause/skip enabled, start disabled (night running)
+    assert widget.stop_button.get_sensitive()
+    assert widget.park_button.get_sensitive()
+    assert widget.pause_button.get_sensitive()
+    assert widget.skip_button.get_sensitive()
+    assert not widget.start_button.get_sensitive()
+
+    # click Stop -> the controller marks the stop in flight and emits -> the
+    # view shows the busy state right away
+    widget.stop_button.emit("clicked")
+    assert observe_stub.calls[-1] == ("stop",)
+    assert not widget.start_button.get_sensitive()
+    assert not widget.pause_button.get_sensitive()
+    assert not widget.skip_button.get_sensitive()
+    assert not widget.stop_button.get_sensitive()
+    assert not widget.park_button.get_sensitive()
+    assert widget.status_label.get_label() == STOPPING_STATUS_TEXT
+    assert "Stopping" in widget.status_label.get_label()
+    assert not widget.status_label.has_css_class("error")
+
+    # the run is done and the final frame is stored -> busy state cleared,
+    # controls re-enable (start again: connected + project + idle)
+    observe_stub.set_snapshot(
+        executor_state=ExecutorState.DONE,
+        night_active=False,
+        stopping=False,
+        preview_running=False,
+    )
+    assert widget.start_button.get_sensitive()
+    assert widget.park_button.get_sensitive()
+    assert not widget.stop_button.get_sensitive()  # no night active
+    assert not widget.pause_button.get_sensitive()
+    assert not widget.skip_button.get_sensitive()
+    assert "done" in widget.status_label.get_label()
 
 
 def test_app_owns_shared_observe_controller_and_window_passes_it_down(app, gtk):

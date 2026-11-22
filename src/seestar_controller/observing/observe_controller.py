@@ -44,7 +44,11 @@ What it does:
   (unreachable image socket) does NOT kill the night — a warning notification
   is pushed and the run continues without preview (documented choice);
 - pause / resume / skip / stop — passthroughs to the running executor
-  (no-ops when no night is active);
+  (no-ops when no night is active). ``stop()`` additionally marks the view
+  state ``stopping`` and emits immediately (ticket 09 — the executor keeps
+  its state until DONE while the final frames download, so the view shows a
+  busy state right away); the terminal snapshot (DONE/ABORTED, after the
+  capture stored the final frames) clears the flag;
 - :meth:`ObserveController.park` — ``device.park()`` through the connection
   controller's device (the manual Park button);
 - preview frames — the stream's callback receives :class:`~PreviewFrame`\\ s
@@ -233,7 +237,10 @@ class ObserveViewState:
     - ``first_sub_frame`` — the first stored sub of the running session as a
       decoded, downscaled :class:`FirstSubFrame` (ticket 08; None until the
       capture stored the first sub) — the preview fallback when
-      ``preview_frame`` is None.
+      ``preview_frame`` is None;
+    - ``stopping`` — a graceful stop is in flight (ticket 09: ``stop()`` was
+      commanded but the executor has not reached a terminal state yet, so the
+      final frames may still be downloading into the session capture).
     """
 
     executor_state: ExecutorState
@@ -248,6 +255,7 @@ class ObserveViewState:
     preview_running: bool
     night_active: bool
     first_sub_frame: Any | None = None
+    stopping: bool = False
 
 
 @dataclass(frozen=True)
@@ -549,6 +557,7 @@ class ObserveController:
         self._latest_frame: Any | None = None
         self._first_sub_frame: FirstSubFrame | None = None
         self._project: Any | None = None
+        self._stopping = False  # ticket 09: a graceful stop is in flight
         self._listeners: list[ObserveViewListener] = []
         self._preview_listeners: list[PreviewFrameListener] = []
         self._frame_listeners: list[FrameStoredListener] = []
@@ -624,6 +633,14 @@ class ObserveController:
         return executor is not None and executor.state in _ACTIVE_EXECUTOR_STATES
 
     @property
+    def stopping(self) -> bool:
+        """Whether a graceful stop is in flight (ticket 09): ``stop()`` was
+        commanded on an active night but the executor has not reached a
+        terminal state yet — the final frames may still be downloading."""
+        with self._lock:
+            return self._stopping
+
+    @property
     def preview_running(self) -> bool:
         """Whether the preview stream is running right now."""
         with self._lock:
@@ -638,6 +655,7 @@ class ObserveController:
             stream = self._stream
             frame = self._latest_frame
             first_sub = self._first_sub_frame
+            stopping = self._stopping
         executor_snapshot = executor.snapshot if executor is not None else _idle_snapshot()
         return ObserveViewState(
             executor_state=executor_snapshot.state,
@@ -652,6 +670,7 @@ class ObserveController:
             preview_running=stream is not None and bool(getattr(stream, "running", False)),
             night_active=executor_snapshot.state in _ACTIVE_EXECUTOR_STATES,
             first_sub_frame=first_sub,
+            stopping=stopping,
         )
 
     def set_project(self, project: Any) -> None:
@@ -817,6 +836,7 @@ class ObserveController:
                     "no project — open a project first (Projects view)"
                 )
             old_executor = self._executor
+            self._stopping = False  # ticket 09: a fresh night is not stopping
         # ticket 05: a stale open session blocks the start — raise
         # StaleSessionError (a SessionOpenError) BEFORE creating anything, so
         # the view can offer resume / close-and-start-new.
@@ -1085,11 +1105,22 @@ class ObserveController:
             executor.skip()
 
     def stop(self) -> None:
-        """Stop the night gracefully (passthrough; no-op when no night runs)."""
+        """Stop the night gracefully (passthrough; no-op when no night runs).
+
+        Ticket 09: when a night is active, the stop is marked **in flight**
+        (``stopping`` in the emitted :class:`ObserveViewState`) right away —
+        the executor keeps its current state until it reaches DONE and the
+        capture has downloaded the final frames, so the view can show a busy
+        state immediately instead of looking hung. The flag is cleared when
+        the terminal snapshot arrives (see :meth:`_handle_executor_snapshot`).
+        """
         with self._lock:
             executor = self._executor
         if executor is not None and executor.state in _ACTIVE_EXECUTOR_STATES:
             executor.stop()
+            with self._lock:
+                self._stopping = True
+            self._emit()
 
     def park(self) -> None:
         """Park the Scope now (the manual Park button): ``device.park()``
@@ -1126,7 +1157,11 @@ class ObserveController:
         """Apply an executor snapshot (runs via ``invoke_on_main``)."""
         terminal = snapshot.state in _TERMINAL_EXECUTOR_STATES
         if terminal:
+            # ticket 09: the stop (if any) is over — by the time the view sees
+            # this snapshot, _stop_capture() below has stored the final frames,
+            # so the busy state clears together with the terminal state.
             with self._lock:
+                self._stopping = False
                 stream = self._stream
                 self._stream = None
             if stream is not None:
