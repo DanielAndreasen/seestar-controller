@@ -60,11 +60,17 @@ def test_stacking_public_api_exports():
     for name in stacking.__all__:
         assert hasattr(stacking, name), f"stacking.{name} missing"
     assert set(stacking.__all__) == {
+        "DEROTATE_THRESHOLD_PX",
         "SkippedSub",
         "StackSubsError",
         "StackSubsResult",
+        "derotate_array",
+        "header_rotation_deg",
+        "max_rotation_displacement_px",
         "median_combine",
+        "rotation_exceeds_threshold",
         "stack_session_subs",
+        "total_field_rotation_deg",
     }
     # the key names are the documented API
     assert callable(stacking.median_combine)

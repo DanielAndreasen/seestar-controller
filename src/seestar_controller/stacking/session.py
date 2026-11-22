@@ -7,15 +7,25 @@ import stays lazy inside :func:`stack_session_subs` (the same pattern as
 :mod:`seestar_controller.mosaic.session`).
 
 - :func:`stack_session_subs` — collect the session's sub-frames
-  (``store.frames`` ``kind="sub"``), median-combine them
-  (:func:`~.core.median_combine` — scope subs are already aligned, so NO
-  registration; documented assumption) and write the result back into the
+  (``store.frames`` ``kind="sub"``), combine them
+  (:func:`~.core.median_combine`) and write the result back into the
   project as a ``kind="stack"`` FITS via
   :func:`~seestar_controller.store.frames.store_frame`, returning the new
   :class:`~seestar_controller.store.frames.Frame`. Because the product is a
   regular stack frame, ALL stack-based views work on it unchanged (the
   Enhance viewer's :func:`~seestar_controller.enhance.fits_io.list_project_stacks`,
   mosaic, report, crossmatch, ...).
+- field rotation (stacking issue 01): on an alt-az mount the field rotates
+  during a session, so a pixel-wise median of unregistered subs smears
+  stars into arcs. When the subs carry a WCS — the solved
+  ``frame_wcs`` record (preferred) or the sub's own header ``CD`` matrix —
+  :func:`stack_session_subs` estimates each sub's field rotation
+  (:func:`~.core.header_rotation_deg`), and when the total rotation over
+  the session moves the farthest image corner by more than
+  :data:`~.core.DEROTATE_THRESHOLD_PX` (~1 star FWHM), the subs are
+  DEROTATED to a common reference rotation
+  (:func:`~.core.derotate_array`) before the median. Without any WCS the
+  combine stays a plain pixel-wise median (documented fallback assumption).
 - the records: :class:`SkippedSub`, :class:`StackSubsResult`.
 
 Documented choices:
@@ -30,12 +40,18 @@ Documented choices:
   :class:`~seestar_controller.store.errors.SessionNotFoundError` (a lookup,
   not a filter — the same pattern as
   :func:`seestar_controller.mosaic.session.stitch_session`).
+- **Derotation needs a rotation estimate for EVERY combined sub**: the
+  solved ``frame_wcs`` record wins over the sub's header ``CD`` matrix; if
+  even one combined sub has neither, no derotation happens and the result
+  carries a ``rotation_warning`` instead (solve all subs to enable
+  derotation). Subs without a WCS are still stacked — the plain median
+  fallback.
 - **Header**: the first readable sub's cards (minus the structural cards
   the FITS writer manages itself), with ``DATE-OBS`` set to the MEDIAN of
   the combined subs' JDs (the stack represents the middle of the session)
-  and ``HISTORY`` cards recording the combine; ``EXPTIME``/``GAIN``/
-  ``OBJECT`` are inherited from the reference sub (the per-sub exposure,
-  not summed).
+  and ``HISTORY`` cards recording the combine (and the derotation, when
+  applied); ``EXPTIME``/``GAIN``/``OBJECT`` are inherited from the
+  reference sub (the per-sub exposure, not summed).
 - **Re-running appends**: every call writes a NEW stack frame (the store's
   ``store_frame`` semantics) — stacking twice yields two stack frames.
 """
@@ -62,8 +78,18 @@ from seestar_controller.store.frames import (
 )
 from seestar_controller.store.project import Project
 from seestar_controller.store.sessions import list_sessions
+from seestar_controller.store.wcs import load_frame_wcs
 
-from .core import median_combine
+from .core import (
+    DEROTATE_THRESHOLD_PX,
+    derotate_array,
+    header_rotation_deg,
+    max_rotation_displacement_px,
+    median_combine,
+    rotation_exceeds_threshold,
+    total_field_rotation_deg,
+    wrap_180,
+)
 from .errors import StackSubsError
 
 logger = logging.getLogger(__name__)
@@ -106,12 +132,53 @@ class StackSubsResult:
 
     - ``frame`` — the new ``kind="stack"`` :class:`~seestar_controller.store.frames.Frame`;
     - ``n_subs`` — the number of subs combined into it;
-    - ``skipped`` — the :class:`SkippedSub`\\ s (unreadable / mismatched).
+    - ``skipped`` — the :class:`SkippedSub`\\ s (unreadable / mismatched);
+    - ``field_rotation_deg`` — the total field rotation over the combined
+      subs in degrees (``[0, 180]``, from the per-sub WCS/header ``CD``
+      matrices), or None when no sub carried a rotation estimate at all;
+    - ``rotation_displacement_px`` — how far that rotation moves the
+      farthest image corner, in pixels (None together with
+      ``field_rotation_deg``);
+    - ``derotated`` — True when the subs were derotated to a common
+      reference rotation before the median (rotation known for every sub
+      AND exceeding :data:`~.core.DEROTATE_THRESHOLD_PX`);
+    - ``rotation_source`` — where the rotation estimates came from:
+      ``"frame_wcs"`` (solved ``frame_wcs`` records), ``"header"`` (the
+      subs' own FITS ``CD`` matrices), or None;
+    - ``max_derotation_deg`` — the largest per-sub derotation applied
+      (0.0 when not derotated).
     """
 
     frame: Frame
     n_subs: int
     skipped: tuple[SkippedSub, ...]
+    field_rotation_deg: float | None = None
+    rotation_displacement_px: float | None = None
+    derotated: bool = False
+    rotation_source: str | None = None
+    max_derotation_deg: float = 0.0
+
+    @property
+    def rotation_warning(self) -> str | None:
+        """A human-readable warning when the session's field rotation is
+        large enough to blur a pixel-wise median but the subs could NOT be
+        derotated (no WCS for at least one combined sub) — None otherwise.
+        The UI appends this to the Stack-subs status line, together with the
+        hint to plate-solve the subs (or stack a shorter subset)."""
+        if (
+            self.field_rotation_deg is not None
+            and self.rotation_displacement_px is not None
+            and not self.derotated
+            and self.rotation_displacement_px >= DEROTATE_THRESHOLD_PX
+        ):
+            return (
+                f"field rotation {self.field_rotation_deg:.1f}° over the session "
+                f"(~{self.rotation_displacement_px:.1f} px at the corner, above the "
+                f"~{DEROTATE_THRESHOLD_PX:g} px / 1 FWHM threshold) — the stack may be "
+                "blurry; plate-solve the subs (WCS) to enable derotation, or stack "
+                "a shorter subset of the session"
+            )
+        return None
 
 
 def _jd_to_date_obs(jd: float) -> str:
@@ -121,16 +188,45 @@ def _jd_to_date_obs(jd: float) -> str:
     return instant.isoformat(timespec="milliseconds").replace("+00:00", "")
 
 
+def _sub_rotation(project: Project, frame: Frame, header: dict[str, Any]) -> tuple[float | None, str | None]:
+    """One sub's field rotation estimate ``(rotation_deg, source)``.
+
+    The solved ``frame_wcs`` record (astrometry) wins — its cards carry the
+    full solved ``CD`` matrix; otherwise the sub's own FITS header ``CD``
+    matrix is used. ``(None, None)`` when neither yields a rotation (no
+    WCS at all — the plain-median fallback).
+    """
+    try:
+        wcs = load_frame_wcs(project, frame.id)
+    except ProjectError as exc:  # a broken WCS record must not kill the stack
+        logger.info("frame %s has an unreadable WCS record: %s", frame.id, exc)
+        wcs = None
+    if wcs is not None:
+        rotation = header_rotation_deg(wcs.cards)
+        if rotation is not None:
+            return rotation, "frame_wcs"
+    rotation = header_rotation_deg(header)
+    if rotation is not None:
+        return rotation, "header"
+    return None, None
+
+
 def stack_session_subs(project: Any, session_id: Any) -> StackSubsResult:
     """Median-combine the sub-frames of ``session_id`` in ``project`` into
     one ``kind="stack"`` FITS written back into the project (via
     :func:`~seestar_controller.store.frames.store_frame`), and return the
     :class:`StackSubsResult` with the new frame.
 
-    Scope subs of one session are already aligned by the telescope, so the
-    combine is a plain pixel-wise median — NO registration (documented
-    assumption). Per-frame failures are skipped (recorded in
-    ``skipped``), never crash.
+    Field rotation (stacking issue 01): each sub's rotation is estimated
+    from its solved ``frame_wcs`` record (preferred) or its header ``CD``
+    matrix; when the total rotation over the session exceeds
+    :data:`~.core.DEROTATE_THRESHOLD_PX` at the farthest image corner AND
+    every combined sub has a rotation estimate, the subs are derotated to a
+    common reference rotation (the unwrapped median rotation) before the
+    median. Otherwise the combine is a plain pixel-wise median — the
+    documented fallback when no WCS is available — and the result's
+    ``rotation_warning`` says so when the rotation is significant.
+    Per-frame failures are skipped (recorded in ``skipped``), never crash.
 
     Raises :class:`TypeError` for a non-Project handle or a non-str
     ``session_id``, :class:`~seestar_controller.store.errors.SessionNotFoundError`
@@ -199,7 +295,50 @@ def stack_session_subs(project: Any, session_id: Any) -> StackSubsResult:
             f"{project.slug!r} — nothing to stack"
         )
 
-    combined = median_combine(datas)
+    # --- field rotation (stacking issue 01): estimate per-sub rotations ---
+    rotations: list[float | None] = []
+    sources: list[str | None] = []
+    for frame, header in zip(used, headers):
+        rotation, source = _sub_rotation(project, frame, header)
+        rotations.append(rotation)
+        sources.append(source)
+    known = [float(r) for r in rotations if r is not None]
+    rotation_source = (
+        "frame_wcs" if "frame_wcs" in sources else ("header" if known else None)
+    )
+    field_rotation = total_field_rotation_deg(known) if len(known) >= 2 else None
+    shape2d = datas[0].shape[:2]
+    displacement_px = (
+        max_rotation_displacement_px(field_rotation, shape2d)
+        if field_rotation is not None
+        else None
+    )
+    # derotate only when EVERY combined sub has a rotation estimate and the
+    # total rotation would visibly smear a pixel-wise median
+    derotate = (
+        field_rotation is not None
+        and len(known) == len(datas)
+        and rotation_exceeds_threshold(field_rotation, shape2d)
+    )
+    max_derotation = 0.0
+    if derotate:
+        rots = known  # every rotation is known here: len(known) == len(datas)
+        base = rots[0]
+        ref_rotation = base + float(np.median([wrap_180(r - base) for r in rots]))
+        offsets = [wrap_180(ref_rotation - r) for r in rots]
+        max_derotation = max(abs(o) for o in offsets)
+        # derotate_array rotates by the pixel PA offset ref_rotation - sub_rotation
+        datas = [derotate_array(arr, offset) for arr, offset in zip(datas, offsets)]
+        logger.info(
+            "stacking session %s: derotated %d subs to a common field rotation "
+            "(total session rotation %.2f deg, max per-sub derotation %.2f deg)",
+            session_id,
+            len(datas),
+            field_rotation,
+            max_derotation,
+        )
+
+    combined = median_combine(datas, nan_safe=derotate)
     cards = {k: v for k, v in headers[0].items() if k not in _DROP_CARDS}
     median_jd = float(np.median([f.jd for f in used]))
     cards["DATE-OBS"] = _jd_to_date_obs(median_jd)
@@ -208,10 +347,29 @@ def stack_session_subs(project: Any, session_id: Any) -> StackSubsResult:
         f"median-combined {len(datas)} subs of session {session_id} "
         f"(project {project.slug})"
     )
+    if field_rotation is not None:
+        hdu.header["HISTORY"] = (
+            f"field rotation over the session: {field_rotation:.2f} deg "
+            f"(source: {rotation_source}, ~{displacement_px:.1f} px at the corner)"
+        )
+    if derotate:
+        hdu.header["HISTORY"] = (
+            f"derotated {len(datas)} subs to a common field rotation before the "
+            f"median (max per-sub derotation {max_derotation:.2f} deg)"
+        )
     if skipped:
         hdu.header["HISTORY"] = f"skipped {len(skipped)} unreadable/mismatched subs"
     buf = io.BytesIO()
     pyfits.HDUList([hdu]).writeto(buf)
 
     frame = store_frame(project, session_id, KIND_STACK, buf.getvalue())
-    return StackSubsResult(frame=frame, n_subs=len(datas), skipped=tuple(skipped))
+    return StackSubsResult(
+        frame=frame,
+        n_subs=len(datas),
+        skipped=tuple(skipped),
+        field_rotation_deg=field_rotation,
+        rotation_displacement_px=displacement_px,
+        derotated=derotate,
+        rotation_source=rotation_source,
+        max_derotation_deg=max_derotation,
+    )

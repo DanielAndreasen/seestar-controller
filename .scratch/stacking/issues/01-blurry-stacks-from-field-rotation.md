@@ -1,6 +1,6 @@
 # Issue 01: stacks are blurry vs the subs — alt-az field rotation not compensated
 
-**Status:** needs-triage
+**Status:** implemented in 4813850 (pending review)
 
 ## Found while
 Live session 2026-11-22, project `vw-cep` (session 20261122T192149035964Z, 10 s subs, Seestar S50 alt-az). The downloaded device stack (`stacks/<session>/2461367.314371.fits`) is visibly much blurrier than individual subs and fails to plate-solve; a sharp sub solves fine.
