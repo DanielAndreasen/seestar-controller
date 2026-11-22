@@ -637,7 +637,7 @@ def esa_payload(rows: list[dict]) -> dict:
 
 def test_build_cone_query_esa_mirror_uses_the_gaia_archive_dialect():
     adql = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0, url=gq.ESA_GAIA_TAP_SYNC_URL)
-    assert '"gaiadr3.gaia_source"' in adql
+    assert 'FROM "gaiadr3"."gaia_source"' in adql
     for col in gq.ESA_GAIA_COLUMNS:
         assert f'"{col}"' in adql
     assert 'CONTAINS(POINT(\'ICRS\', "ra", "dec")' in adql
@@ -648,6 +648,18 @@ def test_build_cone_query_esa_mirror_uses_the_gaia_archive_dialect():
     adql_vizier = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0)
     assert '"I/355/gaiadr3"' in adql_vizier
     assert '"phot_g_mean_mag"' not in adql_vizier
+
+
+def test_build_cone_query_esa_table_reference_is_schema_quoted_for_the_archive():
+    # the Gaia archive answers HTTP 400 (Unknown table) for the single quoted
+    # dotted identifier FROM "gaiadr3.gaia_source" — the dotted table name
+    # must be schema-quoted (or unquoted) in the ESA-dialect query
+    adql = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0, url=gq.ESA_GAIA_TAP_SYNC_URL)
+    assert 'FROM "gaiadr3"."gaia_source" WHERE CONTAINS' in adql
+    assert '"gaiadr3.gaia_source"' not in adql
+    # the VizieR table name has no dot and stays one quoted identifier
+    adql_vizier = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0)
+    assert 'FROM "I/355/gaiadr3" WHERE CONTAINS' in adql_vizier
 
 
 def test_query_gaia_falls_back_to_the_esa_mirror_when_vizier_is_unreachable(monkeypatch):
@@ -665,7 +677,7 @@ def test_query_gaia_falls_back_to_the_esa_mirror_when_vizier_is_unreachable(monk
     assert [c["url"] for c in calls] == [gq.VIZIER_TAP_SYNC_URL, gq.ESA_GAIA_TAP_SYNC_URL]
     # each endpoint got the ADQL of its own dialect
     assert '"I/355/gaiadr3"' in calls[0]["query"]
-    assert '"gaiadr3.gaia_source"' in calls[1]["query"]
+    assert 'FROM "gaiadr3"."gaia_source"' in calls[1]["query"]
     # the ESA-archive-spelled response parses into the same rows
     assert [s.source_id for s in stars] == [42, 3403768831985762944]
     assert stars[0].g == pytest.approx(12.5)
