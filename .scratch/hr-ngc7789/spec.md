@@ -1,6 +1,6 @@
 # HR diagram from NGC7789 — GUI-path verification
 
-**Status:** in progress — all 6 issues fixed, reviewed (approved) and merged to main (01→81af987, 02→d82cda6, 03→81f1f89, 04→cd708da, 05→3cfa7ff, 06→d554d28); driver final re-run pending
+**Status:** completed — all 6 issues fixed, reviewed (approved) and merged to main; driver re-run succeeded end-to-end (ESA fallback over network, H-R 44 pts / CMD 46 pts); driver + guide + artifacts merged in b5f7ed6
 
 Driving the exact GUI controller path headlessly (ViewerController.open_stack → SolveController.solve_open_stack → CrossmatchController.run_crossmatch → HrDiagramController.refresh) on the real project `/home/daniel/SeestarProjects/ngc7789` (session 20261120T213247325993Z, frames 1/2 subs + 3 stack, all pre-solved) to produce an H-R/CMD diagram and a written guide ("from observation to H-R diagram"). The run succeeded for the CMD (46 points) but surfaced three defects, filed as tickets under `.scratch/hr-ngc7789/issues/`:
 
