@@ -756,7 +756,13 @@ class RunController:
         return list(stored), None
 
     def _measure_one(
-        self, project: Any, frame: Frame, picks: list[Any], aperture: ApertureParams | None
+        self,
+        project: Any,
+        frame: Frame,
+        picks: list[Any],
+        aperture: ApertureParams | None,
+        *,
+        on_stored: Callable[[Measurement, FrameMeasurement], None] | None = None,
     ) -> tuple[Measurement, FrameMeasurement]:
         """Measure one stored frame (FITS read + photometry on the calling
         thread; the store insert on the db-owning thread) and return
@@ -764,19 +770,63 @@ class RunController:
         :class:`Measurement` and the full :class:`~.measure.FrameMeasurement`
         (carrying the check-star curves). Raises :class:`MeasurementError`
         (a :class:`~.picking.PhotometryError`) on any per-frame failure — the
-        caller records it as skipped."""
+        caller records it as skipped.
+
+        - ``on_stored`` — optional hook invoked with the stored
+          ``(measurement, frame_measurement)`` on the DB-OWNING thread, inside
+          the same store dispatch as the insert — so state published there is
+          visible as soon as the measurement itself is stored (the calling
+          worker thread is blocked in :meth:`_call_store` while the hook runs,
+          which keeps the caller's bookkeeping lists stable).
+        """
         data, header = _read_frame_fits(project, frame)
         fm = measure_frame_data(data, header, picks, aperture=aperture, jd=frame.jd)
-        try:
-            measurement = self._call_store(
-                lambda: add_measurement(project, frame.id, fm.mag, jd=fm.jd, mag_err=fm.mag_err)
+
+        def _store() -> Measurement:
+            measurement = add_measurement(
+                project, frame.id, fm.mag, jd=fm.jd, mag_err=fm.mag_err
             )
+            if on_stored is not None:
+                on_stored(measurement, fm)
+            return measurement
+
+        try:
+            measurement = self._call_store(_store)
         except StoreMeasurementError as exc:
             raise MeasurementError(
                 f"could not store the measurement for frame {frame.id} of "
                 f"project {project.slug!r}: {exc}"
             ) from exc
         return measurement, fm
+
+    def _make_report_publisher(
+        self,
+        session_id: str,
+        measurements: list[Measurement],
+        frame_results: list[FrameMeasurement],
+        skipped: list[SkippedFrame],
+        excluded: list[ExcludedFrame],
+    ) -> Callable[[Measurement, FrameMeasurement], None]:
+        """The ``on_stored`` hook of :meth:`_measure_one` while a run is in
+        progress: rebuild the :class:`RunReport` from the run's bookkeeping so
+        far (plus the just-stored measurement) and publish it as the
+        snapshot's ``report`` right away — on the db-owning thread, inside the
+        insert dispatch, so the report is visible as soon as the measurement
+        is stored (the worker thread is blocked in :meth:`_call_store` while
+        the hook runs, which keeps the lists stable)."""
+
+        def on_stored(measurement: Measurement, fm: FrameMeasurement) -> None:
+            report = RunReport(
+                measurements=tuple(measurements) + (measurement,),
+                skipped=tuple(skipped),
+                session_id=session_id,
+                frame_results=tuple(frame_results) + (fm,),
+                excluded=tuple(excluded),
+            )
+            with self._lock:
+                self._report = report
+
+        return on_stored
 
     def _record_run_exclusion(
         self,
@@ -926,7 +976,15 @@ class RunController:
                     excluded.append(ExcludedFrame(frame_id=frame.id, reasons=reasons))
                 else:
                     try:
-                        measurement, fm = self._measure_one(project, frame, picks, aperture)
+                        measurement, fm = self._measure_one(
+                            project,
+                            frame,
+                            picks,
+                            aperture,
+                            on_stored=self._make_report_publisher(
+                                session_id, measurements, frame_results, skipped, excluded
+                            ),
+                        )
                     except MeasurementError as exc:
                         logger.info(
                             "skipping sub-frame %s of session %s: %s", frame.id, session_id, exc
@@ -949,6 +1007,13 @@ class RunController:
                 frame_results=tuple(frame_results),
                 excluded=tuple(excluded),
             )
+            # publish the report BEFORE the post-run store calls below (the
+            # exclusion record + the lightcurve refresh marshal to the
+            # db-owning thread): the per-frame on_stored hook already published
+            # a report with every stored measurement, and this makes the
+            # returned report object the snapshot's report
+            with self._lock:
+                self._report = report
             # frame-quality ticket 03: persist the exclusion record into the
             # project's project.json config (best-effort — never fails the run)
             self._record_run_exclusion(
@@ -959,7 +1024,6 @@ class RunController:
                 self._call_store(lambda: lightcurve(project, include_excluded=True))
             )
             with self._lock:
-                self._report = report
                 self._lightcurve = lc
             return report
         except PhotometryError as exc:

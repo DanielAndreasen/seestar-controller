@@ -24,6 +24,9 @@ passes it down via :func:`seestar_controller.ui.views.build_view`):
   **Refresh** button + a **Run** button — clicking Run measures ALL sub-frames
   of the chosen session via
   :meth:`~seestar_controller.photometry.run.RunController.run_session`. The
+  chooser is re-listed on every render when the controller's sessions differ
+  from the listed ids — the window is built before any project is opened, so
+  the chooser only fills once a project is set, without a manual Refresh. The
   pure method is synchronous and GTK-free, so the panel runs it on a daemon
   **worker thread** and marshals the progress callback (and the listener
   notifications) back to the GLib main loop with :func:`GLib.idle_add` — the
@@ -358,6 +361,9 @@ class ResultsPanel(Gtk.Box):
             sessions = self._controller.sessions()
         except RunError as exc:
             self._set_status(str(exc), error=True)
+            # no project (anymore): clear the chooser so no stale ids remain
+            self._session_ids = []
+            self._session_dropdown.set_model(Gtk.StringList.new([]))
             return []
         previous = self.selected_session_id()
         self._session_ids = [s.id for s in sessions]
@@ -460,9 +466,17 @@ class ResultsPanel(Gtk.Box):
             GLib.idle_add(self._render, snapshot)
 
     def _render(self, snapshot: RunSnapshot) -> bool:
-        """Render a frozen snapshot: rebuild the table rows, replot, update
-        the progress + status. Returns ``GLib.SOURCE_REMOVE`` (one-shot idle
-        callback)."""
+        """Render a frozen snapshot: re-list the session chooser when the
+        controller's sessions differ from the listed ids (a project opened
+        after this view was built — the same pattern as MoverOverlayView /
+        QualityView), rebuild the table rows, replot, update the progress +
+        status. Returns ``GLib.SOURCE_REMOVE`` (one-shot idle callback)."""
+        try:
+            current_sessions = [s.id for s in self._controller.sessions()]
+        except RunError:
+            current_sessions = []  # no project (anymore)
+        if current_sessions != self._session_ids:
+            self.refresh_sessions()
         self._updating = True
         try:
             while (row := self._list_box.get_row_at_index(0)) is not None:
