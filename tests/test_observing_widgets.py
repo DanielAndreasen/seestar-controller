@@ -14,9 +14,10 @@ What is asserted when they run (observing ticket 01): the
 row per queued entry (``row_count`` / ``row_label`` matching
 ``QueueEntry.describe()``), the per-row up/down/duplicate/remove buttons drive
 the pure controller's ops and the list re-renders on every queue event, the
-Add area adds by name (unresolved, or resolved after the Resolve button looked
-the name up through an injected fake resolver — the catalog is mocked, never
-hit) and by RA/Dec (validated through the real ``catalog.coords`` parsers),
+Add area adds by name (only after the Resolve button looked the name up through
+an injected fake resolver — the catalog is mocked, never hit; an unresolved or
+mismatched name is an inline error that queues nothing) and by RA/Dec
+(validated through the real ``catalog.coords`` parsers),
 with inline status errors for name+coords together, invalid coordinates, or
 an unknown name; and the wiring: ``build_view("observe", queue_controller=...)``
 hands the shared controller to the Observe view's editor, the app owns one
@@ -42,10 +43,19 @@ killed mid-night), the view presents the
 raw inline error; its **Resume** button calls the controller's
 ``resume_stale_session`` and **Close and start new** calls
 ``close_and_start_new``; other start errors stay inline.
+
+Observing ticket 06 adds the stale-resolution tests: clicking **Resolve**
+clears the previous ``_resolved`` at click time (before the slow catalog
+lookup), shows a "resolving <name>…" status and gates the **Add** button while
+the lookup is in flight, so a quick Resolve->Add can never queue the stale
+target; a name mismatch, an in-flight resolve, or a failed resolve -> Add
+shows an inline "resolve first"/"still resolving" error and queues nothing;
+after the new resolve completes, Add queues the NEW resolved target.
 """
 
 import dataclasses
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -177,20 +187,18 @@ def test_row_buttons_drive_controller_ops(gtk, controller, editor):
     assert [e.kind for e in seen] == ["moved", "moved", "duplicated", "removed"]
 
 
-def test_add_by_name_unresolved_then_resolved(gtk, controller, editor):
+def test_add_by_name_requires_a_successful_resolve(gtk, controller, editor):
+    # Add with a name that was never resolved: inline "resolve first" error,
+    # nothing queued (ticket 06)
     editor.name_entry.set_text("M 42")
     editor.exposure_spin.set_value(30)
     editor.gain_spin.set_value(80)
     editor.add_button.emit("clicked")
-    assert editor.row_count() == 1
-    entry = controller[0]
-    assert entry.name == "M 42" and entry.coord is None  # unresolved until Resolve
-    assert entry.exposure_s == 30.0 and entry.gain == 80
-    assert "unresolved" in editor.status_label.get_label()
-    assert editor.name_entry.get_text() == ""  # fields cleared after a successful add
+    assert editor.row_count() == 0
+    assert "resolve" in editor.status_label.get_label()
+    assert editor.status_label.has_css_class("error")
 
     # Resolve looks the name up via the (mocked) catalog and shows the coord
-    editor.name_entry.set_text("M 42")
     editor.resolve_button.emit("clicked")
     status = editor.status_label.get_label()
     assert "M 42" in status and "RA 5.5881h" in status and "-5.3911" in status
@@ -198,10 +206,12 @@ def test_add_by_name_unresolved_then_resolved(gtk, controller, editor):
 
     # Add now stores the RESOLVED entry (name + coord)
     editor.add_button.emit("clicked")
-    assert editor.row_count() == 2
-    resolved = controller[1]
+    assert editor.row_count() == 1
+    resolved = controller[0]
     assert resolved.name == "M 42" and resolved.coord == COORD_A
-    assert editor.row_label(1).startswith("M 42 (RA 5.5881h Dec -5.3911°)")
+    assert resolved.exposure_s == 30.0 and resolved.gain == 80
+    assert editor.row_label(0).startswith("M 42 (RA 5.5881h Dec -5.3911°)")
+    assert editor.name_entry.get_text() == ""  # fields cleared after a successful add
 
 
 def test_resolve_button_shows_inline_error_for_unknown_name(gtk, controller, editor):
@@ -211,12 +221,101 @@ def test_resolve_button_shows_inline_error_for_unknown_name(gtk, controller, edi
     assert "NO SUCH OBJECT" in status and "NameNotFoundError" in status
     assert editor.status_label.has_css_class("error")
     assert editor.row_count() == 0  # nothing added
+    assert editor._resolved is None  # the failed resolve cleared the resolution
+
+    # after a failed resolve, Add with the name errors ("resolve first") and
+    # queues nothing — the old coord is never used (ticket 06)
+    editor.add_button.emit("clicked")
+    assert editor.row_count() == 0
+    assert "resolve" in editor.status_label.get_label()
+    assert editor.status_label.has_css_class("error")
 
     # an empty name is an inline error too
     editor.name_entry.set_text("   ")
     editor.resolve_button.emit("clicked")
     assert editor.status_label.has_css_class("error")
     assert editor.row_count() == 0
+
+
+# --- observing ticket 06: Resolve clears the stale target ------------------------------
+
+
+def test_add_with_a_name_different_from_the_resolved_one_errors(gtk, controller, editor):
+    """A resolution only counts for the exact name it was resolved for: after
+    resolving "M 42", retyping "M 31" (no new Resolve) and clicking Add must
+    error and queue nothing — the stale M 42 coord is never used."""
+    editor.name_entry.set_text("M 42")
+    editor.resolve_button.emit("clicked")
+    assert "RA 5.5881h" in editor.status_label.get_label()
+
+    editor.name_entry.set_text("M 31")  # name mismatch, no new Resolve
+    editor.add_button.emit("clicked")
+    assert editor.row_count() == 0
+    assert "resolve" in editor.status_label.get_label()
+    assert editor.status_label.has_css_class("error")
+    assert controller.entries == ()
+
+    # resolving the new name properly, then Add queues M 31 with its own coord
+    editor.resolve_button.emit("clicked")
+    editor.add_button.emit("clicked")
+    assert len(controller) == 1
+    assert controller[0].name == "M 31" and controller[0].coord == COORD_B
+
+
+def test_quick_resolve_then_add_never_queues_the_stale_target(gtk):
+    """The acceptance scenario of ticket 06: resolve a target, then re-Resolve
+    another name and click Add while the (slow) lookup is still in flight —
+    the stale resolution must already be invalidated, so nothing is queued
+    then, and the later Add queues the NEW target, never the old one."""
+    from seestar_controller.observing import QueueEditor
+
+    in_flight: dict[str, Any] = {}
+
+    def slow_resolver(mapping):
+        def resolver(name):
+            # mid-lookup: capture the editor state and simulate the user
+            # clicking Add while the resolve is in flight
+            in_flight["resolved"] = editor._resolved
+            in_flight["resolving"] = editor._resolving
+            in_flight["add_sensitive"] = editor.add_button.get_sensitive()
+            in_flight["status"] = editor.status_label.get_label()
+            editor.add_button.emit("clicked")
+            in_flight["rows_after_add"] = editor.row_count()
+            in_flight["add_status"] = editor.status_label.get_label()
+            if name not in mapping:
+                raise NameNotFoundError(f"SIMBAD has no object named {name!r}")
+            return mapping[name]
+
+        return resolver
+
+    controller = PlanQueueController(
+        resolver=slow_resolver({"M 42": COORD_A, "M 31": COORD_B})
+    )
+    editor = QueueEditor(controller)
+
+    # resolve the first target (the in-flight Add is rejected there too)
+    editor.name_entry.set_text("M 42")
+    editor.resolve_button.emit("clicked")
+    assert editor.row_count() == 0
+    assert editor.add_button.get_sensitive()  # gate released after the lookup
+
+    # re-Resolve another name; the Add click lands mid-lookup this time
+    editor.name_entry.set_text("M 31")
+    editor.resolve_button.emit("clicked")
+    assert in_flight["resolved"] is None  # stale resolution already cleared
+    assert in_flight["resolving"] is True
+    assert in_flight["add_sensitive"] is False  # Add gated while resolving
+    assert "resolving" in in_flight["status"]
+    assert in_flight["rows_after_add"] == 0  # the quick Add queued nothing
+    assert "resolving" in in_flight["add_status"]
+    assert controller.entries == ()
+
+    # the lookup finished: Add now queues the NEW target, never the old one
+    assert editor.add_button.get_sensitive()
+    editor.add_button.emit("clicked")
+    assert len(controller) == 1
+    assert controller[0].name == "M 31" and controller[0].coord == COORD_B
+    assert editor.row_label(0).startswith("M 31 (RA 0.7120h Dec +41.2700°)")
 
 
 def test_add_by_coords_valid_and_invalid(gtk, controller, editor):
@@ -283,10 +382,12 @@ def test_build_view_observe_wires_the_shared_controller(gtk, controller):
     assert view.view_id == "observe"
     assert view.queue_controller is controller
     assert view.queue_editor.controller is controller
-    # the editor edits the shared queue
+    # the editor edits the shared queue (Resolve first, then Add — ticket 06)
     view.queue_editor.name_entry.set_text("M 31")
+    view.queue_editor.resolve_button.emit("clicked")
     view.queue_editor.add_button.emit("clicked")
-    assert len(controller) == 1 and controller[0].name == "M 31"
+    assert len(controller) == 1
+    assert controller[0].name == "M 31" and controller[0].coord == COORD_B
 
     # default construction still works (own controller)
     standalone = build_view("observe")
@@ -317,6 +418,7 @@ def test_editor_events_flow_to_controller_listeners(gtk, controller, editor):
     seen = []
     controller.add_listener(seen.append)
     editor.name_entry.set_text("M 42")
+    editor.resolve_button.emit("clicked")
     editor.add_button.emit("clicked")
     assert [e.kind for e in seen] == [EVENT_ADDED]
     assert seen[0].entry is controller[0]
