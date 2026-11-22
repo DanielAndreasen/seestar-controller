@@ -63,6 +63,49 @@ def _resolve_frame(project: Project, frame: Frame | int) -> Frame:
     raise FrameStoreError(f"project {project.slug!r} has no frame {frame!r}")
 
 
+def prepare_project_frame(
+    project: Project, frame: Frame | int
+) -> tuple[Frame, Any, Any]:
+    """Read side of :func:`solve_project_frame`, split out so a caller on a
+    worker thread can do ONLY this part on the db-owning thread: resolve the
+    frame row and read + parse its stored FITS bytes. Returns the resolved
+    :class:`Frame`, the image ``data`` and the ``header`` dict."""
+    resolved = _resolve_frame(project, frame)
+    data, header = read_fits_bytes(read_frame_bytes(project, resolved))
+    return resolved, data, header
+
+
+def persist_solve_result(
+    project: Project,
+    resolved: Frame,
+    result: SolveResult,
+    *,
+    write_header: bool = True,
+    persist: bool = True,
+    save_matches: bool = True,
+) -> None:
+    """Write side of :func:`solve_project_frame`, split out for the same
+    reason: write the solved WCS cards back into the stored FITS header
+    (atomic rewrite), upsert the WCS record into the project db, and persist
+    Gaia cross-match rows when present."""
+    if write_header:
+        write_wcs_to_fits(get_frame_path(project, resolved), result.cards)
+    if persist:
+        save_frame_wcs(
+            project,
+            resolved.id,
+            solver=result.solver,
+            n_stars=result.n_stars,
+            center_ra_deg=result.center_ra_deg,
+            center_dec_deg=result.center_dec_deg,
+            cards=result.cards,
+            rms_arcsec=result.rms_arcsec,
+            solved_at=result.solved_at,
+        )
+    if save_matches and result.rows:
+        save_crossmatch(project, resolved.id, result.rows)
+
+
 def solve_project_frame(
     project: Project,
     frame: Frame | int,
@@ -94,25 +137,16 @@ def solve_project_frame(
     raises :class:`~.solve.SolveError` and NOTHING is written (neither the
     FITS header nor the db).
     """
-    resolved = _resolve_frame(project, frame)
-    data, header = read_fits_bytes(read_frame_bytes(project, resolved))
+    resolved, data, header = prepare_project_frame(project, frame)
     result = solve_frame(data=data, header=header, solver=solver, **solve_kwargs)
-    if write_header:
-        write_wcs_to_fits(get_frame_path(project, resolved), result.cards)
-    if persist:
-        save_frame_wcs(
-            project,
-            resolved.id,
-            solver=result.solver,
-            n_stars=result.n_stars,
-            center_ra_deg=result.center_ra_deg,
-            center_dec_deg=result.center_dec_deg,
-            cards=result.cards,
-            rms_arcsec=result.rms_arcsec,
-            solved_at=result.solved_at,
-        )
-    if save_matches and result.rows:
-        save_crossmatch(project, resolved.id, result.rows)
+    persist_solve_result(
+        project,
+        resolved,
+        result,
+        write_header=write_header,
+        persist=persist,
+        save_matches=save_matches,
+    )
     return result
 
 

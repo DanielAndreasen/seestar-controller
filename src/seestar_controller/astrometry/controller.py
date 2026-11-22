@@ -11,7 +11,8 @@ controllers; the app owns one shared instance of each and passes it down via
 - :class:`SolveController` (+ :class:`SolveSnapshot`) — the "Solve" action of
   the image viewer: it follows the shared viewer controller (duck-typed —
   NOT imported here — the open stack becomes the solve target), runs
-  :func:`~.session.solve_project_frame` on the open stack (which writes the
+  :func:`~.session.prepare_project_frame` / :func:`~.solve.solve_frame` /
+  :func:`~.session.persist_solve_result` on the open stack (which writes the
   WCS into the FITS header and persists it via ``store.wcs``), and exports
   the annotated PNG (:mod:`.export`). Operations never raise — failures are
   recorded in the snapshot's ``error`` (the widget shows them as a toast /
@@ -44,6 +45,7 @@ from seestar_controller.store.project import Project
 from seestar_controller.store.sessions import Session, get_open_session, list_sessions
 from seestar_controller.store.wcs import FrameWcs, load_frame_wcs
 
+from . import session as astrometry_session
 from .drift import DriftSeries, drift_series
 from .errors import AstrometryError
 from .export import (
@@ -52,7 +54,6 @@ from .export import (
     export_annotated_png,
 )
 from .plot import DEFAULT_DPI, DEFAULT_HEIGHT_PX, DEFAULT_WIDTH_PX, render_drift_png
-from .session import solve_project_frame
 
 logger = logging.getLogger(__name__)
 
@@ -335,8 +336,28 @@ class SolveController:
             self._status = "solving…"
         self._emit(self.snapshot)
         try:
-            result = self._call_store(
-                lambda: solve_project_frame(project, frame_id, solver=solver, **solve_kwargs)
+            # Only the db reads/writes go to the db-owning thread — the solve
+            # itself (solve-field subprocess, can take minutes) runs HERE on
+            # the worker, so the db thread / main loop stays responsive and
+            # concurrent store calls don't hit DB_CALL_TIMEOUT_S.
+            write_header = solve_kwargs.pop("write_header", True)
+            persist = solve_kwargs.pop("persist", True)
+            save_matches = solve_kwargs.pop("save_matches", True)
+            resolved, data, header = self._call_store(
+                lambda: astrometry_session.prepare_project_frame(project, frame_id)
+            )
+            result = astrometry_session.solve_frame(
+                data=data, header=header, solver=solver, **solve_kwargs
+            )
+            self._call_store(
+                lambda: astrometry_session.persist_solve_result(
+                    project,
+                    resolved,
+                    result,
+                    write_header=write_header,
+                    persist=persist,
+                    save_matches=save_matches,
+                )
             )
             solved = self._call_store(lambda: load_frame_wcs(project, frame_id))
             rms = result.rms_arcsec
