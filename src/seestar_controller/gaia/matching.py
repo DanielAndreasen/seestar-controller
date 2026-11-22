@@ -16,7 +16,12 @@ What lives here:
   ``separation_arcsec``;
 - :func:`crossmatch` — pair every detection with its nearest Gaia row within
   ``radius_arcsec`` (default :data:`DEFAULT_MATCH_RADIUS_ARCSEC` = 1.5),
-  one-to-one (greedy by ascending separation, so the closest pairs win);
+  one-to-one (greedy by ascending separation, so the closest pairs win).
+  The candidate pairs come from a Dec-band spatial index
+  (:func:`_candidate_pairs`), so only pairs that can lie within the radius
+  get the exact distance — identical results to evaluating every pair, but
+  seconds instead of minutes on a dense field (thousands of detections ×
+  up to :data:`~.query.DEFAULT_MAXREC` Gaia rows);
   detections with no Gaia row inside the radius are flagged
   ``matched=False`` — they are the interesting ones (new variables,
   artifacts);
@@ -29,6 +34,7 @@ What lives here:
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -135,6 +141,52 @@ def _gaia_fields(star: Any) -> tuple[float, float, dict[str, Any]]:
     return ra, dec, fields
 
 
+def _candidate_pairs(
+    detections: list[tuple[float, float, float, float]],
+    stars: list[tuple[float, float, dict[str, Any]]],
+    radius_arcsec: float,
+) -> list[tuple[float, int, int]]:
+    """All ``(separation_arcsec, detection_index, star_index)`` pairs whose
+    separation is within ``radius_arcsec``.
+
+    A spatial index instead of the detection×Gaia double loop: the Gaia
+    rows are sorted by Dec once, and each detection scans only the Dec band
+    ``[dec_d - radius_deg, dec_d + radius_deg]`` — a pair can never be
+    closer than its Dec difference. Inside the band a cheap RA lower bound
+    (``sin(d/2) >= cos(dec_max) * |sin(dra/2)|``, invariant under the RA
+    0/360 wrap, with ``dec_max`` clamped at the pole where RA differences
+    stop mattering) rejects the rest; only the survivors get the exact
+    :func:`~seestar_controller.catalog.coords.angular_distance`. Both bounds
+    carry a tiny slack, so the candidate set is exactly the one the
+    brute-force loop produces — only pairs near each other are evaluated.
+    """
+    radius_deg = radius_arcsec / ARCSEC_PER_DEG
+    order = sorted(range(len(stars)), key=lambda j: stars[j][1])
+    band_dec = [stars[j][1] for j in order]
+    slack = 1e-9 * radius_deg + 1e-15  # FP slack: never reject a true match
+    candidates: list[tuple[float, int, int]] = []
+    for i, (_, _, ra_d, dec_d) in enumerate(detections):
+        lo = bisect_left(band_dec, dec_d - radius_deg - slack)
+        hi = bisect_right(band_dec, dec_d + radius_deg + slack)
+        if lo == hi:
+            continue
+        # cos of the largest |Dec| a band row can have from this detection.
+        cos_dec = math.cos(math.radians(min(90.0, abs(dec_d) + radius_deg)))
+        for k in range(lo, hi):
+            j = order[k]
+            ra_g, dec_g, _ = stars[j]
+            lower = 2.0 * math.asin(
+                min(1.0, cos_dec * abs(math.sin(math.radians(ra_g - ra_d) / 2.0)))
+            )
+            if lower > radius_deg + slack:
+                continue
+            sep_deg = angular_distance((ra_d, dec_d), (ra_g, dec_g))
+            sep_arcsec = sep_deg * ARCSEC_PER_DEG
+            if sep_arcsec <= radius_arcsec:
+                candidates.append((sep_arcsec, i, j))
+    return candidates
+
+
 def crossmatch(
     detected: Iterable[Any],
     gaia_rows: Iterable[Any],
@@ -155,6 +207,12 @@ def crossmatch(
     inside the radius come back with ``matched=False`` and all Gaia fields
     ``None``.
 
+    Candidate pairs are found via :func:`_candidate_pairs` (a Dec-band
+    spatial index with an RA lower bound), so only pairs that can lie within
+    the radius get the exact distance — the result is identical to evaluating
+    every detection×Gaia pair, but runs in seconds on a dense field instead
+    of minutes.
+
     Returns one :class:`CrossmatchRow` per detection, in the input detection
     order. Raises :class:`ValueError` on a bad ``radius_arcsec`` or malformed
     input rows.
@@ -162,13 +220,7 @@ def crossmatch(
     radius = _validate_radius_arcsec(radius_arcsec)
     detections = [_detection_fields(d) for d in detected]
     stars = [_gaia_fields(g) for g in gaia_rows]
-    candidates: list[tuple[float, int, int]] = []
-    for i, (_, _, ra_d, dec_d) in enumerate(detections):
-        for j, (ra_g, dec_g, _) in enumerate(stars):
-            sep_deg = angular_distance((ra_d, dec_d), (ra_g, dec_g))
-            sep_arcsec = sep_deg * ARCSEC_PER_DEG
-            if sep_arcsec <= radius:
-                candidates.append((sep_arcsec, i, j))
+    candidates = _candidate_pairs(detections, stars, radius)
     candidates.sort()
     matched_i: dict[int, tuple[float, int]] = {}
     used_j: set[int] = set()

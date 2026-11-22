@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import math
+import random
+import time
 from typing import Any, cast
 
 import pytest
 
+from seestar_controller.catalog.coords import angular_distance
 from seestar_controller.gaia import matching as gc
 from seestar_controller.gaia.detect import DetectedSource
 from seestar_controller.gaia.query import GaiaStar
@@ -148,3 +151,102 @@ def test_crossmatch_accepts_duck_typed_rows():
     assert rows[0].bp is None  # missing attribute -> None
     sep = rows[0].separation_arcsec
     assert sep is not None and math.isfinite(sep)
+
+
+# --- equivalence with the brute-force loop + scale -----------------------------
+
+
+def _brute_force(
+    detected: list[DetectedSource], gaia: list[GaiaStar], radius_arcsec: float
+) -> list[gc.CrossmatchRow]:
+    """The O(detections × rows) reference: evaluate every pair with the exact
+    distance, then the same greedy one-to-one assignment."""
+    radius = float(radius_arcsec)
+    candidates: list[tuple[float, int, int]] = []
+    for i, d in enumerate(detected):
+        ra_d, dec_d = d.ra_deg % 360.0, d.dec_deg
+        for j, s in enumerate(gaia):
+            sep = angular_distance((ra_d, dec_d), (s.ra_deg % 360.0, s.dec_deg)) * 3600.0
+            if sep <= radius:
+                candidates.append((sep, i, j))
+    candidates.sort()
+    matched_i: dict[int, tuple[float, int]] = {}
+    used_j: set[int] = set()
+    for sep, i, j in candidates:
+        if i in matched_i or j in used_j:
+            continue
+        matched_i[i] = (sep, j)
+        used_j.add(j)
+    rows: list[gc.CrossmatchRow] = []
+    for i, d in enumerate(detected):
+        ra_d, dec_d = d.ra_deg % 360.0, d.dec_deg
+        if i in matched_i:
+            sep, j = matched_i[i]
+            s = gaia[j]
+            rows.append(
+                gc.CrossmatchRow(
+                    x=float(d.x), y=float(d.y), ra_deg=ra_d, dec_deg=dec_d,
+                    matched=True, source_id=s.source_id, g=s.g, bp=s.bp, rp=s.rp,
+                    parallax=s.parallax, pmra=s.pmra, pmdec=s.pmdec,
+                    separation_arcsec=sep,
+                )
+            )
+        else:
+            rows.append(
+                gc.CrossmatchRow(x=float(d.x), y=float(d.y), ra_deg=ra_d, dec_deg=dec_d, matched=False)
+            )
+    return rows
+
+
+def test_crossmatch_is_identical_to_the_brute_force_loop_on_random_fields():
+    rng = random.Random(20260621)
+    # (ra0, dec0, field half-width in deg, radius_arcsec) — ordinary field,
+    # across the RA 0/360 wrap, near the pole, and small/large radii
+    configs = [
+        (83.633, 22.014, 0.02, 1.5),
+        (359.98, 10.0, 0.04, 1.5),
+        (0.0, 89.98, 180.0, 5.0),  # near the pole, RA spread over the full circle
+        (200.0, -30.0, 0.03, 0.4),
+        (200.0, -30.0, 0.03, 30.0),
+    ]
+    for ra0, dec0, width, radius in configs:
+        stars = [
+            star(1000 + k, (ra0 + rng.uniform(-width, width)) % 360.0, dec0 + rng.uniform(-width, width))
+            for k in range(400)
+        ]
+        dets = [
+            det(rng.uniform(0, 100), rng.uniform(0, 100),
+                (ra0 + rng.uniform(-width, width)) % 360.0, dec0 + rng.uniform(-width, width))
+            for _ in range(60)
+        ]
+        # cluster some detections on top of stars to force one-to-one contention
+        for _ in range(15):
+            s = stars[rng.randrange(len(stars))]
+            dets.append(
+                det(rng.uniform(0, 100), rng.uniform(0, 100),
+                    (s.ra_deg + rng.uniform(-0.4, 0.4) * ARCSEC) % 360.0,
+                    s.dec_deg + rng.uniform(-0.4, 0.4) * ARCSEC)
+            )
+        assert gc.crossmatch(dets, stars, radius_arcsec=radius) == _brute_force(dets, stars, radius)
+
+
+def test_crossmatch_scale_2000_detections_x_100k_gaia_rows_is_fast():
+    # documented defaults: a dense Seestar field at DEFAULT_MAXREC=100_000 rows
+    rng = random.Random(20260622)
+    n_star = 100_000
+    stars = [star(k, 83.0 + rng.random(), 22.0 + rng.random()) for k in range(n_star)]
+    dets = []
+    for k in rng.sample(range(n_star), 2000):
+        s = stars[k]
+        dets.append(det(float(k), float(k), s.ra_deg % 360.0, s.dec_deg + 0.2 * ARCSEC))
+    start = time.perf_counter()
+    rows = gc.crossmatch(dets, stars, radius_arcsec=1.5)
+    elapsed = time.perf_counter() - start
+    # generous bound: the brute-force detection×Gaia loop needs minutes here
+    assert elapsed < 10.0, f"crossmatch(2000 x 100k) took {elapsed:.1f} s"
+    assert len(rows) == 2000
+    matched = [r for r in rows if r.matched]
+    assert len(matched) >= 1900  # each detection sits 0.2 arcsec from its own star
+    # (a handful may pair with an even closer neighbouring Gaia row instead)
+    own = [r for r in matched if r.separation_arcsec == pytest.approx(0.2, abs=0.05)]
+    assert len(own) >= 1900
