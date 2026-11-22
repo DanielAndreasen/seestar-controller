@@ -6,9 +6,19 @@
 
 **Blocked by:** None (observing 01-05 done; relates to 07 live refresh)
 
-**Status:** open — found in live test 2026-11-22
+**Status:** implemented in 2aa35b3 (pending review)
 
-- [ ] Observe view can render a stored FITS (downscaled) as preview fallback / first-exposure thumbnail
-- [ ] Wired to the first stored frame of the running session
-- [ ] Tests: store first sub -> observe view preview updates without live stream
-- [ ] Full suite green
+- [x] Observe view can render a stored FITS (downscaled) as preview fallback / first-exposure thumbnail
+- [x] Wired to the first stored frame of the running session
+- [x] Tests: store first sub -> observe view preview updates without live stream
+- [x] Full suite green
+
+## Comments
+
+Implemented on branch `wt/fix-obs-08` (worktree `fix-obs-08`), commit `2aa35b3`:
+
+- `observing/observe_controller.py`: new pure loader `load_first_sub_frame(project, session_id)` takes the first sub (`list_frames(..., kind="sub")[0]`, jd order), reads the FITS once (lazy astropy), percentile-stretches to uint8 (`FIRST_SUB_STRETCH_PERCENTILES = (1.0, 99.0)`) and downscales with PIL to <= `FIRST_SUB_PREVIEW_MAX_PX = 512`; returned as a frozen `FirstSubFrame` mirroring the `PreviewFrame` shape the view renders. The controller listens to the `SessionCapture` log (`KIND_FRAME` events) and marshals the load via `invoke_on_main` (`_on_capture_log_event` -> `_load_first_sub_frame`), caching the result so it is decoded once per night; `first_sub_frame` is reset in `start_night` and carried in `ObserveViewState.first_sub_frame`.
+- `observing/observe_view.py`: the preview picture now renders `state.preview_frame` when present, else `state.first_sub_frame` (same render path, re-render keyed on `(source, id)`), so the stored first sub shows as the fallback while the live stream is idle and the live preview takes over once it streams; the "no preview yet" placeholder only shows when neither is set.
+- Tests (`tests/test_observing_first_sub.py`, new): loader unit tests (first-by-jd, downscale, uint8, no-sub -> None, RGB FITS), controller wiring with a fake device/capture and a never-emitting preview stream (first sub stored -> `snapshot.first_sub_frame` set while `preview_frame` is None; second sub does not replace it; the load is queued via `invoke_on_main`, not inline; live `stream.emit` takes over; reset on next night), plus a widget test driving `ObserveView` fallback -> live -> fallback -> placeholder.
+
+Verification (worktree `~/.vibe/worktrees/seestar-controller-dec7d727fea1/fix-obs-08`, venv with `--system-site-packages` + pygobject/pycairo so gi is present): all observing test files pass (121 passed incl. the 7 new), `uv tool run ruff check` clean, `uv tool run ty check` -> 108 diagnostics, identical to pristine main (pre-existing gi-stub noise). Full `uv run pytest -q -n auto` runs green apart from pre-existing flaky-under-xdist tests in unrelated modules (visibility/transport/preview threads; they pass when run individually and the failing set varies between runs, also on the baseline).

@@ -31,9 +31,14 @@ dependency — it needs the system GTK headers to build)::
   latest decoded frame: the ndarray is encoded to PNG via PIL and wrapped in
   a :class:`Gdk.Texture` with ``Gdk.Texture.new_from_bytes`` — marshalled
   onto the main loop already, because the controller's ``invoke_on_main`` is
-  ``GLib.idle_add`` in the app) over a "no preview yet" placeholder, plus a
-  **Night progress** group: current target (name + RA/Dec), executor state,
-  sub-frames stacked, elapsed, queue position, session;
+  ``GLib.idle_add`` in the app) over a "no preview yet" placeholder. When the
+  live stream has no frame yet but the session's first stored sub is already
+  available (ticket 08 — ``ObserveViewState.first_sub_frame``, decoded once
+  and downscaled by the controller), that stored sub is shown as the
+  fallback/first-exposure preview; the live preview takes over as soon as it
+  streams. Below it, a **Night progress** group: current target (name +
+  RA/Dec), executor state, sub-frames stacked, elapsed, queue position,
+  session;
 - the two panes sit in a :class:`Gtk.Paned` (documented choice — simpler than
   ``Adw.OverlaySplitView`` and keeps both panes visible on a wide window).
 
@@ -126,7 +131,7 @@ class ObserveView(Gtk.Box):
             else observe_controller.queue_controller
         )
         self._project = project
-        self._last_frame_id: int | None = None
+        self._last_frame_key: tuple[Any, ...] | None = None
         self._log_dialog: SessionLogDialog | None = None
         self._stale_dialog: StaleSessionDialog | None = None
 
@@ -289,6 +294,11 @@ class ObserveView(Gtk.Box):
         return self._picture
 
     @property
+    def preview_placeholder(self) -> Gtk.Label:
+        """The "no preview yet" placeholder overlay (right pane)."""
+        return self._preview_placeholder
+
+    @property
     def start_button(self) -> Gtk.Button:
         return self._start_button
 
@@ -395,10 +405,21 @@ class ObserveView(Gtk.Box):
             self._queue_row.set_subtitle(f"0 / {len(state.queue_entries)}")
         self._session_row.set_subtitle(state.session or "—")
 
-        # preview picture from the latest frame
-        frame = state.preview_frame
-        if frame is not None and getattr(frame, "id", None) != self._last_frame_id:
-            self._last_frame_id = getattr(frame, "id", None)
+        # preview picture from the latest live frame; when the stream has no
+        # frame yet, the first stored sub of the session is the fallback
+        # (ticket 08) — the live preview takes over once it streams
+        frame = (
+            state.preview_frame
+            if state.preview_frame is not None
+            else state.first_sub_frame
+        )
+        key = (
+            (getattr(frame, "source", None), getattr(frame, "id", None))
+            if frame is not None
+            else None
+        )
+        if frame is not None and key != self._last_frame_key:
+            self._last_frame_key = key
             try:
                 self._picture.set_paintable(texture_from_array(frame.image))
                 self._preview_placeholder.set_visible(False)

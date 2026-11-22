@@ -20,7 +20,9 @@ no GTK, see docs/wiki/assumptions.md):
   :mod:`.observe_controller` (:class:`~.observe_controller.ObserveController`
   + :class:`~.observe_controller.ObserveViewState`, the pure binding of
   connection + queue + executor + preview stream + notification bus that the
-  Observe view renders — ticket 03); and :mod:`.capture`
+  Observe view renders — ticket 03, plus the ticket-08 first-sub preview
+  fallback (:class:`~.observe_controller.FirstSubFrame`,
+  :func:`~.observe_controller.load_first_sub_frame`); and :mod:`.capture`
   (:class:`~.capture.SessionCapture` + :class:`~.capture.SessionLog`,
   :class:`~.capture.LogEvent` — sub-frames/Stacks downloaded into the current
   session as they arrive + the per-session event log — ticket 04 — plus the
@@ -134,6 +136,9 @@ _EXECUTOR_EXPORTS = {
     "DEFAULT_PREVIEW_MAX_FPS": "observe_controller",
     "CaptureFactory": "observe_controller",
     "ExecutorFactory": "observe_controller",
+    "FIRST_SUB_PREVIEW_MAX_PX": "observe_controller",
+    "FIRST_SUB_SOURCE": "observe_controller",
+    "FirstSubFrame": "observe_controller",
     "InvokeOnMain": "observe_controller",
     "OBSERVE_SOURCE": "observe_controller",
     "ObserveController": "observe_controller",
@@ -149,6 +154,7 @@ _EXECUTOR_EXPORTS = {
     "format_elapsed": "observe_controller",
     "format_session_time": "observe_controller",
     "format_target": "observe_controller",
+    "load_first_sub_frame": "observe_controller",
 }
 
 
@@ -187,6 +193,8 @@ __all__ = [
     "EXECUTOR_STATES",
     "EXPOSURE_MAX_S",
     "EXPOSURE_MIN_S",
+    "FIRST_SUB_PREVIEW_MAX_PX",
+    "FIRST_SUB_SOURCE",
     "GAIN_MAX",
     "GAIN_MIN",
     "KIND_CAPTURE",
@@ -212,6 +220,9 @@ __all__ = [
     "ExecutorSnapshot",
     "ExecutorState",
     "ExecutorStateError",
+    "FirstSubFrame",
+    "FIRST_SUB_PREVIEW_MAX_PX",
+    "FIRST_SUB_SOURCE",
     "FrameStoredEvent",
     "FrameStoredListener",
     "InvokeOnMain",
@@ -251,6 +262,7 @@ __all__ = [
     "format_elapsed",
     "format_session_time",
     "format_target",
+    "load_first_sub_frame",
     "normalize_mosaic",
     "parse_entry_coords",
     "resolve_names",
