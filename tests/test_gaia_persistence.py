@@ -88,9 +88,11 @@ def _pipeline_rows() -> list[CrossmatchRow]:
     ]
     gaia_rows = [
         GaiaStar(source_id=111, ra_deg=RA0 + 0.5 * ARCSEC, dec_deg=DEC0, g=14.0,
-                 bp=14.5, rp=13.5, parallax=1.25, pmra=2.5, pmdec=-3.5),
+                 bp=14.5, rp=13.5, parallax=1.25, parallax_error=0.05,
+                 pmra=2.5, pmra_error=0.06, pmdec=-3.5, pmdec_error=0.07),
         GaiaStar(source_id=222, ra_deg=RA0 + 0.01 + 0.2 * ARCSEC, dec_deg=DEC0 + 0.01,
-                 g=18.0),
+                 g=18.0, bp=18.4, rp=17.6, parallax=0.5, parallax_error=0.2,
+                 pmra=1.0, pmdec=-1.0),
     ]
     return crossmatch(detected, gaia_rows, radius_arcsec=1.5)
 
@@ -112,13 +114,22 @@ def test_pipeline_output_persists_and_loads_back(project):
     assert first.g == pytest.approx(14.0)
     assert first.bp == pytest.approx(14.5) and first.rp == pytest.approx(13.5)
     assert first.parallax == pytest.approx(1.25)
-    assert first.pmra == pytest.approx(2.5) and first.pmdec == pytest.approx(-3.5)
+    assert first.parallax_error == pytest.approx(0.05)
+    assert first.pmra == pytest.approx(2.5)
+    assert first.pmra_error == pytest.approx(0.06)
+    assert first.pmdec == pytest.approx(-3.5)
+    assert first.pmdec_error == pytest.approx(0.07)
     assert first.separation_arcsec == pytest.approx(0.5, abs=0.05)
-    # a plain CrossmatchRow carries no error columns -> stored as NULL
-    assert first.parallax_error is None
-    assert first.pmra_error is None and first.pmdec_error is None
+    # the second matched row carries its (low-SNR) parallax error too
+    assert loaded[1].parallax == pytest.approx(0.5)
+    assert loaded[1].parallax_error == pytest.approx(0.2)
+    assert loaded[1].pmra_error is None and loaded[1].pmdec_error is None
+    # an unmatched detection has every Gaia field (value and error) NULL
     unmatched = loaded[2]
     assert unmatched.matched is False and unmatched.source_id is None
+    assert unmatched.parallax is None and unmatched.parallax_error is None
+    assert unmatched.pmra is None and unmatched.pmra_error is None
+    assert unmatched.pmdec is None and unmatched.pmdec_error is None
     assert unmatched.separation_arcsec is None
 
     # the store-side API sees the same table
@@ -127,6 +138,28 @@ def test_pipeline_output_persists_and_loads_back(project):
     assert [s.frame_id for s in summaries] == [stack.id]
     assert summaries[0].row_count == 3 and summaries[0].matched_count == 2
     assert summaries[0].unmatched_count == 1
+
+
+def test_persisted_error_columns_drive_the_hr_points_snr_cut(project):
+    """The full chain of ticket hr-ngc7789/02: crossmatch rows carrying the
+    Gaia error columns -> persist -> load -> the H-R diagram's parallax-SNR
+    cut uses them (row 111 passes, row 222 at SNR 2.5 is dropped)."""
+    from seestar_controller.hr_diagram import core as hr
+
+    sid = start_session(project, clock=frozen(T0))
+    stack = _add_stack(project, sid)
+    save_crossmatch(project, stack.id, _pipeline_rows())
+    loaded = load_crossmatch(project, stack.id)
+    # the H-R list keeps only the row passing parallax / parallax_error > 5
+    points = hr.hr_points(loaded)
+    assert [p.source_id for p in points] == [111]
+    assert points[0].parallax_error == pytest.approx(0.05)
+    assert points[0].abs_g == pytest.approx(hr.absolute_g(14.0, 1.25))
+    # the CMD keeps every matched row with complete photometry
+    assert [p.source_id for p in hr.cmd_points(loaded)] == [111, 222]
+    # the persisted pm errors are readable off the loaded rows (membership input)
+    assert loaded[0].pmra_error == pytest.approx(0.06)
+    assert loaded[0].pmdec_error == pytest.approx(0.07)
 
 
 def test_rows_with_error_fields_persist_the_errors(project):

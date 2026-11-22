@@ -11,8 +11,9 @@ What lives here:
 
 - :class:`CrossmatchRow` — one output table row: the detection's pixel
   ``(x, y)`` and sky position, the ``matched`` flag, and the matched Gaia
-  fields (``source_id``, ``g``, ``bp``, ``rp``, ``parallax``, ``pmra``,
-  ``pmdec`` — all ``None`` when unmatched) plus the match
+  fields (``source_id``, ``g``, ``bp``, ``rp``, ``parallax`` +
+  ``parallax_error``, ``pmra`` + ``pmra_error``, ``pmdec`` +
+  ``pmdec_error`` — all ``None`` when unmatched) plus the match
   ``separation_arcsec``;
 - :func:`crossmatch` — pair every detection with its nearest Gaia row within
   ``radius_arcsec`` (default :data:`DEFAULT_MATCH_RADIUS_ARCSEC` = 1.5),
@@ -67,10 +68,16 @@ class CrossmatchRow:
     - ``x`` / ``y`` — the detection's 0-based pixel position;
     - ``ra_deg`` / ``dec_deg`` — the detection's J2000 sky position;
     - ``matched`` — whether a Gaia row lies within the match radius;
-    - ``source_id`` / ``g`` / ``bp`` / ``rp`` / ``parallax`` / ``pmra`` /
-      ``pmdec`` — the matched Gaia DR3 fields (``None`` when unmatched);
+    - ``source_id`` / ``g`` / ``bp`` / ``rp`` — the matched Gaia DR3
+      magnitudes and source id (``None`` when unmatched);
+    - ``parallax`` / ``parallax_error`` — the matched parallax in mas + its
+      1-sigma error;
+    - ``pmra`` / ``pmra_error``, ``pmdec`` / ``pmdec_error`` — the matched
+      proper motion in mas/yr + its 1-sigma error;
     - ``separation_arcsec`` — the sky separation of the matched pair
       (``None`` when unmatched).
+
+    All Gaia fields (values and errors) are ``None`` when unmatched.
     """
 
     x: float
@@ -83,8 +90,11 @@ class CrossmatchRow:
     bp: float | None = None
     rp: float | None = None
     parallax: float | None = None
+    parallax_error: float | None = None
     pmra: float | None = None
+    pmra_error: float | None = None
     pmdec: float | None = None
+    pmdec_error: float | None = None
     separation_arcsec: float | None = None
 
 
@@ -135,8 +145,11 @@ def _gaia_fields(star: Any) -> tuple[float, float, dict[str, Any]]:
         "bp": getattr(star, "bp", None),
         "rp": getattr(star, "rp", None),
         "parallax": getattr(star, "parallax", None),
+        "parallax_error": getattr(star, "parallax_error", None),
         "pmra": getattr(star, "pmra", None),
+        "pmra_error": getattr(star, "pmra_error", None),
         "pmdec": getattr(star, "pmdec", None),
+        "pmdec_error": getattr(star, "pmdec_error", None),
     }
     return ra, dec, fields
 
@@ -246,8 +259,11 @@ def crossmatch(
                     bp=fields["bp"],
                     rp=fields["rp"],
                     parallax=fields["parallax"],
+                    parallax_error=fields["parallax_error"],
                     pmra=fields["pmra"],
+                    pmra_error=fields["pmra_error"],
                     pmdec=fields["pmdec"],
+                    pmdec_error=fields["pmdec_error"],
                     separation_arcsec=sep_arcsec,
                 )
             )

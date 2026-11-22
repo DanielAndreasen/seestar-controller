@@ -21,10 +21,11 @@ the table into the project is issue 02):
    field center (radius = field diagonal + margin) via Gaia TAP HTTP —
    VizieR first, falling back to the ESA Gaia mirror
    (:data:`~.query.GAIA_TAP_SYNC_URLS`; an explicit ``url=`` pins one
-   endpoint) — selecting G/BP/RP/parallax/pmRA/pmDE with ``G < 20``, cached
-   on disk under ``<config>/cache/gaia/`` keyed by the rounded center +
-   radius with a TTL (the catalog module's cache pattern); a query failure
-   with no cache raises :class:`~.errors.GaiaUnavailableError`;
+   endpoint) — selecting G/BP/RP/parallax(+error)/pmRA(+error)/pmDE(+error)
+   with ``G < 20``, cached on disk under ``<config>/cache/gaia/`` keyed by
+   the rounded center + radius with a TTL (the catalog module's cache
+   pattern); a query failure with no cache raises
+   :class:`~.errors.GaiaUnavailableError`;
 3. :func:`~.matching.crossmatch` — pair every detection with its nearest
    Gaia row within a configurable radius (default 1.5 arcsec); unmatched
    detections are flagged.

@@ -10,13 +10,14 @@ function, so no test ever touches the network.
 What lives here:
 
 - :class:`GaiaStar` — one Gaia DR3 row: ``source_id``, J2000 position, and
-  the selected columns ``g`` / ``bp`` / ``rp`` / ``parallax`` / ``pmra`` /
-  ``pmdec`` (``None`` when Gaia has no value);
+  the selected columns ``g`` / ``bp`` / ``rp`` / ``parallax`` +
+  ``parallax_error`` / ``pmra`` + ``pmra_error`` / ``pmdec`` +
+  ``pmdec_error`` (``None`` when Gaia has no value);
 - :func:`build_cone_query` — the ADQL cone search over the Gaia DR3 table of
   the queried endpoint (VizieR's :data:`GAIA_DR3_TABLE` ``I/355/gaiadr3`` or
   the ESA archive's :data:`ESA_GAIA_DR3_TABLE` ``gaiadr3.gaia_source``)
-  around a center with a radius, selecting G/BP/RP/parallax/pmRA/pmDE and
-  ``G < g_limit``;
+  around a center with a radius, selecting G/BP/RP/parallax(+error)/
+  pmRA(+error)/pmDE(+error) and ``G < g_limit``;
 - :func:`fetch_gaia_tap_json` — POST one ADQL query to one Gaia TAP
   ``sync`` endpoint (``url=``, default :data:`VIZIER_TAP_SYNC_URL`) and
   return the parsed JSON body — **the single HTTP boundary**;
@@ -129,7 +130,20 @@ MAX_RADIUS_DEG = 180.0
 ARCSEC_PER_DEG = 3600.0
 
 #: The Gaia DR3 columns selected by the cone search, in SELECT order.
-GAIA_COLUMNS = ("RAJ2000", "DEJ2000", "Source", "Gmag", "BPmag", "RPmag", "Plx", "pmRA", "pmDE")
+GAIA_COLUMNS = (
+    "RAJ2000",
+    "DEJ2000",
+    "Source",
+    "Gmag",
+    "BPmag",
+    "RPmag",
+    "Plx",
+    "PlxError",
+    "pmRA",
+    "pmRAError",
+    "pmDE",
+    "pmDEError",
+)
 
 #: The Gaia DR3 columns selected by the cone search on the ESA Gaia archive,
 #: in SELECT order (the archive's own spellings, parsed via the same aliases).
@@ -146,8 +160,9 @@ ESA_GAIA_COLUMNS = (
 )
 
 #: Accepted wire-name aliases per GaiaStar field (VizieR TAP spells them
-#: ``RAJ2000``/``Source``/``Gmag``/``Plx``/``pmRA``/``pmDE``; the Gaia archive
-#: spells them ``ra``/``source_id``/``phot_g_mean_mag``/``parallax``/...).
+#: ``RAJ2000``/``Source``/``Gmag``/``Plx``/``PlxError``/``pmRA``/``pmRAError``/
+#: ``pmDE``/``pmDEError``; the Gaia archive spells them
+#: ``ra``/``source_id``/``phot_g_mean_mag``/``parallax``/``parallax_error``/...).
 _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "ra": ("RAJ2000", "RA_ICRS", "ra", "RA"),
     "dec": ("DEJ2000", "DE_ICRS", "dec", "DEC"),
@@ -156,8 +171,11 @@ _COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "bp": ("BPmag", "BP", "phot_bp_mean_mag"),
     "rp": ("RPmag", "RP", "phot_rp_mean_mag"),
     "parallax": ("Plx", "parallax"),
+    "parallax_error": ("PlxError", "parallax_error"),
     "pmra": ("pmRA", "pmra", "PMRA"),
+    "pmra_error": ("pmRAError", "pmra_error", "PMRAError"),
     "pmdec": ("pmDE", "pmDE", "pmdec", "PMDE"),
+    "pmdec_error": ("pmDEError", "pmdec_error", "PMDEError"),
 }
 
 #: Fields without which a response cannot be parsed at all.
@@ -204,9 +222,11 @@ class GaiaStar:
 
     ``source_id`` is the Gaia DR3 source identifier; ``ra_deg`` / ``dec_deg``
     the J2000 position in degrees; ``g`` / ``bp`` / ``rp`` the G / BP / RP
-    magnitudes; ``parallax`` in mas; ``pmra`` / ``pmdec`` the proper motion
-    in mas/yr (RA includes the cos(Dec) factor, as Gaia publishes it). The
-    photometric / astrometric fields are ``None`` when Gaia has no value.
+    magnitudes; ``parallax`` / ``parallax_error`` the parallax in mas and its
+    1-sigma error; ``pmra`` / ``pmra_error``, ``pmdec`` / ``pmdec_error`` the
+    proper motion in mas/yr (RA includes the cos(Dec) factor, as Gaia
+    publishes it) and its 1-sigma error. The photometric / astrometric
+    fields are ``None`` when Gaia has no value.
     """
 
     source_id: int
@@ -216,8 +236,11 @@ class GaiaStar:
     bp: float | None = None
     rp: float | None = None
     parallax: float | None = None
+    parallax_error: float | None = None
     pmra: float | None = None
+    pmra_error: float | None = None
     pmdec: float | None = None
+    pmdec_error: float | None = None
 
     @property
     def coord(self) -> J2000Coord:
@@ -500,8 +523,11 @@ def _tap_row_to_star(row: Any, columns: Mapping[str, int]) -> GaiaStar:
         bp=_optional_float(cell("bp"), field="BPmag"),
         rp=_optional_float(cell("rp"), field="RPmag"),
         parallax=_optional_float(cell("parallax"), field="Plx"),
+        parallax_error=_optional_float(cell("parallax_error"), field="PlxError"),
         pmra=_optional_float(cell("pmra"), field="pmRA"),
+        pmra_error=_optional_float(cell("pmra_error"), field="pmRAError"),
         pmdec=_optional_float(cell("pmdec"), field="pmDE"),
+        pmdec_error=_optional_float(cell("pmdec_error"), field="pmDEError"),
     )
 
 
@@ -534,8 +560,27 @@ def parse_gaia_response(payload: Any) -> list[GaiaStar]:
 
 #: The fields of a serialized :class:`GaiaStar` cache row.
 _STAR_FIELDS = frozenset(
-    {"source_id", "ra_deg", "dec_deg", "g", "bp", "rp", "parallax", "pmra", "pmdec"}
+    {
+        "source_id",
+        "ra_deg",
+        "dec_deg",
+        "g",
+        "bp",
+        "rp",
+        "parallax",
+        "parallax_error",
+        "pmra",
+        "pmra_error",
+        "pmdec",
+        "pmdec_error",
+    }
 )
+
+#: The cache-row fields every entry has carried since the cache format was
+#: introduced — cache entries written before the error columns were selected
+#: (``parallax_error`` / ``pmra_error`` / ``pmdec_error``) are still valid,
+#: the error fields just read back as ``None``.
+_REQUIRED_STAR_FIELDS = _STAR_FIELDS - {"parallax_error", "pmra_error", "pmdec_error"}
 
 
 def _star_to_row(star: GaiaStar) -> dict[str, Any]:
@@ -548,13 +593,20 @@ def _star_to_row(star: GaiaStar) -> dict[str, Any]:
         "bp": star.bp,
         "rp": star.rp,
         "parallax": star.parallax,
+        "parallax_error": star.parallax_error,
         "pmra": star.pmra,
+        "pmra_error": star.pmra_error,
         "pmdec": star.pmdec,
+        "pmdec_error": star.pmdec_error,
     }
 
 
 def _row_to_star(row: Mapping[str, Any]) -> GaiaStar:
-    """Rebuild a :class:`GaiaStar` from a cache row (inverse of :func:`_star_to_row`)."""
+    """Rebuild a :class:`GaiaStar` from a cache row (inverse of :func:`_star_to_row`).
+
+    The error fields are read with ``.get``: a cache row written before the
+    error columns were selected has no such keys and yields ``None``.
+    """
     return GaiaStar(
         source_id=int(row["source_id"]),
         ra_deg=float(row["ra_deg"]),
@@ -563,15 +615,20 @@ def _row_to_star(row: Mapping[str, Any]) -> GaiaStar:
         bp=row["bp"],
         rp=row["rp"],
         parallax=row["parallax"],
+        parallax_error=row.get("parallax_error"),
         pmra=row["pmra"],
+        pmra_error=row.get("pmra_error"),
         pmdec=row["pmdec"],
+        pmdec_error=row.get("pmdec_error"),
     )
 
 
 def _is_gaia_rows(payload: Any) -> bool:
-    """Validate a cached Gaia payload: a list of star-row dicts."""
+    """Validate a cached Gaia payload: a list of star-row dicts whose keys are
+    the required star fields plus at most the optional error fields."""
     return isinstance(payload, list) and all(
-        isinstance(row, dict) and set(row) == _STAR_FIELDS for row in payload
+        isinstance(row, dict) and _REQUIRED_STAR_FIELDS <= set(row) <= _STAR_FIELDS
+        for row in payload
     )
 
 
