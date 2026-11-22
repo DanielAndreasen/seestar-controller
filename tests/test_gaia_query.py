@@ -471,3 +471,186 @@ def test_query_gaia_cached_validates_inputs_before_anything(cache_dir, monkeypat
         gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache, g_limit=-3)
     with pytest.raises(ValueError):
         gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache, maxrec=0)
+
+
+# --- the endpoint chain: VizieR -> ESA Gaia mirror fallback ---------------------------------
+
+ESA_METADATA = [
+    {"name": name}
+    for name in (
+        "ra",
+        "dec",
+        "source_id",
+        "phot_g_mean_mag",
+        "phot_bp_mean_mag",
+        "phot_rp_mean_mag",
+        "parallax",
+        "pmra",
+        "pmdec",
+    )
+]
+
+
+def esa_payload(rows: list[dict]) -> dict:
+    """A TAP-JSON payload in the ESA Gaia archive (gea.esac.esa.int) shape."""
+    data = [
+        [
+            row["ra"],
+            row["dec"],
+            row["source_id"],
+            row["g"],
+            row["bp"],
+            row["rp"],
+            row["plx"],
+            row["pmra"],
+            row["pmde"],
+        ]
+        for row in rows
+    ]
+    return {"metadata": ESA_METADATA, "data": data}
+
+
+def test_build_cone_query_esa_mirror_uses_the_gaia_archive_dialect():
+    adql = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0, url=gq.ESA_GAIA_TAP_SYNC_URL)
+    assert '"gaiadr3.gaia_source"' in adql
+    for col in gq.ESA_GAIA_COLUMNS:
+        assert f'"{col}"' in adql
+    assert 'CONTAINS(POINT(\'ICRS\', "ra", "dec")' in adql
+    assert f"CIRCLE('ICRS', {CENTER_RA!r}, {CENTER_DEC!r}, {RADIUS_DEG!r})" in adql
+    assert '"phot_g_mean_mag" < 20.0' in adql
+    assert 'ORDER BY "phot_g_mean_mag"' in adql
+    # the VizieR dialect stays the default
+    adql_vizier = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0)
+    assert '"I/355/gaiadr3"' in adql_vizier
+    assert '"phot_g_mean_mag"' not in adql_vizier
+
+
+def test_query_gaia_falls_back_to_the_esa_mirror_when_vizier_is_unreachable(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_fetch(query, *, maxrec=gq.DEFAULT_MAXREC, timeout=gq.DEFAULT_TIMEOUT_S, url=gq.VIZIER_TAP_SYNC_URL):
+        calls.append({"query": query, "url": url})
+        if url == gq.VIZIER_TAP_SYNC_URL:
+            raise GaiaUnavailableError(f"could not reach Gaia TAP at {url}: timed out")
+        return esa_payload(sample_rows())  # the ESA mirror answers
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", fake_fetch)
+    stars = gq.query_gaia(CENTER_RA, CENTER_DEC, RADIUS_DEG)
+    # VizieR was tried first, the ESA mirror second — and answered
+    assert [c["url"] for c in calls] == [gq.VIZIER_TAP_SYNC_URL, gq.ESA_GAIA_TAP_SYNC_URL]
+    # each endpoint got the ADQL of its own dialect
+    assert '"I/355/gaiadr3"' in calls[0]["query"]
+    assert '"gaiadr3.gaia_source"' in calls[1]["query"]
+    # the ESA-archive-spelled response parses into the same rows
+    assert [s.source_id for s in stars] == [42, 3403768831985762944]
+    assert stars[0].g == pytest.approx(12.5)
+
+
+def test_query_gaia_all_endpoints_unreachable_raises_aggregated_unavailable(monkeypatch):
+    calls: list[str] = []
+
+    def fail(query, *, maxrec=gq.DEFAULT_MAXREC, timeout=gq.DEFAULT_TIMEOUT_S, url=gq.VIZIER_TAP_SYNC_URL):
+        calls.append(url)
+        raise GaiaUnavailableError(f"could not reach Gaia TAP at {url}: no route to host")
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", fail)
+    with pytest.raises(GaiaUnavailableError) as excinfo:
+        gq.query_gaia(CENTER_RA, CENTER_DEC, RADIUS_DEG)
+    assert calls == [gq.VIZIER_TAP_SYNC_URL, gq.ESA_GAIA_TAP_SYNC_URL]
+    message = str(excinfo.value)
+    assert gq.VIZIER_TAP_SYNC_URL in message and gq.ESA_GAIA_TAP_SYNC_URL in message
+    assert "no route to host" in message
+
+
+def test_query_gaia_explicit_url_pins_a_single_endpoint(monkeypatch):
+    calls: list[str] = []
+
+    def fake_fetch(query, *, maxrec=gq.DEFAULT_MAXREC, timeout=gq.DEFAULT_TIMEOUT_S, url=gq.VIZIER_TAP_SYNC_URL):
+        calls.append(url)
+        if url != "https://gaia.example.org/tap/sync":
+            raise AssertionError(f"unexpected endpoint {url}")
+        return gaia_payload(sample_rows())
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", fake_fetch)
+    stars = gq.query_gaia(CENTER_RA, CENTER_DEC, RADIUS_DEG, url="https://gaia.example.org/tap/sync")
+    assert calls == ["https://gaia.example.org/tap/sync"]  # no fallback chain
+    assert len(stars) == 2
+
+    # a pinned endpoint that is unreachable raises without trying the others
+    def fail(query, *, maxrec=gq.DEFAULT_MAXREC, timeout=gq.DEFAULT_TIMEOUT_S, url=gq.VIZIER_TAP_SYNC_URL):
+        calls.append(url)
+        raise GaiaUnavailableError(f"could not reach Gaia TAP at {url}: timed out")
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", fail)
+    calls.clear()
+    with pytest.raises(GaiaUnavailableError):
+        gq.query_gaia(CENTER_RA, CENTER_DEC, RADIUS_DEG, url="https://gaia.example.org/tap/sync")
+    assert calls == ["https://gaia.example.org/tap/sync"]
+
+
+def test_query_gaia_malformed_response_does_not_fall_back(monkeypatch):
+    calls: list[str] = []
+
+    def bad(query, *, maxrec=gq.DEFAULT_MAXREC, timeout=gq.DEFAULT_TIMEOUT_S, url=gq.VIZIER_TAP_SYNC_URL):
+        calls.append(url)
+        return {"metadata": [], "data": []}  # reachable, but not a Gaia payload
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", bad)
+    with pytest.raises(GaiaResponseError):
+        gq.query_gaia(CENTER_RA, CENTER_DEC, RADIUS_DEG)
+    assert calls == [gq.VIZIER_TAP_SYNC_URL]  # a response error is not "unreachable"
+
+
+def test_query_gaia_cached_falls_back_to_esa_and_the_result_is_cached(cache_dir, monkeypatch):
+    calls: list[str] = []
+
+    def fake_fetch(query, *, maxrec=gq.DEFAULT_MAXREC, timeout=gq.DEFAULT_TIMEOUT_S, url=gq.VIZIER_TAP_SYNC_URL):
+        calls.append(url)
+        if url == gq.VIZIER_TAP_SYNC_URL:
+            raise GaiaUnavailableError(f"could not reach Gaia TAP at {url}: timed out")
+        return esa_payload(sample_rows())
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", fake_fetch)
+    cache = QueryCache(cache_dir=cache_dir, ttl=3600.0)
+    stars1 = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
+    assert [c for c in calls] == [gq.VIZIER_TAP_SYNC_URL, gq.ESA_GAIA_TAP_SYNC_URL]
+    assert [s.source_id for s in stars1] == [42, 3403768831985762944]
+    # the fallback result is cached: the repeat lookup makes no network call
+    stars2 = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
+    assert len(calls) == 2
+    assert [(s.source_id, s.g) for s in stars2] == [(s.source_id, s.g) for s in stars1]
+
+
+def test_query_gaia_cached_cache_hit_wins_without_any_network_call(cache_dir, monkeypatch):
+    calls: list[str] = []
+
+    def ok(query, *, maxrec=gq.DEFAULT_MAXREC, timeout=gq.DEFAULT_TIMEOUT_S, url=gq.VIZIER_TAP_SYNC_URL):
+        calls.append(url)
+        return gaia_payload(sample_rows())
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", ok)
+    cache = QueryCache(cache_dir=cache_dir, ttl=3600.0)
+    stars1 = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
+    assert calls == [gq.VIZIER_TAP_SYNC_URL]
+
+    def fail(query, *, maxrec=gq.DEFAULT_MAXREC, timeout=gq.DEFAULT_TIMEOUT_S, url=gq.VIZIER_TAP_SYNC_URL):
+        calls.append(url)
+        raise GaiaUnavailableError(f"could not reach Gaia TAP at {url}: timed out")
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", fail)
+    stars2 = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
+    assert len(calls) == 1  # fresh cache entry: no endpoint is contacted at all
+    assert [s.source_id for s in stars2] == [s.source_id for s in stars1]
+
+
+def test_query_gaia_cached_all_endpoints_down_without_cache_raises_unavailable(cache_dir, monkeypatch):
+    def fail(query, *, maxrec=gq.DEFAULT_MAXREC, timeout=gq.DEFAULT_TIMEOUT_S, url=gq.VIZIER_TAP_SYNC_URL):
+        raise GaiaUnavailableError(f"could not reach Gaia TAP at {url}: timed out")
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", fail)
+    cache = QueryCache(cache_dir=cache_dir, ttl=3600.0)
+    with pytest.raises(GaiaUnavailableError) as excinfo:
+        gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
+    message = str(excinfo.value)
+    assert "no cached result" in message
+    assert gq.VIZIER_TAP_SYNC_URL in message and gq.ESA_GAIA_TAP_SYNC_URL in message
