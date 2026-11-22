@@ -1,0 +1,154 @@
+[
+  {
+    "step": "open_project",
+    "t": 1795363145.095,
+    "path": "/home/daniel/SeestarProjects/ngc7789",
+    "name": "NGC7789",
+    "slug": "ngc7789"
+  },
+  {
+    "step": "controllers wired",
+    "t": 1795363145.096,
+    "viewer_project": "NGC7789",
+    "crossmatch_project": "NGC7789",
+    "hr_project": "NGC7789"
+  },
+  {
+    "step": "open_stack",
+    "t": 1795363145.345,
+    "frame_id": 3,
+    "label": "2026-11-20T21:33:38.685+00:00 \u2014 M 31",
+    "shape": [
+      1920,
+      1080
+    ],
+    "kind": "stack"
+  },
+  {
+    "step": "load_frame_wcs",
+    "t": 1795363145.345,
+    "frame_id": 3,
+    "solver": "solve-field",
+    "n_stars": 1,
+    "center": [
+      0.9651997535481643,
+      55.345416063739485
+    ]
+  },
+  {
+    "step": "solve.refresh_solved",
+    "t": 1795363145.345,
+    "status": "solved (solve-field, 1 stars)",
+    "error": null
+  },
+  {
+    "step": "solve_open_stack",
+    "t": 1795363149.393,
+    "status": "solved: 1 stars (solve-field)",
+    "error": null,
+    "solver": "solve-field",
+    "n_stars": 1,
+    "rms_arcsec": null,
+    "secs": 4.0
+  },
+  {
+    "step": "crossmatch before",
+    "t": 1795363149.393,
+    "crossmatched": [
+      3
+    ]
+  },
+  {
+    "step": "run_crossmatch (attempt 1, default cache)",
+    "t": 1795363194.811,
+    "status": "47/104 matched \u00b7 r=1.5\u2033 \u00b7 G<20",
+    "error": null,
+    "stack_frame_id": 3,
+    "n_rows": 104,
+    "radius_arcsec": 1.5,
+    "g_limit": 20.0,
+    "secs": 45.4
+  },
+  {
+    "step": "crossmatch after",
+    "t": 1795363194.811,
+    "crossmatched": [
+      [
+        3,
+        47,
+        104
+      ]
+    ]
+  },
+  {
+    "step": "hr.refresh (1)",
+    "t": 1795363194.864,
+    "stacks": [
+      3
+    ],
+    "frame_id": 3,
+    "status": "47/104 matched \u00b7 46 CMD / 44 H-R points \u00b7 overlay 0 pts",
+    "error": null
+  },
+  {
+    "step": "hr.refresh (2)",
+    "t": 1795363194.9,
+    "frame_id": 3,
+    "stack_label": "2026-11-20T21:33:38.685+00:00 \u2014 M 31",
+    "n_table": 104,
+    "n_cmd": 46,
+    "n_hr": 44,
+    "n_overlay": 0,
+    "params": null,
+    "image_size": [
+      1080,
+      1920
+    ],
+    "status": "47/104 matched \u00b7 46 CMD / 44 H-R points \u00b7 overlay 0 pts",
+    "error": null
+  },
+  {
+    "step": "export png",
+    "t": 1795363194.963,
+    "kind": "cmd",
+    "n_points": 46,
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/cmd.png"
+  },
+  {
+    "step": "export png",
+    "t": 1795363195.008,
+    "kind": "hr",
+    "n_points": 44,
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/hr.png"
+  },
+  {
+    "step": "export png",
+    "t": 1795363195.039,
+    "kind": "stack-marked",
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/stack-marked.png"
+  },
+  {
+    "step": "export csv",
+    "t": 1795363195.046,
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-table.csv",
+    "n_rows": 104
+  },
+  {
+    "step": "export png",
+    "t": 1795363195.169,
+    "kind": "crossmatch-overlay",
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-overlay.png"
+  },
+  {
+    "step": "done",
+    "t": 1795363195.169,
+    "exports": {
+      "cmd.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/cmd.png",
+      "hr.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/hr.png",
+      "stack-marked.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/stack-marked.png",
+      "crossmatch-table.csv": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-table.csv",
+      "crossmatch-overlay.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-overlay.png"
+    },
+    "attempt1_error": null
+  }
+]
