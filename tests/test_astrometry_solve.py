@@ -518,9 +518,13 @@ def test_solve_frame_bad_parameters():
 
 #: A fake ``solve-field`` executable: parses ``--out <prefix>`` and writes a
 #: FITS ``<prefix>.wcs`` with a known WCS (the true WCS of the synthetic
-#: frame). Env switches: ``FAKE_SOLVE_FAIL=1`` exits 3 with a stderr message,
-#: ``FAKE_SOLVE_SLEEP=<s>`` sleeps first, ``FAKE_SOLVE_NO_WCS=1`` exits 0
-#: without writing the .wcs.
+#: frame), a FITS BINTABLE ``<prefix>.match`` with one row per injected star
+#: (like the real solve-field's match table), and prints the "solved with N
+#: stars, RMS x arcsec" line on stdout. Env switches: ``FAKE_SOLVE_FAIL=1``
+#: exits 3 with a stderr message, ``FAKE_SOLVE_SLEEP=<s>`` sleeps first,
+#: ``FAKE_SOLVE_NO_WCS=1`` exits 0 without writing the .wcs,
+#: ``FAKE_SOLVE_NO_MATCH=1`` skips the .match table, ``FAKE_SOLVE_NO_STDOUT_STATS=1``
+#: skips the stdout stats line.
 FAKE_SOLVE_FIELD = f"""#!{sys.executable}
 import os
 import sys
@@ -540,6 +544,23 @@ if not os.environ.get("FAKE_SOLVE_NO_WCS"):
     from astropy.io import fits as pyfits
     header = pyfits.Header({true_header()!r})
     pyfits.PrimaryHDU(header=header).writeto(out + ".wcs")
+if not os.environ.get("FAKE_SOLVE_NO_MATCH"):
+    import numpy as np
+    from astropy.io import fits as pyfits
+    n = {len(STARS)}
+    cols = [
+        pyfits.Column(name="field_id", format="K", array=np.arange(n, dtype=np.int64)),
+        pyfits.Column(name="index_id", format="K", array=np.arange(n, dtype=np.int64)),
+        pyfits.Column(name="field_x", format="D", array=np.zeros(n)),
+        pyfits.Column(name="field_y", format="D", array=np.zeros(n)),
+        pyfits.Column(name="field_ra", format="D", array=np.zeros(n)),
+        pyfits.Column(name="field_dec", format="D", array=np.zeros(n)),
+        pyfits.Column(name="index_ra", format="D", array=np.zeros(n)),
+        pyfits.Column(name="index_dec", format="D", array=np.zeros(n)),
+    ]
+    pyfits.BinTableHDU.from_columns(cols).writeto(out + ".match")
+if not os.environ.get("FAKE_SOLVE_NO_STDOUT_STATS"):
+    print("Field 1: solved with {len(STARS)} stars, RMS 0.42 arcsec")
 sys.exit(0)
 """
 
@@ -576,6 +597,62 @@ def test_solve_frame_solve_field_binary_success(fake_solve_field_bin):
         assert residual_arcsec(result.wcs, cx, cy) < 1e-6
     # the cards round-trip
     assert residual_arcsec(cards_to_wcs(result.cards), 100.0, 150.0) < 1e-6
+    # the matched-star count and RMS are parsed from the solve-field outputs
+    # (the .match table row count and the "solved with N stars, RMS x arcsec"
+    # stdout line) instead of the old hardcoded n_stars=0 / rms_arcsec=None
+    assert result.n_stars == len(STARS)
+    assert result.rms_arcsec == pytest.approx(0.42)
+
+
+def test_solve_frame_solve_field_counts_from_stdout_only(fake_solve_field_bin, monkeypatch):
+    # no .match table: both numbers come from the stdout line
+    monkeypatch.setenv("FAKE_SOLVE_NO_MATCH", "1")
+    result = solve_frame(
+        data=make_image(), header=blind_header(), solver=SOLVER_SOLVE_FIELD
+    )
+    assert result.solver == SOLVER_SOLVE_FIELD
+    assert result.n_stars == len(STARS)
+    assert result.rms_arcsec == pytest.approx(0.42)
+
+
+def test_solve_frame_solve_field_counts_from_match_file_only(fake_solve_field_bin, monkeypatch):
+    # no stdout stats line: the count comes from the .match rows, the RMS is
+    # not reported anywhere and stays None
+    monkeypatch.setenv("FAKE_SOLVE_NO_STDOUT_STATS", "1")
+    result = solve_frame(
+        data=make_image(), header=blind_header(), solver=SOLVER_SOLVE_FIELD
+    )
+    assert result.solver == SOLVER_SOLVE_FIELD
+    assert result.n_stars == len(STARS)
+    assert result.rms_arcsec is None
+
+
+def test_parse_solve_field_output_line():
+    from seestar_controller.astrometry.solve import _parse_solve_field_output
+
+    n_stars, rms = _parse_solve_field_output(
+        "simplexy: found 1257 sources.\n"
+        "Field 1: solved with 24 stars, RMS 0.42 arcsec\n"
+    )
+    assert n_stars == 24
+    assert rms == pytest.approx(0.42)
+    # the last occurrence wins (the final solution)
+    n_stars, rms = _parse_solve_field_output(
+        "Field 1: solved with 8 stars, RMS 3.1 arcsec\n"
+        "Field 1: solved with 24 stars, RMS 0.42 arcsec\n"
+    )
+    assert n_stars == 24
+    assert rms == pytest.approx(0.42)
+    # variants of the RMS wording
+    n_stars, rms = _parse_solve_field_output("solved: RMS: 1.5e-1 arcsec")
+    assert n_stars is None
+    assert rms == pytest.approx(0.15)
+    # a background "RMS:" without arcsec (SExtractor noise) is ignored
+    assert _parse_solve_field_output("Background: -0.16 RMS: 1.78 / Threshold: 2") == (
+        None,
+        None,
+    )
+    assert _parse_solve_field_output("no solution found") == (None, None)
 
 
 def test_solve_frame_auto_prefers_solve_field_when_on_path(fake_solve_field_bin):
