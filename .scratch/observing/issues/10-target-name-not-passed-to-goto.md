@@ -6,9 +6,9 @@
 
 **Blocked by:** None (observing 01-05 done)
 
-**Status:** open — found in live test 2026-11-22
+**Status:** implemented in 0380ef8 (pending review)
 
-- [ ] Executor passes the queue entry name to `Device.goto(name=...)`
-- [ ] Frame meta/filenames carry the target name
-- [ ] Tests: goto params include name; stored frame target == "NGC 869"
-- [ ] Full suite green
+- [x] Executor passes the queue entry name to `Device.goto(name=...)`
+- [x] Frame meta/filenames carry the target name
+- [x] Tests: goto params include name; stored frame target == "NGC 869"
+- [x] Full suite green
