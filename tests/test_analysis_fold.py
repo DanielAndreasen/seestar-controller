@@ -54,6 +54,7 @@ from test_analysis_periodogram import (
 
 from seestar_controller import analysis
 from seestar_controller.analysis import fold as fold_module
+from seestar_controller.analysis import lightcurve as lightcurve_module
 from seestar_controller.analysis.fold import (
     PERIOD_CONFIG_KEY,
     SOURCE_MANUAL,
@@ -406,12 +407,18 @@ def test_compute_periodogram_failures_are_clean_period_errors(project):
     assert ctrl.snapshot.period is None
 
 
-def test_snapshot_never_raises_on_a_store_failure(project):
+def test_snapshot_never_raises_on_a_store_failure(project, monkeypatch):
     two_session_project(project)
     ctrl = PeriodController(project=project)
     ctrl.set_manual_period(0.1)
     assert ctrl.snapshot.error is None
-    project.close()  # the db is gone now
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("injected store failure")
+
+    # issue 08: a closed db handle is revived by ensure_open(), so the failure
+    # is injected at the lightcurve store read instead of via project.close()
+    monkeypatch.setattr(lightcurve_module, "lightcurve", boom)
     snap = ctrl.snapshot
     assert snap.error is not None
     assert "Error" in snap.error

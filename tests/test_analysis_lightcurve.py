@@ -409,11 +409,18 @@ def test_sessions_lists_the_project_sessions_in_started_order(project):
 # --- store failure -> error snapshot (never raises) ---------------------------------------------------------
 
 
-def test_store_failure_yields_error_snapshot_not_a_crash(project):
+def test_store_failure_yields_error_snapshot_not_a_crash(project, monkeypatch):
     two_session_project(project)
     ctrl = LightcurveController(project)
     assert ctrl.snapshot.error is None
-    project.close()  # the db is gone now
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("injected store failure")
+
+    # issue 08: a closed db handle is revived by ensure_open(), so the failure
+    # is injected at the store function instead of via project.close()
+    monkeypatch.setattr(lightcurve_module, "lightcurve", boom)
+    monkeypatch.setattr(lightcurve_module, "list_sessions", boom)
     snap = ctrl.snapshot
     assert snap.points == ()
     assert snap.sessions == ()

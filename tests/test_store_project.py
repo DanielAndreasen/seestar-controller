@@ -613,6 +613,83 @@ def test_open_closes_db_on_validation_failure(root, monkeypatch):
         opened[0].execute("SELECT 1")  # closed, not leaked
 
 
+# --- re-open of an open path + ensure_open (issue 08) --------------------------------
+
+
+def test_open_project_twice_on_the_same_path_returns_the_existing_handle(root):
+    """Issue 08: re-opening an ALREADY-OPEN path is a no-op — the existing live
+    handle is returned, not a new Project with a second db connection (so the
+    handle swap that left controllers with a closed db cannot happen)."""
+    p = create_project("M 42", root=root)
+    q = open_project(p.path)
+    assert q is p
+    # ... also via other spellings of the same (resolved) path
+    assert open_project(str(p.path) + "/") is p
+    assert open_project(root / "m-42" / ".." / "m-42") is p
+    # the single handle is registered as open: the delete still refuses
+    with pytest.raises(ProjectOpenError):
+        delete_project(p.path)
+    p.close()
+    delete_project(p.path)
+    assert not p.path.exists()
+
+
+def test_open_project_fresh_opens_a_second_handle_on_an_open_path(root):
+    """``fresh=True`` opts out of the issue-08 no-op: a second live handle
+    with its own db connection is opened on the already-open path (the report
+    worker thread needs a connection bound to its own thread)."""
+    p = create_project("M 42", root=root)
+    q = open_project(p.path, fresh=True)
+    assert q is not p
+    assert q.db is not p.db
+    with pytest.raises(ProjectOpenError):
+        delete_project(p.path)  # refused while either handle is open
+    q.close()
+    with pytest.raises(ProjectOpenError):
+        delete_project(p.path)  # p is still open
+    p.close()
+    delete_project(p.path)
+    assert not p.path.exists()
+
+
+def test_ensure_open_reopens_a_closed_db_handle(root):
+    """Issue 08: a handle whose db was closed is revived in place by
+    :meth:`Project.ensure_open` — the next store access works (no
+    ProgrammingError) and the handle counts as open again for delete_project."""
+    p = create_project("M 42", root=root)
+    p.close()
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        p.db.execute("SELECT 1")
+    p.ensure_open()
+    assert p.db.execute("SELECT 1").fetchone() == (1,)
+    with pytest.raises(ProjectOpenError):
+        delete_project(p.path)  # the revived handle is registered as open again
+    # ensure_open on a live handle is a no-op (same connection object kept)
+    db = p.db
+    p.ensure_open()
+    assert p.db is db
+    p.close()
+    delete_project(p.path)
+    assert not p.path.exists()
+
+
+def test_ensure_open_revives_the_stale_handle_a_controller_keeps(root):
+    """The issue-08 controller scenario at store level: the controller keeps
+    the old handle, that handle's db is closed and the same path is re-opened
+    (a NEW Project, because the old handle was closed) — ensure_open on the
+    old handle makes its store calls work again, concurrently with the new
+    handle (WAL)."""
+    p = create_project("M 42", root=root)
+    p.close()
+    reopened = open_project(p.path)
+    assert reopened is not p  # the closed handle is not in _OPEN_PROJECTS anymore
+    p.ensure_open()
+    assert p.db.execute("SELECT 1").fetchone() == (1,)
+    assert reopened.db.execute("SELECT 1").fetchone() == (1,)
+    reopened.close()
+    p.close()
+
+
 # --- save_config: atomic write ------------------------------------------------------
 
 
@@ -761,7 +838,8 @@ def test_delete_refuses_while_the_project_is_open(root):
 
 def test_delete_refuses_while_any_open_handle_exists(root):
     p = create_project("M 42", root=root)
-    q = open_project(p.path)  # a second open handle on the same project
+    q = open_project(p.path, fresh=True)  # a second live handle on the same project
+    assert q is not p
     with pytest.raises(ProjectOpenError):
         delete_project(p.path)
     q.close()

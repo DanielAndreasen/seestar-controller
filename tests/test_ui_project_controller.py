@@ -248,6 +248,9 @@ def test_restore_clears_stale_value_when_load_kept_it(settings_file, root):
     fresh = load_state(settings_file)
     assert fresh.get_setting("last_project") == str(project.path)
     (project.path / "project.json").write_text("{ not json", encoding="utf-8")
+    # since issue 08 a plain re-open of an ALREADY-OPEN path returns the live
+    # handle without re-validating, so simulate the restart: no handle open yet
+    project.close()
     controller = ProjectController(fresh)
     assert controller.restore() is None
     assert controller.current is None
@@ -315,6 +318,9 @@ def test_open_non_project_directory_raises(controller, root):
 def test_open_corrupt_project_json_raises(controller, root):
     project = create_project("M 42", root=root)
     (project.path / "project.json").write_text("{ nope", encoding="utf-8")
+    # issue 08: re-opening an ALREADY-OPEN path is a no-op (the live handle is
+    # returned without re-validating) — close it first, so this open validates
+    project.close()
     with pytest.raises(InvalidProjectError):
         controller.open_project(project.path)
     assert controller.current is None
@@ -590,12 +596,26 @@ def test_delete_missing_path_raises_and_changes_nothing(controller, root):
     assert events == []
 
 
-def test_delete_current_project_rolls_back_when_the_delete_is_refused(controller, state, root):
-    """The current project is closed for the delete attempt, but another open
-    handle refuses it — the controller state is restored unchanged, and the
-    delete goes through once that handle is closed."""
+def test_delete_current_project_rolls_back_when_the_delete_is_refused(controller, state, root, monkeypatch):
+    """The current project is closed for the delete attempt, but the delete is
+    refused — the controller state is restored unchanged (the project is
+    re-opened and live again, ``last_project`` kept, no event fired), and the
+    delete goes through once it is no longer refused.
+
+    Since issue 08 a plain re-open of an open path returns the same handle, so
+    a second open handle on the current path can no longer be produced via
+    :func:`open_project`; the refusal is therefore injected at the store
+    boundary (the store-level refusal itself is covered by
+    tests/test_store_project.py)."""
+    from seestar_controller.ui import project_controller as project_controller_module
+
     project = controller.create_project("M 42")
-    second = open_project(project.path)  # another open handle on the current project
+    real_delete = project_controller_module.delete_project
+
+    def refuse(path):
+        raise ProjectOpenError("project is open")
+
+    monkeypatch.setattr(project_controller_module, "delete_project", refuse)
     events: list[ProjectEvent] = []
     controller.add_listener(events.append)
     with pytest.raises(ProjectOpenError):
@@ -605,8 +625,10 @@ def test_delete_current_project_rolls_back_when_the_delete_is_refused(controller
     assert state.get_setting("last_project") == str(project.path)
     assert project.path.is_dir()
     assert events == []
-    second.close()
+    # the rollback re-opened the project: the restored handle is live again
+    assert controller.current.db.execute("SELECT 1").fetchone() == (1,)
     # now the delete goes through
+    monkeypatch.setattr(project_controller_module, "delete_project", real_delete)
     controller.delete_project(project.path)
     assert not project.path.exists()
     assert controller.current is None

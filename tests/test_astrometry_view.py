@@ -49,6 +49,7 @@ from seestar_controller.store import (
     close_session,
     create_project,
     load_frame_wcs,
+    open_project,
     read_frame_bytes,
     save_crossmatch,
     save_frame_wcs,
@@ -406,6 +407,39 @@ def test_solve_controller_without_stack_reports_error(project):
     assert snap.error is not None and "no stack open" in snap.error
     with pytest.raises(AstrometryError):
         controller.default_export_path("/tmp")
+
+
+def test_solve_controller_revives_a_closed_handle_after_reopen(
+    project, plain_stack_frame, monkeypatch
+):
+    """Issue 08 regression: the controller keeps the OLD Project handle; that
+    handle's db is closed (night stopped) and the same path is re-opened in
+    the Projects view (a NEW Project, because the old handle was closed). The
+    next solve_open_stack must not hit ``sqlite3.ProgrammingError: Cannot
+    operate on a closed database`` — the ``_call_store`` path revives the old
+    handle via :meth:`Project.ensure_open`."""
+    frame = plain_stack_frame
+    controller = SolveController(project=project)
+    controller._adopt_stack(frame.id, "lbl")
+    monkeypatch.setattr(
+        astrometry_session, "solve_frame", lambda **kwargs: _fake_result()
+    )
+    # night stopped: the handle the controller holds is closed; re-opening the
+    # same path yields a NEW handle (the closed one is not reused)
+    project.close()
+    reopened = open_project(project.path)
+    assert reopened is not project
+    snap = controller.solve_open_stack()
+    assert snap.error is None  # no ProgrammingError
+    assert snap.solved is not None and snap.solved.solver == "gaia"
+    assert load_frame_wcs(project, frame.id) is not None  # the revived handle works
+    # ... and the same through the marshalled (non-db-thread) _call_store branch
+    controller._db_thread_id = -1  # pretend the db is owned by another thread
+    snap = controller.solve_open_stack()
+    assert snap.error is None
+    assert snap.solved is not None
+    reopened.close()
+    project.close()  # idempotent
 
 
 def test_solve_controller_export_and_listeners(project, stack_frame, tmp_path):
