@@ -610,14 +610,21 @@ ESA_METADATA = [
         "phot_bp_mean_mag",
         "phot_rp_mean_mag",
         "parallax",
+        "parallax_error",
         "pmra",
+        "pmra_error",
         "pmdec",
+        "pmdec_error",
     )
 ]
 
 
 def esa_payload(rows: list[dict]) -> dict:
-    """A TAP-JSON payload in the ESA Gaia archive (gea.esac.esa.int) shape."""
+    """A TAP-JSON payload in the ESA Gaia archive (gea.esac.esa.int) shape.
+
+    The row dicts are the ``sample_rows()`` shape: the error cells come from
+    the optional plx_err / pmra_err / pmde_err keys (absent -> NULL on wire).
+    """
     data = [
         [
             row["ra"],
@@ -627,8 +634,11 @@ def esa_payload(rows: list[dict]) -> dict:
             row["bp"],
             row["rp"],
             row["plx"],
+            row.get("plx_err"),
             row["pmra"],
+            row.get("pmra_err"),
             row["pmde"],
+            row.get("pmde_err"),
         ]
         for row in rows
     ]
@@ -638,8 +648,13 @@ def esa_payload(rows: list[dict]) -> dict:
 def test_build_cone_query_esa_mirror_uses_the_gaia_archive_dialect():
     adql = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0, url=gq.ESA_GAIA_TAP_SYNC_URL)
     assert 'FROM "gaiadr3"."gaia_source"' in adql
+    # the ESA dialect selects the same 12 fields as the VizieR dialect,
+    # including the three error columns (archive spellings)
+    assert len(gq.ESA_GAIA_COLUMNS) == len(gq.GAIA_COLUMNS) == 12
     for col in gq.ESA_GAIA_COLUMNS:
         assert f'"{col}"' in adql
+    for error_col in ("parallax_error", "pmra_error", "pmdec_error"):
+        assert f'"{error_col}"' in adql
     assert 'CONTAINS(POINT(\'ICRS\', "ra", "dec")' in adql
     assert f"CIRCLE('ICRS', {CENTER_RA!r}, {CENTER_DEC!r}, {RADIUS_DEG!r})" in adql
     assert '"phot_g_mean_mag" < 20.0' in adql
@@ -681,6 +696,14 @@ def test_query_gaia_falls_back_to_the_esa_mirror_when_vizier_is_unreachable(monk
     # the ESA-archive-spelled response parses into the same rows
     assert [s.source_id for s in stars] == [42, 3403768831985762944]
     assert stars[0].g == pytest.approx(12.5)
+    # ... including the error fields the ESA query now selects (issue 05)
+    bright = stars[0]
+    assert bright.parallax_error is None and bright.pmra_error is None and bright.pmdec_error is None
+    faint = stars[1]
+    assert faint.parallax == pytest.approx(0.47)
+    assert faint.parallax_error == pytest.approx(0.03)
+    assert faint.pmra_error == pytest.approx(0.04)
+    assert faint.pmdec_error == pytest.approx(0.05)
 
 
 def test_query_gaia_all_endpoints_unreachable_raises_aggregated_unavailable(monkeypatch):
@@ -752,10 +775,14 @@ def test_query_gaia_cached_falls_back_to_esa_and_the_result_is_cached(cache_dir,
     stars1 = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
     assert [c for c in calls] == [gq.VIZIER_TAP_SYNC_URL, gq.ESA_GAIA_TAP_SYNC_URL]
     assert [s.source_id for s in stars1] == [42, 3403768831985762944]
+    assert stars1[1].parallax_error == pytest.approx(0.03)
+    assert stars1[1].pmra_error == pytest.approx(0.04)
+    assert stars1[1].pmdec_error == pytest.approx(0.05)
     # the fallback result is cached: the repeat lookup makes no network call
     stars2 = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
     assert len(calls) == 2
     assert [(s.source_id, s.g) for s in stars2] == [(s.source_id, s.g) for s in stars1]
+    assert [s.parallax_error for s in stars2] == [s.parallax_error for s in stars1]
 
 
 def test_query_gaia_cached_cache_hit_wins_without_any_network_call(cache_dir, monkeypatch):

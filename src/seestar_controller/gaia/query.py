@@ -147,6 +147,8 @@ GAIA_COLUMNS = (
 
 #: The Gaia DR3 columns selected by the cone search on the ESA Gaia archive,
 #: in SELECT order (the archive's own spellings, parsed via the same aliases).
+#: The same 12 fields as :data:`GAIA_COLUMNS`, so an ESA-mirror fallback
+#: carries the error columns too (the H-R diagram needs them for the SNR cut).
 ESA_GAIA_COLUMNS = (
     "ra",
     "dec",
@@ -155,8 +157,11 @@ ESA_GAIA_COLUMNS = (
     "phot_bp_mean_mag",
     "phot_rp_mean_mag",
     "parallax",
+    "parallax_error",
     "pmra",
+    "pmra_error",
     "pmdec",
+    "pmdec_error",
 )
 
 #: Accepted wire-name aliases per GaiaStar field (VizieR TAP spells them
