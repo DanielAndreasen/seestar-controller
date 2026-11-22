@@ -120,6 +120,28 @@ def blank_image(seed: int = 7) -> np.ndarray:
     return np.ascontiguousarray(data, dtype=np.float32)
 
 
+#: The channel gains of the synthetic RGB stack (its luminance is the mean).
+RGB_GAINS = (1.0, 0.8, 0.6)
+
+
+def make_rgb_stack(seed: int = 42) -> np.ndarray:
+    """The synthetic frame as an RGB stack in channel-first layout
+    ``(3, SIZE, SIZE)`` (the Seestar stack layout): the same stars in every
+    channel with a different gain plus independent noise, so the 2-D
+    luminance is the channel mean."""
+    base = make_image(seed)
+    rng = np.random.default_rng(seed + 1)
+    channels = [
+        base * gain + rng.normal(0.0, NOISE, size=base.shape) for gain in RGB_GAINS
+    ]
+    return np.ascontiguousarray(np.stack(channels, axis=0), dtype=np.float32)
+
+
+def rgb_channel_last(rgb_channel_first: np.ndarray) -> np.ndarray:
+    """The same RGB stack in channel-last layout ``(SIZE, SIZE, 3)``."""
+    return np.ascontiguousarray(np.moveaxis(rgb_channel_first, 0, -1), dtype=np.float32)
+
+
 def gaia_stars_at_stars(
     offset_arcsec: tuple[float, float] = (0.0, 0.0),
     noise_arcsec: float = 0.0,
@@ -324,9 +346,44 @@ def test_write_wcs_to_fits_errors(tmp_path):
 def test_read_fits_bytes():
     data, header = read_fits_bytes(fits_bytes(make_image(), blind_header()))
     assert data.shape == (SIZE, SIZE)
+    assert np.allclose(data, make_image())  # a mono 2-D frame passes through unchanged
     assert header["RA"] == pytest.approx(CRVAL[0])
     with pytest.raises(SolveError):
         read_fits_bytes(b"garbage, not fits")
+
+
+# --- RGB/RGBA stack frames (issue 04) ------------------------------------------------------
+
+
+def test_read_fits_bytes_rgb_both_layouts_become_2d_luminance():
+    rgb_cf = make_rgb_stack()  # (3, SIZE, SIZE) channel-first
+    rgb_cl = rgb_channel_last(rgb_cf)  # (SIZE, SIZE, 3) channel-last
+    expected = np.asarray(rgb_cf, dtype=np.float32).mean(axis=0)
+    for rgb in (rgb_cf, rgb_cl):
+        data, header = read_fits_bytes(fits_bytes(rgb, blind_header()))
+        assert data.shape == (SIZE, SIZE)
+        assert data.dtype == np.float32
+        assert np.allclose(data, expected, rtol=1e-6, atol=1e-4)
+        assert header["RA"] == pytest.approx(CRVAL[0])
+
+
+def test_read_fits_bytes_rgba_both_layouts_become_2d_luminance():
+    base = make_image()
+    rgba_cf = np.stack([base, base * 0.5, base * 0.25, base * 0.125], axis=0)  # (4, H, W)
+    rgba_cl = np.moveaxis(rgba_cf, 0, -1)  # (H, W, 4)
+    expected = np.asarray(rgba_cf, dtype=np.float32).mean(axis=0)
+    for rgba in (rgba_cf, rgba_cl):
+        data, _header = read_fits_bytes(fits_bytes(rgba))
+        assert data.shape == (SIZE, SIZE)
+        assert data.dtype == np.float32
+        assert np.allclose(data, expected, rtol=1e-6, atol=1e-4)
+
+
+def test_read_fits_bytes_rejects_non_image_shapes():
+    with pytest.raises(SolveError, match="2-D"):
+        read_fits_bytes(fits_bytes(np.zeros((2, 3, 8, 8), dtype=np.float32)))  # 4-D
+    with pytest.raises(SolveError, match="2-D"):
+        read_fits_bytes(fits_bytes(np.zeros((2, 5, 5), dtype=np.float32)))  # 3-D, not RGB/RGBA
 
 
 # --- the Gaia pattern-match fallback --------------------------------------------------------
@@ -415,6 +472,43 @@ def test_solve_fits_file_from_path_and_header_round_trip(tmp_path):
     result2 = solve_fits_file(path, solver=SOLVER_GAIA, gaia_query=query)
     assert result2.n_stars == len(STARS)
     assert residual_arcsec(result2.wcs, 100.0, 150.0) < RESIDUAL_TOL_ARCSEC
+
+
+def test_solve_frame_gaia_rgb_stack_both_layouts():
+    # issue 04: a Seestar-style RGB stack — (3, H, W) channel-first and its
+    # (H, W, 3) channel-last twin — both collapse to the same 2-D luminance
+    # and solve
+    rgb_cf = make_rgb_stack()
+    for rgb in (rgb_cf, rgb_channel_last(rgb_cf)):
+        query = fake_query(gaia_stars_at_stars())
+        result = solve_frame(
+            data=rgb,
+            header=blind_header(),
+            solver=SOLVER_GAIA,
+            gaia_query=query,
+            pixel_scale_hint=SCALE_ARCSEC,
+        )
+        assert result.solver == SOLVER_GAIA
+        assert result.n_stars == len(STARS)
+        for cy, cx, _peak in STARS:
+            assert residual_arcsec(result.wcs, cx, cy) < RESIDUAL_TOL_ARCSEC
+
+
+def test_solve_fits_file_rgb_stack_both_layouts(tmp_path):
+    rgb_cf = make_rgb_stack()
+    for i, rgb in enumerate((rgb_cf, rgb_channel_last(rgb_cf))):
+        path = tmp_path / f"stack-{i}.fits"
+        path.write_bytes(fits_bytes(rgb, blind_header()))
+        result = solve_fits_file(
+            path,
+            solver=SOLVER_GAIA,
+            gaia_query=fake_query(gaia_stars_at_stars()),
+            pixel_scale_hint=SCALE_ARCSEC,
+        )
+        assert result.solver == SOLVER_GAIA
+        assert result.n_stars == len(STARS)
+        for cy, cx, _peak in STARS:
+            assert residual_arcsec(result.wcs, cx, cy) < RESIDUAL_TOL_ARCSEC
 
 
 def test_solve_frame_unsolvable_blank_frame():
@@ -511,7 +605,9 @@ def test_solve_frame_bad_parameters():
     with pytest.raises(TypeError, match="header must be a mapping"):
         solve_frame(data=data, header=["not", "a", "mapping"], gaia_query=query)  # type: ignore[arg-type]
     with pytest.raises(SolveError, match="2-D"):
-        solve_frame(data=np.zeros((4, 4, 4)), header=header, gaia_query=query)
+        solve_frame(data=np.zeros((2, 3, 4, 4)), header=header, gaia_query=query)  # 4-D
+    with pytest.raises(SolveError, match="2-D"):
+        solve_frame(data=np.zeros((2, 5, 5)), header=header, gaia_query=query)  # 3-D, not RGB/RGBA
 
 
 # --- the solve-field subprocess -------------------------------------------------------------
@@ -524,7 +620,8 @@ def test_solve_frame_bad_parameters():
 #: exits 3 with a stderr message, ``FAKE_SOLVE_SLEEP=<s>`` sleeps first,
 #: ``FAKE_SOLVE_NO_WCS=1`` exits 0 without writing the .wcs,
 #: ``FAKE_SOLVE_NO_MATCH=1`` skips the .match table, ``FAKE_SOLVE_NO_STDOUT_STATS=1``
-#: skips the stdout stats line.
+#: skips the stdout stats line, ``FAKE_SOLVE_REQUIRE_2D=1`` exits 4 when the
+#: input FITS is not a 2-D image.
 FAKE_SOLVE_FIELD = f"""#!{sys.executable}
 import os
 import sys
@@ -538,6 +635,13 @@ out = os.path.join(os.path.dirname(os.path.abspath(args[-1])), out)
 if os.environ.get("FAKE_SOLVE_FAIL"):
     print("fake solve-field: no solution found", file=sys.stderr)
     sys.exit(3)
+if os.environ.get("FAKE_SOLVE_REQUIRE_2D"):
+    from astropy.io import fits as pyfits
+    with pyfits.open(args[-1]) as hdul:
+        data = hdul[0].data
+    if data is None or data.ndim != 2:
+        print("fake solve-field: input frame is not a 2-D image", file=sys.stderr)
+        sys.exit(4)
 if os.environ.get("FAKE_SOLVE_SLEEP"):
     time.sleep(float(os.environ["FAKE_SOLVE_SLEEP"]))
 if not os.environ.get("FAKE_SOLVE_NO_WCS"):
@@ -707,6 +811,21 @@ def test_solve_frame_solve_field_from_fits_path(fake_solve_field_bin, tmp_path):
     result = solve_fits_file(path, solver=SOLVER_SOLVE_FIELD)
     assert result.solver == SOLVER_SOLVE_FIELD
     assert residual_arcsec(result.wcs, 60.0, 90.0) < 1e-6
+
+
+def test_solve_frame_solve_field_receives_2d_luminance_for_rgb(fake_solve_field_bin, monkeypatch):
+    # issue 04: the fake binary exits 4 when its input FITS is not a 2-D
+    # image, so a successful solve proves the RGB frame (either layout)
+    # reached solve-field as 2-D luminance data
+    monkeypatch.setenv("FAKE_SOLVE_REQUIRE_2D", "1")
+    rgb_cf = make_rgb_stack()
+    for rgb in (rgb_cf, rgb_channel_last(rgb_cf)):
+        result = solve_frame(data=rgb, header=blind_header(), solver=SOLVER_SOLVE_FIELD)
+        assert result.solver == SOLVER_SOLVE_FIELD
+        assert result.n_stars == len(STARS)
+        assert result.rms_arcsec == pytest.approx(0.42)
+        for cy, cx, _peak in STARS:
+            assert residual_arcsec(result.wcs, cx, cy) < 1e-6
 
 
 def test_solve_frame_solve_field_bad_fits_path(tmp_path):

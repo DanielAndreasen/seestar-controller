@@ -4,10 +4,11 @@ to a solved WCS.
 Pure-Python (module boundary per ``.scratch/astrometry/spec.md``): no GTK
 imports, no :mod:`seestar_controller.link` imports. Module level is stdlib +
 :mod:`numpy` + the pure :mod:`seestar_controller.catalog` /
-:mod:`seestar_controller.gaia` / :mod:`seestar_controller.store` packages;
-astropy, photutils and the ``solve-field`` subprocess enter only inside the
-functions that need them (a subprocess boundary test enforces the module
-boundary).
+:mod:`seestar_controller.gaia` / :mod:`seestar_controller.store` packages +
+the sibling pure :mod:`seestar_controller.astrometry.annotate` (the shared
+RGB -> luminance helper); astropy, photutils and the ``solve-field``
+subprocess enter only inside the functions that need them (a subprocess
+boundary test enforces the module boundary).
 
 Two solvers (``solver=``):
 
@@ -73,7 +74,8 @@ from seestar_controller.gaia.query import ARCSEC_PER_DEG, DEFAULT_G_LIMIT, query
 from seestar_controller.store.frames import header_to_dict
 from seestar_controller.store.project import utc_now_iso
 
-from .errors import SolveError
+from .annotate import _gray as _rgb_luminance
+from .errors import ExportError, SolveError
 from .wcs import (
     has_celestial_wcs,
     header_center,
@@ -177,17 +179,53 @@ class SolveResult:
 
 
 def _squeeze_2d(arr: np.ndarray, what: str) -> np.ndarray:
+    """Squeeze ``arr`` to the 2-D image to solve. An RGB/RGBA frame — either
+    channel-first ``(3|4, H, W)`` (a Seestar stack) or channel-last
+    ``(H, W, 3|4)`` — is collapsed to a 2-D luminance float array with the
+    same helper the annotate/export path uses
+    (:func:`~seestar_controller.astrometry.annotate._gray`); anything that is
+    not 2-D (or RGB/RGBA) raises :class:`SolveError`."""
     squeezed = np.squeeze(arr)
+    if squeezed.ndim == 3:
+        try:
+            return _rgb_luminance(squeezed)
+        except ExportError as exc:
+            raise SolveError(
+                f"{what} must be a 2-D image (or RGB/RGBA), got shape {arr.shape}"
+            ) from exc
     if squeezed.ndim != 2:
         raise SolveError(f"{what} must be a 2-D image, got shape {arr.shape}")
     return squeezed
 
 
+def _is_naxis_card(key: str) -> bool:
+    upper = key.upper()
+    return upper == "NAXIS" or (upper.startswith("NAXIS") and upper[5:].isdigit())
+
+
+def _as_2d_with_header(
+    raw: np.ndarray, header: dict[str, Any], what: str
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """The solve input pair ``(data, header)``: :func:`_squeeze_2d` on the
+    data plus the header side of the same conversion — when the raw frame was
+    not 2-D (an RGB/RGBA frame collapsed to luminance, or a squeezed
+    singleton axis), its ``NAXIS``/``NAXISn`` cards no longer describe the
+    2-D image, so they are dropped (a stale ``NAXIS=3`` would make every WCS
+    built from the header 3-dimensional)."""
+    data = _squeeze_2d(raw, what)
+    if raw.ndim != 2 and data.ndim == 2:
+        header = {k: v for k, v in header.items() if not _is_naxis_card(k)}
+    return data, header
+
+
 def read_fits_bytes(fits_bytes: bytes) -> tuple[np.ndarray, dict[str, Any]]:
     """Read the primary HDU of ``fits_bytes`` into ``(data, header)`` —
-    ``data`` a 2-D array, ``header`` a sanitized plain dict (lazy astropy
-    import). Raises :class:`SolveError` when the bytes are not a readable
-    2-D FITS image."""
+    ``data`` a 2-D float array (an RGB/RGBA frame, channel-first
+    ``(3|4, H, W)`` or channel-last ``(H, W, 3|4)``, is collapsed to
+    luminance first and its stale ``NAXIS`` cards dropped), ``header`` a
+    sanitized plain dict (lazy astropy import). Raises :class:`SolveError`
+    when the bytes are not a readable FITS image (or the image is not
+    2-D/RGB)."""
     import io
 
     from astropy.io import fits as pyfits
@@ -200,7 +238,7 @@ def read_fits_bytes(fits_bytes: bytes) -> tuple[np.ndarray, dict[str, Any]]:
         raise SolveError(f"not a readable FITS file: {exc}") from exc
     if raw is None:
         raise SolveError("the FITS file has no image data in its primary HDU")
-    return _squeeze_2d(np.asarray(raw), "the frame data"), header
+    return _as_2d_with_header(np.asarray(raw), header, "the frame data")
 
 
 def _read_fits_source(path: Path) -> tuple[np.ndarray, dict[str, Any]]:
@@ -214,7 +252,7 @@ def _read_fits_source(path: Path) -> tuple[np.ndarray, dict[str, Any]]:
         raise SolveError(f"cannot read the FITS file {path}: {exc}") from exc
     if raw is None:
         raise SolveError(f"the FITS file {path} has no image data in its primary HDU")
-    return _squeeze_2d(np.asarray(raw), f"the frame data of {path}"), header
+    return _as_2d_with_header(np.asarray(raw), header, f"the frame data of {path}")
 
 
 def _resolve_input(
@@ -232,9 +270,8 @@ def _resolve_input(
         raise ValueError(
             "give a FITS path (source) or an image array (data) with an optional header"
         )
-    arr = _squeeze_2d(np.asarray(data), "data")
     hdr = {} if header is None else header_to_dict(header)
-    return arr, hdr
+    return _as_2d_with_header(np.asarray(data), hdr, "data")
 
 
 # --- parameter validation -----------------------------------------------------------------
@@ -606,8 +643,10 @@ def solve_frame(
 
     - ``source`` — a path to a FITS file (read with astropy, lazy); pass
       EITHER ``source`` OR ``data`` (+ optional ``header``), not both;
-    - ``data`` / ``header`` — the image array (2-D after squeezing) and its
-      FITS header (a mapping of cards; None = empty header);
+    - ``data`` / ``header`` — the image array (2-D after squeezing; an
+      RGB/RGBA frame in either channel layout is converted to a 2-D
+      luminance array first) and its FITS header (a mapping of cards;
+      None = empty header);
     - ``solver`` — ``"auto"`` (default: ``solve-field`` when the binary is on
       PATH, else the Gaia pattern match), ``"solve-field"``, or ``"gaia"``;
     - ``center_hint`` — ``(ra_deg, dec_deg)`` approximate field center for the
