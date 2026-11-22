@@ -44,23 +44,14 @@ OUT_REPO = Path(__file__).resolve().parent / "artifacts"
 
 # The working ESA Gaia TAP mirror, used ONLY to seed the repo's own disk
 # cache (seestar_controller.catalog.cache.QueryCache under the default
-# gaia cache dir) when the hardcoded VizieR endpoint is down — the cache is
-# the repo's documented offline path (query_gaia_cached serves it with no
-# HTTP at all). The VizieR ADQL is translated to Gaia-archive column names;
-# parse_gaia_response accepts both spellings via _COLUMN_ALIASES.
+# gaia cache dir) when the endpoint chain fails — the cache is the repo's
+# documented offline path (query_gaia_cached serves it with no HTTP at all).
+# The driver builds the ESA-dialect ADQL itself with UNQUOTED identifiers
+# (the archive rejects FROM "gaiadr3.gaia_source" as one quoted identifier,
+# HTTP 400 — see ISSUES 04 in the guide) and all 12 Gaia columns including
+# the error fields; parse_gaia_response accepts the archive spellings via
+# _COLUMN_ALIASES.
 ESA_TAP_SYNC_URL = "https://gea.esac.esa.int/tap-server/tap/sync"
-VIZIER_TO_ARCHIVE_COLUMNS = {
-    '"I/355/gaiadr3"': "gaiadr3.gaia_source",
-    '"RAJ2000"': '"ra"',
-    '"DEJ2000"': '"dec"',
-    '"Source"': '"source_id"',
-    '"Gmag"': '"phot_g_mean_mag"',
-    '"BPmag"': '"phot_bp_mean_mag"',
-    '"RPmag"': '"phot_rp_mean_mag"',
-    '"Plx"': '"parallax"',
-    '"pmRA"': '"pmra"',
-    '"pmDE"': '"pmdec"',
-}
 
 LOG: list[dict] = []
 
@@ -85,7 +76,6 @@ def main() -> int:
     from seestar_controller.gaia.query import (
         DEFAULT_MAXREC,
         DEFAULT_TTL_S,
-        build_cone_query,
         default_cache_dir,
         fetch_gaia_tap_json,
         gaia_cache_key,
@@ -183,20 +173,29 @@ def main() -> int:
             ra_r = round(center.ra_deg, digits)
             dec_r = round(center.dec_deg, digits)
             radius_r = round(radius_deg, digits) or radius_deg
-            adql_vizier = build_cone_query(ra_r, dec_r, radius_r, g_limit=g_limit)
-            adql_esa = adql_vizier
-            for viz, arch in VIZIER_TO_ARCHIVE_COLUMNS.items():
-                adql_esa = adql_esa.replace(viz, arch)
+            esa_columns = (
+                "ra", "dec", "source_id", "phot_g_mean_mag", "phot_bp_mean_mag",
+                "phot_rp_mean_mag", "parallax", "parallax_error",
+                "pmra", "pmra_error", "pmdec", "pmdec_error",
+            )
+            adql_esa = (
+                f"SELECT {', '.join(esa_columns)} FROM gaiadr3.gaia_source "
+                f"WHERE CONTAINS(POINT('ICRS', ra, dec), "
+                f"CIRCLE('ICRS', {ra_r!r}, {dec_r!r}, {radius_r!r})) = 1 "
+                f"AND phot_g_mean_mag < {g_limit!r} ORDER BY phot_g_mean_mag"
+            )
             log("seed query", center=(center.ra_deg, center.dec_deg), radius_deg=radius_deg,
                 key=key, adql_esa=adql_esa)
             t0 = time.time()
-            payload = fetch_gaia_tap_json(adql_esa, maxrec=DEFAULT_MAXREC, timeout=180,
+            payload = fetch_gaia_tap_json(adql_esa, maxrec=DEFAULT_MAXREC, timeout=240,
                                           url=ESA_TAP_SYNC_URL)
             stars = parse_gaia_response(payload)
             rows = [
                 {"source_id": s.source_id, "ra_deg": s.ra_deg, "dec_deg": s.dec_deg,
                  "g": s.g, "bp": s.bp, "rp": s.rp, "parallax": s.parallax,
-                 "pmra": s.pmra, "pmdec": s.pmdec}
+                 "parallax_error": s.parallax_error, "pmra": s.pmra,
+                 "pmra_error": s.pmra_error, "pmdec": s.pmdec,
+                 "pmdec_error": s.pmdec_error}
                 for s in stars
             ]
             cache = QueryCache(cache_dir=default_cache_dir(), ttl=DEFAULT_TTL_S)
@@ -209,7 +208,7 @@ def main() -> int:
                 stack_frame_id=snap.stack_frame_id, n_rows=len(snap.rows),
                 matched=sum(1 for r in snap.rows if r.matched),
                 secs=round(time.time() - t0, 1))
-        except Exception as exc:  # noqa: BLE001 - TRY-and-REPORT driver: capture any failure verbatim  # noqa: BLE001 - TRY-and-REPORT driver: capture any failure verbatim
+        except Exception as exc:  # noqa: BLE001 - TRY-and-REPORT driver: capture any failure verbatim
             log("offline cache seeding FAILED", error=f"{type(exc).__name__}: {exc}",
                 traceback=traceback.format_exc())
             snap = cross.snapshot
@@ -290,7 +289,7 @@ def main() -> int:
             shutil.copy2(OUT_PROJECT / "crossmatch-overlay.png", OUT_REPO / "crossmatch-overlay.png")
             exports["crossmatch-overlay.png"] = str(OUT_PROJECT / "crossmatch-overlay.png")
             log("export png", kind="crossmatch-overlay", path=str(OUT_PROJECT / "crossmatch-overlay.png"))
-        except Exception as exc:  # noqa: BLE001 - TRY-and-REPORT driver: capture any failure verbatim  # noqa: BLE001 - TRY-and-REPORT driver: capture any failure verbatim
+        except Exception as exc:  # noqa: BLE001 - TRY-and-REPORT driver: capture any failure verbatim
             log("overlay export FAILED", error=f"{type(exc).__name__}: {exc}")
 
     log("done", exports=exports, attempt1_error=attempt1_error)
