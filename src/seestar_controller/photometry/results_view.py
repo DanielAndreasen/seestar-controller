@@ -36,7 +36,11 @@ passes it down via :func:`seestar_controller.ui.views.build_view`):
   dedicated **exclusion label** (frame-quality ticket 03: how many sub-frames
   were excluded from the run and why — e.g. ``2 frames excluded (fwhm×2)`` —
   from the report's :class:`~seestar_controller.photometry.run.ExcludedFrame`\\ s,
-  by default the session's flagged frames);
+  by default the session's flagged frames) and a **skip label** (issue 09:
+  the aggregated skip reasons of the run — e.g. ``479 frames skipped
+  (non-positive-flux×479)`` — plus the WCS-reprojection coverage, e.g.
+  ``8 of 10 frames via per-frame WCS reprojection (2 fixed-pixel)``, from the
+  report's ``skip_summary`` / ``wcs_summary``);
 - a **per-frame table** (:class:`Gtk.ListBox`, one row per lightcurve point:
   jd/utc, mag, mag_err, an "excluded" :class:`Gtk.CheckButton`) — clicking a
   row (or the checkbox) toggles the outlier flag via
@@ -169,6 +173,15 @@ class ResultsPanel(Gtk.Box):
         )
         self.append(self._exclusion_label)
 
+        # issue 09: the aggregated skip reasons of the last run (e.g. "479
+        # frames skipped (non-positive-flux×479)") + the WCS-reprojection
+        # coverage of the measured frames (e.g. "8 of 10 frames via per-frame
+        # WCS reprojection (2 fixed-pixel)")
+        self._skip_label = Gtk.Label(
+            label="", xalign=0.0, css_classes=["dim-label", "caption"]
+        )
+        self.append(self._skip_label)
+
         # per-frame table + scatter plot side by side
         paned = Gtk.Paned(
             orientation=Gtk.Orientation.HORIZONTAL,
@@ -293,6 +306,14 @@ class ResultsPanel(Gtk.Box):
         sub-frames were excluded and why (``"2 frames excluded (fwhm×2)"``);
         empty before the first run."""
         return self._exclusion_label
+
+    @property
+    def skip_label(self) -> Gtk.Label:
+        """The skip label (issue 09): after a run, the aggregated skip reasons
+        plus the WCS-reprojection coverage (``"2 frames skipped
+        (non-positive-flux×2) — 8 of 10 frames via per-frame WCS reprojection
+        (2 fixed-pixel)"``); empty before the first run."""
+        return self._skip_label
 
     @property
     def list_box(self) -> Gtk.ListBox:
@@ -508,6 +529,17 @@ class ResultsPanel(Gtk.Box):
         self._exclusion_label.set_label(
             snapshot.report.exclusion_summary if snapshot.report is not None else ""
         )
+        # issue 09: the aggregated skip reasons + WCS-reprojection coverage of
+        # the last run (e.g. "479 frames skipped (non-positive-flux×479) — 33
+        # of 512 frames via per-frame WCS reprojection (479 fixed-pixel)")
+        if snapshot.report is not None:
+            r = snapshot.report
+            skip_text = r.skip_summary
+            if r.measurements:
+                skip_text = f"{skip_text} — {r.wcs_summary}"
+            self._skip_label.set_label(skip_text)
+        else:
+            self._skip_label.set_label("")
         self._run_button.set_sensitive(not snapshot.running)
         if snapshot.error is not None:
             self._set_status(snapshot.error, error=True)

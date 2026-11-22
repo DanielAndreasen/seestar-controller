@@ -8,6 +8,10 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   :mod:`astropy.wcs` lazy inside the WCS helpers): :func:`~.picking.pixel_to_sky`
   / :func:`~.picking.sky_to_pixel` (FITS WCS pixel <-> J2000, 0-based pixels,
   1-based WCS internally; missing WCS -> :class:`~.picking.PickingError`),
+  plus the lenient :func:`~.picking.try_pixel_to_sky` /
+  :func:`~.picking.try_sky_to_pixel` (None instead of raising — used by the
+  photometry run to reproject sky picks onto each frame's stored WCS,
+  issue 09),
   :class:`~.picking.StarPickSpec` (role/x/y/coord/label), :class:`~.picking.ApertureParams`
   (aperture radius + sky annulus with defaults + validation),
   :class:`~.picking.PickSession` (the frozen snapshot: image + picks +
@@ -129,6 +133,7 @@ from .measure import (
     measure_frame_data,
     measure_project,
     measure_star,
+    resolve_pick_pixels,
 )
 from .picking import (
     DEFAULT_APERTURE_RADIUS_PX,
@@ -148,6 +153,7 @@ from .picking import (
     pixel_to_sky,
     sky_to_pixel,
     try_pixel_to_sky,
+    try_sky_to_pixel,
 )
 from .run import (
     DB_CALL_TIMEOUT_S,
@@ -265,6 +271,8 @@ __all__ = [
     "measure_star",
     "parse_goto_target",
     "pixel_to_sky",
+    "resolve_pick_pixels",
     "sky_to_pixel",
     "try_pixel_to_sky",
+    "try_sky_to_pixel",
 ]

@@ -17,8 +17,9 @@ What lives here:
   (ticket 02) both subclass it, so widget code can catch one type;
 - :func:`pixel_to_sky` / :func:`sky_to_pixel` — the FITS-WCS pixel <-> sky
   conversion (:mod:`astropy.wcs`, lazy), plus the lenient variants
-  :func:`try_pixel_to_sky` (None instead of raising) and
-  :func:`has_celestial_wcs` (bool) used by the picking/suggest paths;
+  :func:`try_pixel_to_sky` / :func:`try_sky_to_pixel` (None instead of
+  raising) and :func:`has_celestial_wcs` (bool) used by the picking/suggest
+  paths and by the photometry run's per-frame WCS reprojection (issue 09);
 - :func:`parse_goto_target` / :class:`GotoTarget` (issue 06) — parse a
   "go to RA/Dec or name" entry: an ``(RA, Dec)`` pair (RA in hours, Dec in
   degrees, sexagesimal ok) becomes a coordinate, anything else an object name
@@ -288,6 +289,25 @@ def sky_to_pixel(header: Mapping[str, Any] | None, coord: Any) -> tuple[float, f
             f"x={x} y={y}"
         )
     return x, y
+
+
+def try_sky_to_pixel(
+    header: Mapping[str, Any] | None, coord: Any
+) -> tuple[float, float] | None:
+    """The lenient variant of :func:`sky_to_pixel` (issue 09): convert a sky
+    position to a 0-based image pixel ``(x, y)``, returning **None** instead
+    of raising when the header has no usable 2D celestial WCS or the
+    conversion fails / yields non-finite pixels.
+
+    This is what the photometry run uses to reproject a pick's sky
+    coordinate onto a per-frame WCS: a pick without a usable conversion
+    falls back to its fixed pixel position.
+    """
+    try:
+        return sky_to_pixel(header, coord)
+    except PickingError as exc:
+        logger.debug("no pixel for sky coord %r: %s", coord, exc)
+        return None
 
 
 def has_celestial_wcs(header: Mapping[str, Any] | None) -> bool:

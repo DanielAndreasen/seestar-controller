@@ -38,11 +38,20 @@ What lives here:
   against the same ensemble (same error propagation as the target) and the
   target-minus-check curve, and the JD from the FITS ``DATE-OBS`` header
   (astropy ``Time.jd``; an explicit ``jd`` argument is the fallback when the
-  header has no usable ``DATE-OBS``);
+  header has no usable ``DATE-OBS``). Issue 09: with the optional ``wcs``
+  argument (the frame's stored WCS — a
+  :class:`~seestar_controller.store.wcs.FrameWcs` record, a mapping of FITS
+  cards, or an astropy WCS), every pick that carries a sky coordinate
+  (``StarPick.ra_deg``/``dec_deg`` or ``StarPickSpec.coord``) is first
+  reprojected to THIS frame's pixel coordinates via
+  :func:`~.picking.try_sky_to_pixel`; the number of reprojected picks is
+  recorded on the :class:`FrameMeasurement` (``wcs_reprojected``);
 - :func:`measure_frame` — one stored frame of a project →
   :class:`~seestar_controller.store.measurements.Measurement` via
   :func:`seestar_controller.store.measurements.add_measurement` (JD from the
-  frame's ``DATE-OBS``, falling back to the frame's stored ``jd``);
+  frame's ``DATE-OBS``, falling back to the frame's stored ``jd``; the
+  frame's stored WCS — :func:`seestar_controller.store.wcs.load_frame_wcs` —
+  drives the reprojection, issue 09);
 - :func:`measure_project` — run over ALL **sub-frames** of a project
   (``store.frames`` ``kind="sub"`` — NEVER stacks/enhanced) and return a
   :class:`MeasureReport` (measurements + skipped frames + the per-frame
@@ -63,16 +72,35 @@ Conventions (documented choices):
   A ``"check"`` pick is OPTIONAL and at most one; it is measured like the
   target but is NEVER part of the comp ensemble (the ensemble is the mean of
   the comps only).
+- **Per-frame WCS reprojection (issue 09).** A pick may carry a sky position
+  in addition to its pixel: ``StarPick.ra_deg``/``dec_deg`` or
+  ``StarPickSpec.coord``. When a frame WCS is supplied (``wcs=`` — a
+  :class:`~seestar_controller.store.wcs.FrameWcs` record as stored by
+  :func:`seestar_controller.store.wcs.load_frame_wcs`, a mapping of FITS
+  cards, or an astropy WCS such as ``FrameWcs.to_wcs()``), every such pick is
+  reprojected to that frame's pixel coordinates with
+  :func:`~.picking.try_sky_to_pixel` and measured THERE — so drifted/rotated
+  frames (alt-az field rotation, tracking drift) are measured at the star's
+  current position instead of being skipped at the stale fixed pixel. A pick
+  without a sky coordinate, or whose conversion fails, falls back to its
+  fixed pixel position; a frame without a WCS uses fixed pixel picks for all
+  picks. The per-frame count of WCS-reprojected picks is recorded on the
+  :class:`FrameMeasurement` (``wcs_reprojected``) and aggregated on the run
+  reports (WCS-reprojected vs fixed-pixel frames).
 - **Pixel convention: 0-based, ``x`` = column, ``y`` = row** (same as
   :mod:`.picking` and the numpy ``data[y, x]`` array). photutils apertures take
   0-based ``(x, y)`` positions directly.
 - **Skip conditions** (per frame, recorded by :func:`measure_project`, raised
   as :class:`FrameSkippedError` by :func:`measure_frame` /
   :func:`measure_frame_data`): a pick center outside the image, or a
-  background-subtracted flux that is non-positive or non-finite. A frame
+  background-subtracted flux that is non-positive or non-finite — including a
+  WCS-reprojected pick that lands outside the image (issue 09). A frame
   that cannot be read/parsed at all raises :class:`MeasurementError` (which
   :func:`measure_project` also records as skipped — a bad frame never kills
-  the run).
+  the run). Every skip carries a short machine-readable ``kind`` (e.g.
+  ``"outside-image"``, ``"non-positive-flux"``, ``"unreadable-frame"`` — the
+  ``kind`` attribute of the raised error), which the reports aggregate into
+  skip-reason counts.
 - **JD** comes from the FITS header ``DATE-OBS`` (parsed with
   :mod:`astropy.time` via
   :func:`seestar_controller.store.frames._date_obs_jd_utc`); when the header
@@ -92,7 +120,7 @@ import io
 import logging
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -100,7 +128,7 @@ import numpy as np
 from seestar_controller.store.errors import (
     MeasurementError as StoreMeasurementError,
 )
-from seestar_controller.store.errors import ProjectError
+from seestar_controller.store.errors import ProjectError, WcsStoreError
 from seestar_controller.store.frames import (
     KIND_SUB,
     _date_obs_jd_utc,
@@ -110,8 +138,14 @@ from seestar_controller.store.frames import (
 )
 from seestar_controller.store.measurements import Measurement, add_measurement
 from seestar_controller.store.stars import ROLE_CHECK, ROLE_COMP, ROLE_TARGET, StarPick
+from seestar_controller.store.wcs import FrameWcs, load_frame_wcs
 
-from .picking import ApertureParams, PhotometryError, StarPickSpec
+from .picking import (
+    ApertureParams,
+    PhotometryError,
+    StarPickSpec,
+    try_sky_to_pixel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,14 +157,30 @@ class MeasurementError(PhotometryError):
     unreadable frame file, a missing JD, or a store failure while saving the
     measurement (the store's
     :class:`~seestar_controller.store.errors.MeasurementError` is wrapped and
-    chained — this class is deliberately distinct from it)."""
+    chained — this class is deliberately distinct from it).
+
+    Every error carries a short machine-readable ``kind`` (a class attribute,
+    overridable per raise with the ``kind=`` keyword) used to aggregate skip
+    reasons on the reports — e.g. ``"unreadable-frame"``, ``"no-jd"``,
+    ``"store-failed"``."""
+
+    kind = "measurement-error"
+
+    def __init__(self, message: str, *, kind: str | None = None) -> None:
+        super().__init__(message)
+        if kind is not None:
+            self.kind = kind
 
 
 class FrameSkippedError(MeasurementError):
     """A frame was skipped: a pick falls outside the image, or the
     background-subtracted flux is non-positive/non-finite. Carries the
-    human-readable ``reason``; :func:`measure_project` records these as
-    :class:`SkippedFrame` entries instead of crashing."""
+    human-readable ``reason`` and a ``kind`` (``"outside-image"``,
+    ``"non-positive-flux"``, ``"invalid-flux-error"``);
+    :func:`measure_project` records these as :class:`SkippedFrame` entries
+    instead of crashing."""
+
+    kind = "skipped-frame"
 
 
 #: The magnitude-error coefficient ``2.5 / ln(10) ≈ 1.0857``:
@@ -260,7 +310,8 @@ def _as_2d_plane(data: Any) -> np.ndarray:
         arr = arr[..., :3].mean(axis=2)
     if arr.ndim != 2 or arr.size == 0:
         raise MeasurementError(
-            f"frame data must be a 2-D image array, got shape {arr.shape!r}"
+            f"frame data must be a 2-D image array, got shape {arr.shape!r}",
+            kind="bad-frame-data",
         )
     return arr
 
@@ -292,7 +343,8 @@ def measure_star(
     """
     if not isinstance(aperture, ApertureParams):
         raise MeasurementError(
-            f"aperture must be an ApertureParams, got {aperture!r}"
+            f"aperture must be an ApertureParams, got {aperture!r}",
+            kind="bad-aperture",
         )
     px = _finite_float(x, "x")
     py = _finite_float(y, "y")
@@ -300,7 +352,8 @@ def measure_star(
     height, width = int(plane.shape[0]), int(plane.shape[1])
     if not (0.0 <= px < width and 0.0 <= py < height):
         raise FrameSkippedError(
-            f"pick ({px}, {py}) falls outside the {width}x{height} image"
+            f"pick ({px}, {py}) falls outside the {width}x{height} image",
+            kind="outside-image",
         )
 
     from photutils.aperture import (
@@ -329,11 +382,13 @@ def measure_star(
     if not math.isfinite(flux) or flux <= 0.0:
         raise FrameSkippedError(
             f"non-positive flux {flux!r} at pick ({px}, {py}) "
-            f"(aperture sum {ap_sum!r}, background {bkg_mean!r})"
+            f"(aperture sum {ap_sum!r}, background {bkg_mean!r})",
+            kind="non-positive-flux",
         )
     if not math.isfinite(flux_err) or flux_err < 0.0:
         raise FrameSkippedError(
-            f"invalid flux error {flux_err!r} at pick ({px}, {py})"
+            f"invalid flux error {flux_err!r} at pick ({px}, {py})",
+            kind="invalid-flux-error",
         )
     return StarMeasurement(
         role=role,
@@ -352,13 +407,34 @@ def measure_star(
 
 @dataclass(frozen=True)
 class _NormPick:
-    """One normalized pick: role/label/pixel + the aperture to measure with."""
+    """One normalized pick: role/label/pixel/sky + the aperture to measure
+    with.
+
+    ``ra_deg`` / ``dec_deg`` — the pick's J2000 sky position (from
+    ``StarPick.ra_deg``/``dec_deg`` or ``StarPickSpec.coord``), or None for a
+    pixel-only pick; used for the per-frame WCS reprojection (issue 09).
+    """
 
     role: str
     label: str | None
     x: float
     y: float
     aperture: ApertureParams
+    ra_deg: float | None = None
+    dec_deg: float | None = None
+
+
+def _sky_of(pick: Any) -> tuple[float | None, float | None]:
+    """The pick's sky position as ``(ra_deg, dec_deg)`` — from a store
+    :class:`~seestar_controller.store.stars.StarPick` (``ra_deg``/``dec_deg``)
+    or a :class:`~.picking.StarPickSpec` (``coord``); ``(None, None)`` for a
+    pixel-only pick (either coordinate missing)."""
+    if isinstance(pick, StarPick):
+        return pick.ra_deg, pick.dec_deg
+    coord = getattr(pick, "coord", None)
+    if coord is None:
+        return None, None
+    return float(coord.ra_deg), float(coord.dec_deg)
 
 
 def _aperture_of(pick: Any, default: ApertureParams | None) -> ApertureParams:
@@ -387,11 +463,13 @@ def _normalize_picks(
     only."""
     if aperture is not None and not isinstance(aperture, ApertureParams):
         raise MeasurementError(
-            f"aperture must be an ApertureParams or None, got {aperture!r}"
+            f"aperture must be an ApertureParams or None, got {aperture!r}",
+            kind="bad-picks",
         )
     if isinstance(picks, (str, bytes)) or not isinstance(picks, Iterable):
         raise MeasurementError(
-            f"picks must be an iterable of StarPickSpec/StarPick, got {picks!r}"
+            f"picks must be an iterable of StarPickSpec/StarPick, got {picks!r}",
+            kind="bad-picks",
         )
     norm: list[_NormPick] = []
     for pick in picks:
@@ -399,12 +477,15 @@ def _normalize_picks(
             role, label, x, y = pick.role, pick.label, pick.x, pick.y
         else:
             raise MeasurementError(
-                f"picks must contain only StarPickSpec or StarPick records, got {pick!r}"
+                f"picks must contain only StarPickSpec or StarPick records, got {pick!r}",
+                kind="bad-picks",
             )
         if role not in (ROLE_TARGET, ROLE_COMP, ROLE_CHECK):
             raise MeasurementError(
-                f"pick role must be 'target', 'comp' or 'check', got {role!r}"
+                f"pick role must be 'target', 'comp' or 'check', got {role!r}",
+                kind="bad-picks",
             )
+        ra_deg, dec_deg = _sky_of(pick)
         norm.append(
             _NormPick(
                 role=role,
@@ -412,6 +493,8 @@ def _normalize_picks(
                 x=_finite_float(x, "pick x"),
                 y=_finite_float(y, "pick y"),
                 aperture=_aperture_of(pick, aperture),
+                ra_deg=None if ra_deg is None else _finite_float(ra_deg, "pick ra_deg"),
+                dec_deg=None if dec_deg is None else _finite_float(dec_deg, "pick dec_deg"),
             )
         )
     targets = [p for p in norm if p.role == ROLE_TARGET]
@@ -420,18 +503,91 @@ def _normalize_picks(
     if len(targets) != 1:
         raise MeasurementError(
             f"the pick ensemble must contain exactly one 'target' pick, got "
-            f"{len(targets)} (comps: {len(comps)}, checks: {len(checks)})"
+            f"{len(targets)} (comps: {len(comps)}, checks: {len(checks)})",
+            kind="bad-picks",
         )
     if not comps:
         raise MeasurementError(
-            "the pick ensemble needs at least one 'comp' pick (the comp ensemble)"
+            "the pick ensemble needs at least one 'comp' pick (the comp ensemble)",
+            kind="bad-picks",
         )
     if len(checks) > 1:
         raise MeasurementError(
             f"the pick ensemble may contain at most one 'check' pick, got "
-            f"{len(checks)}"
+            f"{len(checks)}",
+            kind="bad-picks",
         )
     return tuple(norm)
+
+
+def _wcs_cards(wcs: Any) -> Mapping[str, Any] | None:
+    """Normalize a per-frame WCS argument (issue 09) to a mapping of FITS
+    cards: a :class:`~seestar_controller.store.wcs.FrameWcs` record (its
+    ``cards``), a mapping of FITS cards, or an astropy WCS (e.g.
+    ``FrameWcs.to_wcs()`` — via ``to_header()``). None stays None (no WCS —
+    fixed pixel picks). Anything else raises :class:`MeasurementError`."""
+    if wcs is None:
+        return None
+    if isinstance(wcs, FrameWcs):
+        return wcs.cards
+    if isinstance(wcs, Mapping):
+        return dict(wcs)
+    to_header = getattr(wcs, "to_header", None)
+    if callable(to_header):  # an astropy.wcs.WCS (e.g. FrameWcs.to_wcs())
+        try:
+            return dict(to_header())
+        except Exception as exc:
+            raise MeasurementError(
+                f"cannot read the WCS header of {wcs!r}: {exc}", kind="bad-wcs"
+            ) from exc
+    raise MeasurementError(
+        "wcs must be None, a FrameWcs record, a mapping of FITS cards, or an "
+        f"astropy WCS, got {wcs!r}",
+        kind="bad-wcs",
+    )
+
+
+def resolve_pick_pixels(
+    picks: Iterable[_NormPick], wcs: Any
+) -> tuple[tuple[_NormPick, ...], int]:
+    """The per-frame pixel resolution step (issue 09): reproject every pick
+    that carries a sky coordinate (``ra_deg``/``dec_deg``) onto the frame WCS
+    ``wcs`` (a :class:`~seestar_controller.store.wcs.FrameWcs` record, a
+    mapping of FITS cards, or an astropy WCS) via
+    :func:`~.picking.try_sky_to_pixel`, returning the resolved picks (a pick
+    without a sky coordinate, or whose conversion fails, keeps its fixed
+    pixel) plus the number of WCS-reprojected picks.
+
+    With ``wcs=None`` the picks pass through unchanged (fixed pixel picks,
+    count 0). The reprojected position is NOT range-checked here — a
+    reprojected pick outside the image is a normal per-frame skip
+    (:class:`FrameSkippedError`, kind ``"outside-image"``) downstream in
+    :func:`measure_star`.
+    """
+    norm = tuple(picks)
+    cards = _wcs_cards(wcs)
+    if cards is None:
+        return norm, 0
+    resolved: list[_NormPick] = []
+    reprojected = 0
+    for pick in norm:
+        if pick.ra_deg is not None and pick.dec_deg is not None:
+            xy = try_sky_to_pixel(cards, (pick.ra_deg, pick.dec_deg))
+            if xy is not None:
+                resolved.append(replace(pick, x=xy[0], y=xy[1]))
+                reprojected += 1
+                continue
+            # conversion failed (e.g. the stored cards carry no celestial
+            # WCS) -> fixed pixel pick fallback for this pick
+            logger.debug(
+                "WCS reprojection failed for pick %s — using the fixed pixel "
+                "(%.2f, %.2f)",
+                pick.role,
+                pick.x,
+                pick.y,
+            )
+        resolved.append(pick)
+    return tuple(resolved), reprojected
 
 
 # --- the pure core on a raw array ---------------------------------------------------------
@@ -463,7 +619,10 @@ class FrameMeasurement:
     - ``target_minus_check_err`` — ``sqrt(target.mag_err^2 +
       check.mag_err^2)`` — the ensemble cancels in the difference, so the
       error is the quadrature of the two star mag errors (None without a
-      check star).
+      check star);
+    - ``wcs_reprojected`` — how many picks were reprojected onto THIS frame's
+      WCS before measuring (issue 09); 0 means the frame was measured on the
+      fixed pixel picks (no WCS, or no pick carried a sky coordinate).
     """
 
     jd: float
@@ -477,6 +636,7 @@ class FrameMeasurement:
     check_mag_err: float | None = None
     target_minus_check: float | None = None
     target_minus_check_err: float | None = None
+    wcs_reprojected: int = 0
 
 
 def _header_jd(header: Mapping[str, Any] | None) -> float | None:
@@ -496,6 +656,7 @@ def measure_frame_data(
     aperture: ApertureParams | None = None,
     *,
     jd: float | None = None,
+    wcs: Any = None,
 ) -> FrameMeasurement:
     """The pure photometry core on a raw frame: measure every pick on ``data``
     (a numpy array + FITS ``header`` mapping) and compute the differential
@@ -510,15 +671,26 @@ def measure_frame_data(
     - ``jd`` — the fallback Julian Date when the header has no usable
       ``DATE-OBS``; the header ``DATE-OBS`` always wins when present. When
       neither yields a JD, :class:`MeasurementError` is raised.
+    - ``wcs`` — the frame's WCS for the per-frame pick reprojection (issue
+      09): None (default — fixed pixel picks), a
+      :class:`~seestar_controller.store.wcs.FrameWcs` record (e.g. from
+      :func:`seestar_controller.store.wcs.load_frame_wcs`), a mapping of FITS
+      cards, or an astropy WCS (e.g. ``FrameWcs.to_wcs()``). Every pick that
+      carries a sky coordinate is reprojected to this frame's pixel
+      coordinates via :func:`~.picking.try_sky_to_pixel` and measured there;
+      picks without a sky coordinate (or with a failed conversion) keep
+      their fixed pixel. The count of reprojected picks is recorded on the
+      result's ``wcs_reprojected``.
 
     Returns the :class:`FrameMeasurement` — with the check star's differential
     mag + error (``check_mag`` / ``check_mag_err``, same error propagation as
     the target) and the target-minus-check curve (``target_minus_check`` /
     ``target_minus_check_err``) when a check pick is present. Raises
-    :class:`FrameSkippedError` when a pick falls outside the image or a flux
-    is non-positive.
+    :class:`FrameSkippedError` when a (possibly reprojected) pick falls
+    outside the image or a flux is non-positive.
     """
     norm = _normalize_picks(picks, aperture)
+    norm, wcs_reprojected = resolve_pick_pixels(norm, wcs)
     plane = _as_2d_plane(data)
     stars = [
         measure_star(plane, p.x, p.y, p.aperture, role=p.role, label=p.label)
@@ -550,7 +722,8 @@ def measure_frame_data(
         if jd is None:
             raise MeasurementError(
                 "no JD: the FITS header has no usable DATE-OBS and no fallback "
-                "jd was given"
+                "jd was given",
+                kind="no-jd",
             )
         jd_value = _finite_float(jd, "jd")
     return FrameMeasurement(
@@ -565,6 +738,7 @@ def measure_frame_data(
         check_mag_err=check_mag_err,
         target_minus_check=target_minus_check,
         target_minus_check_err=target_minus_check_err,
+        wcs_reprojected=wcs_reprojected,
     )
 
 
@@ -573,11 +747,24 @@ def measure_frame_data(
 
 @dataclass(frozen=True)
 class SkippedFrame:
-    """One frame that was skipped during :func:`measure_project`:
-    ``frame_id`` + the human-readable ``reason``."""
+    """One frame that was skipped during :func:`measure_project` /
+    :meth:`~seestar_controller.photometry.run.RunController.run_session`:
+    ``frame_id`` + the human-readable ``reason`` + a short machine-readable
+    ``kind`` (issue 09) aggregating the skip cause — the ``kind`` attribute of
+    the raised :class:`MeasurementError` (e.g. ``"outside-image"``,
+    ``"non-positive-flux"``, ``"unreadable-frame"``, ``"store-failed"``), or
+    ``"error"`` when the error carried no kind."""
 
     frame_id: int
     reason: str
+    kind: str = ""
+
+
+def _skip_kind(exc: BaseException) -> str:
+    """The aggregation kind of a per-frame failure: the error's ``kind``
+    attribute when present, else ``"error"``."""
+    kind = getattr(exc, "kind", "")
+    return kind if isinstance(kind, str) and kind else "error"
 
 
 @dataclass(frozen=True)
@@ -591,7 +778,8 @@ class MeasureReport:
     - ``frame_results`` — the full per-frame :class:`FrameMeasurement`\\ s of
       the measured frames (in frame order, aligned with ``measurements``) —
       they carry the check star's differential mag + error and the
-      target-minus-check curve (check-star-plot ticket 01).
+      target-minus-check curve (check-star-plot ticket 01) plus the
+      ``wcs_reprojected`` count of the per-frame WCS reprojection (issue 09).
     """
 
     measurements: tuple[Measurement, ...]
@@ -602,6 +790,44 @@ class MeasureReport:
     def frames(self) -> int:
         """The total number of sub-frames processed (measured + skipped)."""
         return len(self.measurements) + len(self.skipped)
+
+    @property
+    def skip_reasons(self) -> dict[str, int]:
+        """The aggregated skip reasons (issue 09): ``kind -> count`` over the
+        skipped frames (a skip without a kind counts under ``"error"``)."""
+        counts: dict[str, int] = {}
+        for skipped in self.skipped:
+            kind = skipped.kind or "error"
+            counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
+    @property
+    def skip_summary(self) -> str:
+        """A human-readable one-line skip summary: ``"2 frames skipped
+        (non-positive-flux×2)"``, ``"1 frame skipped (outside-image×1)"``, or
+        ``"no frames skipped"``."""
+        count = len(self.skipped)
+        if count == 0:
+            return "no frames skipped"
+        text = f"{count} frame{'s' if count != 1 else ''} skipped"
+        reasons = ", ".join(
+            f"{kind}×{n}" for kind, n in sorted(self.skip_reasons.items()) if n > 0
+        )
+        if reasons:
+            text += f" ({reasons})"
+        return text
+
+    @property
+    def wcs_frames(self) -> int:
+        """The measured frames with at least one WCS-reprojected pick
+        (issue 09)."""
+        return sum(1 for fm in self.frame_results if fm.wcs_reprojected > 0)
+
+    @property
+    def pixel_frames(self) -> int:
+        """The measured frames measured on fixed pixel picks (no WCS or no
+        sky-carrying picks — issue 09)."""
+        return sum(1 for fm in self.frame_results if fm.wcs_reprojected == 0)
 
 
 def _read_frame_fits(project: Any, frame: Any) -> tuple[Any, dict[str, Any]]:
@@ -618,7 +844,8 @@ def _read_frame_fits(project: Any, frame: Any) -> tuple[Any, dict[str, Any]]:
         fits_bytes = read_frame_bytes(project, frame)
     except ProjectError as exc:
         raise MeasurementError(
-            f"cannot read frame {frame.id} of project {project.slug!r}: {exc}"
+            f"cannot read frame {frame.id} of project {project.slug!r}: {exc}",
+            kind="unreadable-frame",
         ) from exc
     try:
         with pyfits.open(io.BytesIO(fits_bytes), memmap=False) as hdul:
@@ -627,43 +854,88 @@ def _read_frame_fits(project: Any, frame: Any) -> tuple[Any, dict[str, Any]]:
     except Exception as exc:
         raise MeasurementError(
             f"frame {frame.id} of project {project.slug!r} is not a readable "
-            f"FITS file: {exc}"
+            f"FITS file: {exc}",
+            kind="unreadable-frame",
         ) from exc
     if data is None:
         raise MeasurementError(
-            f"frame {frame.id} of project {project.slug!r} has no image data"
+            f"frame {frame.id} of project {project.slug!r} has no image data",
+            kind="unreadable-frame",
         )
     return data, header
 
 
+#: Sentinel for :func:`_measure_frame_full`'s ``frame_wcs`` argument: load the
+#: frame's stored WCS from the project db (:func:`load_frame_wcs`).
+_LOAD_WCS = object()
+
+
+def _load_frame_wcs_lenient(project: Any, frame_id: int) -> FrameWcs | None:
+    """The frame's stored WCS record (issue 09), or None when it has none or
+    the record cannot be read — a WCS problem never skips a frame by itself,
+    the fixed pixel picks are used then (logged)."""
+    try:
+        return load_frame_wcs(project, frame_id)
+    except (WcsStoreError, ProjectError) as exc:
+        logger.warning(
+            "cannot load the stored WCS of frame %s (%s) — using the fixed "
+            "pixel picks for it",
+            frame_id,
+            exc,
+        )
+        return None
+
+
 def _measure_frame_full(
-    project: Any, frame: Any, picks: Iterable[Any], aperture: ApertureParams | None
+    project: Any,
+    frame: Any,
+    picks: Iterable[Any],
+    aperture: ApertureParams | None,
+    *,
+    frame_wcs: Any = _LOAD_WCS,
 ) -> tuple[Measurement, FrameMeasurement]:
     """Measure one already-located stored ``frame`` and store the measurement
     via :func:`seestar_controller.store.measurements.add_measurement`.
 
+    - ``frame_wcs`` — the frame's WCS for the per-frame pick reprojection
+      (issue 09): a :class:`~seestar_controller.store.wcs.FrameWcs` record
+      (or its cards mapping / an astropy WCS), None for fixed pixel picks, or
+      the default sentinel to load the frame's stored WCS from the project db
+      via :func:`load_frame_wcs` (a WCS read failure falls back to None).
+
     Returns ``(measurement, frame_measurement)`` — the stored
     :class:`~seestar_controller.store.measurements.Measurement` and the full
-    :class:`FrameMeasurement` (which carries the check-star curves)."""
+    :class:`FrameMeasurement` (which carries the check-star curves and the
+    ``wcs_reprojected`` count)."""
     data, header = _read_frame_fits(project, frame)
-    fm = measure_frame_data(data, header, picks, aperture=aperture, jd=frame.jd)
+    if frame_wcs is _LOAD_WCS:
+        frame_wcs = _load_frame_wcs_lenient(project, frame.id)
+    fm = measure_frame_data(
+        data, header, picks, aperture=aperture, jd=frame.jd, wcs=frame_wcs
+    )
     try:
         measurement = add_measurement(project, frame.id, fm.mag, jd=fm.jd, mag_err=fm.mag_err)
     except StoreMeasurementError as exc:
         raise MeasurementError(
             f"could not store the measurement for frame {frame.id} of project "
-            f"{project.slug!r}: {exc}"
+            f"{project.slug!r}: {exc}",
+            kind="store-failed",
         ) from exc
     return measurement, fm
 
 
 def _measure_frame_obj(
-    project: Any, frame: Any, picks: Iterable[Any], aperture: ApertureParams | None
+    project: Any,
+    frame: Any,
+    picks: Iterable[Any],
+    aperture: ApertureParams | None,
+    *,
+    frame_wcs: Any = _LOAD_WCS,
 ) -> Measurement:
     """Measure one already-located stored ``frame`` and return only the stored
     :class:`~seestar_controller.store.measurements.Measurement` (see
     :func:`_measure_frame_full`)."""
-    return _measure_frame_full(project, frame, picks, aperture)[0]
+    return _measure_frame_full(project, frame, picks, aperture, frame_wcs=frame_wcs)[0]
 
 
 def measure_frame(
@@ -679,12 +951,16 @@ def measure_frame(
     - ``picks`` / ``aperture`` — see :func:`measure_frame_data`;
     - the JD comes from the frame's FITS ``DATE-OBS`` header, falling back to
       the frame's stored ``jd`` when the header has none;
+    - issue 09: when the frame has a stored WCS
+      (:func:`seestar_controller.store.wcs.load_frame_wcs`), picks that carry
+      a sky coordinate are reprojected onto it and measured at the
+      frame-corrected pixel; otherwise the fixed pixel picks are used;
     - the differential mag + error are stored via
       :func:`seestar_controller.store.measurements.add_measurement` (store
       errors wrapped into :class:`MeasurementError`).
 
-    Raises :class:`FrameSkippedError` when a pick falls outside the image or
-    a flux is non-positive.
+    Raises :class:`FrameSkippedError` when a (possibly reprojected) pick falls
+    outside the image or a flux is non-positive.
     """
     if isinstance(frame_id, bool) or not isinstance(frame_id, int):
         raise MeasurementError(f"frame_id must be an int, got {frame_id!r}")
@@ -711,10 +987,18 @@ def measure_project(
       :class:`MeasurementError` before any frame is read). A convenient
       source of picks is :func:`seestar_controller.store.stars.load_star_picks`
       (store records carry their own per-pick aperture);
+    - issue 09: every sub-frame that has a stored WCS
+      (:func:`seestar_controller.store.wcs.load_frame_wcs`) gets its
+      sky-carrying picks reprojected onto that frame's pixel coordinates
+      before measuring; frames without a WCS (or picks without sky
+      coordinates) are measured on the fixed pixel picks. The per-frame
+      ``wcs_reprojected`` count rides on the ``frame_results``, and the
+      report aggregates WCS-reprojected vs fixed-pixel frames
+      (``wcs_frames`` / ``pixel_frames``);
     - every sub-frame is measured via :func:`measure_frame`; a frame whose
       target/comp falls outside the image or whose flux is non-positive (or
-      that cannot be read at all) is recorded as a :class:`SkippedFrame` —
-      never a crash.
+      that cannot be read at all) is recorded as a :class:`SkippedFrame` (with
+      the skip ``kind``, aggregated on ``skip_reasons``) — never a crash.
     """
     picks = list(picks)  # materialize: validated once, then measured per frame
     _normalize_picks(picks, aperture)  # validate the ensemble up front (raises)
@@ -726,7 +1010,9 @@ def measure_project(
             measurement, fm = _measure_frame_full(project, frame, picks, aperture)
         except MeasurementError as exc:
             logger.info("skipping sub-frame %s: %s", frame.id, exc)
-            skipped.append(SkippedFrame(frame_id=frame.id, reason=str(exc)))
+            skipped.append(
+                SkippedFrame(frame_id=frame.id, reason=str(exc), kind=_skip_kind(exc))
+            )
         else:
             measurements.append(measurement)
             frame_results.append(fm)

@@ -98,9 +98,22 @@ Conventions (documented choices):
   target + at least one comp — :func:`~.measure._normalize_picks`) and a bad
   ensemble raises :class:`RunError` BEFORE any frame is measured.
 - **Per-frame failures never kill the run**: a frame that cannot be read, a
-  pick outside the image, or a non-positive flux is recorded as a
-  :class:`~.measure.SkippedFrame` (the same skip semantics as
+  pick outside the image (also after the WCS reprojection), or a
+  non-positive flux is recorded as a
+  :class:`~.measure.SkippedFrame` — now with a machine-readable skip
+  ``kind`` (issue 09), aggregated on the report as ``skip_reasons`` /
+  ``skip_summary`` (the same skip semantics as
   :func:`~.measure.measure_project`).
+- **Per-frame WCS reprojection (issue 09)**: every frame of the session that
+  has a stored WCS record
+  (:func:`seestar_controller.store.wcs.list_solved_frames`, loaded once via
+  :meth:`_call_store`) gets the picks that carry a sky coordinate
+  (``StarPick.ra_deg``/``dec_deg``, ``StarPickSpec.coord``) reprojected onto
+  its pixel coordinates (see
+  :func:`~.measure.resolve_pick_pixels`); frames without a WCS — or picks
+  without sky coordinates — are measured on the fixed pixel picks. The
+  report counts WCS-reprojected vs fixed-pixel frames (``wcs_frames`` /
+  ``pixel_frames`` / ``wcs_summary``).
 - **Excluded frames (frame-quality ticket 03)** are skipped BEFORE any
   measuring (no FITS read, no store write) and recorded as
   :class:`ExcludedFrame`\\ s on the report; they still advance the progress
@@ -136,7 +149,7 @@ from seestar_controller.frame_quality.session import flagged_frame_reasons
 from seestar_controller.store.errors import (
     MeasurementError as StoreMeasurementError,
 )
-from seestar_controller.store.errors import ProjectError, StarPickError
+from seestar_controller.store.errors import ProjectError, StarPickError, WcsStoreError
 from seestar_controller.store.frames import KIND_SUB, Frame, list_frames
 from seestar_controller.store.measurements import (
     Measurement,
@@ -149,6 +162,7 @@ from seestar_controller.store.measurements import (
 from seestar_controller.store.project import utc_now_iso
 from seestar_controller.store.sessions import Session, list_sessions
 from seestar_controller.store.stars import load_star_picks
+from seestar_controller.store.wcs import FrameWcs, list_solved_frames
 
 from .measure import (
     FrameMeasurement,
@@ -156,6 +170,7 @@ from .measure import (
     SkippedFrame,
     _normalize_picks,
     _read_frame_fits,
+    _skip_kind,
     measure_frame_data,
 )
 from .picking import ApertureParams, PhotometryError, PickController, PickSession
@@ -279,6 +294,11 @@ class RunReport:
     - ``excluded`` — the :class:`ExcludedFrame`\\ s (in frame order,
       frame-quality ticket 03): the sub-frames skipped because they were
       excluded (by default: the session's flagged frames).
+    - issue 09: the per-frame WCS reprojection is aggregated too —
+      ``skip_reasons`` / ``skip_summary`` (the skipped frames by kind) and
+      ``wcs_frames`` / ``pixel_frames`` / ``wcs_summary`` (WCS-reprojected vs
+      fixed-pixel measured frames, from the ``frame_results``'s
+      ``wcs_reprojected`` counts).
     """
 
     measurements: tuple[Measurement, ...]
@@ -324,6 +344,58 @@ class RunReport:
         reasons = format_exclusion_reasons(self.excluded_reasons)
         if reasons:
             text += f" ({reasons})"
+        return text
+
+    @property
+    def skip_reasons(self) -> dict[str, int]:
+        """The aggregated skip reasons (issue 09): ``kind -> count`` over the
+        skipped frames — e.g. ``{"non-positive-flux": 479,
+        "outside-image": 2}`` (a skip without a kind counts under
+        ``"error"``)."""
+        counts: dict[str, int] = {}
+        for skipped in self.skipped:
+            kind = skipped.kind or "error"
+            counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
+    @property
+    def skip_summary(self) -> str:
+        """A human-readable one-line skip summary for the results view
+        (issue 09): ``"479 frames skipped (non-positive-flux×479)"``,
+        ``"1 frame skipped (outside-image×1)"``, or ``"no frames skipped"``."""
+        count = len(self.skipped)
+        if count == 0:
+            return "no frames skipped"
+        text = f"{count} frame{'s' if count != 1 else ''} skipped"
+        reasons = format_exclusion_reasons(self.skip_reasons)
+        if reasons:
+            text += f" ({reasons})"
+        return text
+
+    @property
+    def wcs_frames(self) -> int:
+        """The measured frames with at least one pick reprojected through the
+        frame's stored WCS (issue 09)."""
+        return sum(1 for fm in self.frame_results if fm.wcs_reprojected > 0)
+
+    @property
+    def pixel_frames(self) -> int:
+        """The measured frames measured on fixed pixel picks — no stored WCS
+        for the frame, or no pick carrying a sky coordinate (issue 09)."""
+        return sum(1 for fm in self.frame_results if fm.wcs_reprojected == 0)
+
+    @property
+    def wcs_summary(self) -> str:
+        """A human-readable one-line WCS-reprojection coverage of the measured
+        frames (issue 09): ``"8 of 10 frames via per-frame WCS reprojection
+        (2 fixed-pixel)"``, or ``"no frames measured"``."""
+        measured = len(self.frame_results)
+        if measured == 0:
+            return "no frames measured"
+        wcs = self.wcs_frames
+        text = f"{wcs} of {measured} frame{'s' if measured != 1 else ''} via per-frame WCS reprojection"
+        if wcs < measured:
+            text += f" ({measured - wcs} fixed-pixel)"
         return text
 
     @property
@@ -772,6 +844,7 @@ class RunController:
         picks: list[Any],
         aperture: ApertureParams | None,
         *,
+        frame_wcs: Any = None,
         on_stored: Callable[[Measurement, FrameMeasurement], None] | None = None,
     ) -> tuple[Measurement, FrameMeasurement]:
         """Measure one stored frame (FITS read + photometry on the calling
@@ -782,6 +855,11 @@ class RunController:
         (a :class:`~.picking.PhotometryError`) on any per-frame failure — the
         caller records it as skipped.
 
+        - ``frame_wcs`` — the frame's stored WCS (issue 09): a
+          :class:`~seestar_controller.store.wcs.FrameWcs` record (or its
+          cards mapping / an astropy WCS), or None when the frame has none —
+          picks that carry a sky coordinate are reprojected onto it before
+          measuring (fixed pixel picks otherwise);
         - ``on_stored`` — optional hook invoked with the stored
           ``(measurement, frame_measurement)`` on the DB-OWNING thread, inside
           the same store dispatch as the insert — so state published there is
@@ -790,7 +868,9 @@ class RunController:
           which keeps the caller's bookkeeping lists stable).
         """
         data, header = _read_frame_fits(project, frame)
-        fm = measure_frame_data(data, header, picks, aperture=aperture, jd=frame.jd)
+        fm = measure_frame_data(
+            data, header, picks, aperture=aperture, jd=frame.jd, wcs=frame_wcs
+        )
 
         def _store() -> Measurement:
             measurement = add_measurement(
@@ -805,7 +885,8 @@ class RunController:
         except StoreMeasurementError as exc:
             raise MeasurementError(
                 f"could not store the measurement for frame {frame.id} of "
-                f"project {project.slug!r}: {exc}"
+                f"project {project.slug!r}: {exc}",
+                kind="store-failed",
             ) from exc
         return measurement, fm
 
@@ -854,7 +935,9 @@ class RunController:
 
             {"exclude_flagged_frames": true,
              "last_run": {"session_id": ..., "at": ..., "measured": N,
-                          "skipped": N, "excluded_count": N,
+                          "skipped": N, "skip_reasons": {...},
+                          "wcs_frames": N, "pixel_frames": N,
+                          "excluded_count": N,
                           "excluded": [{"frame_id": ..., "reasons": [...]}]}}
 
         The write runs on the db-owning thread (via :meth:`_call_store`, like
@@ -874,6 +957,9 @@ class RunController:
                     "at": utc_now_iso(),
                     "measured": len(report.measurements),
                     "skipped": len(report.skipped),
+                    "skip_reasons": report.skip_reasons,  # issue 09
+                    "wcs_frames": report.wcs_frames,  # issue 09
+                    "pixel_frames": report.pixel_frames,  # issue 09
                     "excluded_count": report.excluded_count,
                     "excluded": [
                         {"frame_id": e.frame_id, "reasons": list(e.reasons)}
@@ -918,8 +1004,14 @@ class RunController:
           are never measured) is measured with the resolved picks and its
           result appended via
           :func:`seestar_controller.store.measurements.add_measurement`
-          (jd, mag, mag_err); a per-frame failure is recorded as a
-          :class:`~.measure.SkippedFrame`, never a crash;
+          (jd, mag, mag_err); issue 09: when the frame has a stored WCS
+          (:func:`seestar_controller.store.wcs.list_solved_frames`), picks
+          that carry a sky coordinate are reprojected onto that frame's pixel
+          coordinates before measuring (fixed pixel picks otherwise — the
+          per-frame mode is aggregated on the report as ``wcs_frames`` /
+          ``pixel_frames``); a per-frame failure is recorded as a
+          :class:`~.measure.SkippedFrame` (with its skip ``kind``, aggregated
+          on ``skip_reasons``), never a crash;
         - the picks come from the shared picker controller, falling back to the
           project's stored picks (see :meth:`_resolve_picks`);
         - one run at a time: a concurrent call raises :class:`RunError`.
@@ -958,6 +1050,24 @@ class RunController:
             frames = self._call_store(
                 lambda: list_frames(project, session_id=session_id, kind=KIND_SUB)
             )
+            # issue 09: the session's solved frames (per-frame WCS records) —
+            # one store call up front, looked up per frame below; a WCS read
+            # failure never kills the run, the fixed pixel picks are used then
+            try:
+                solved_map: dict[int, FrameWcs] = {
+                    w.frame_id: w
+                    for w in self._call_store(
+                        lambda: list_solved_frames(project, session_id)
+                    )
+                }
+            except (WcsStoreError, ProjectError) as exc:
+                logger.warning(
+                    "cannot list the solved frames of session %s (%s) — fixed "
+                    "pixel picks are used for all frames",
+                    session_id,
+                    exc,
+                )
+                solved_map = {}
             # frame-quality ticket 03: resolve the excluded-frame set — None
             # (default) = the session's flagged frames (with their flag
             # reasons); an explicit collection/mapping overrides that.
@@ -991,6 +1101,7 @@ class RunController:
                             frame,
                             picks,
                             aperture,
+                            frame_wcs=solved_map.get(frame.id),
                             on_stored=self._make_report_publisher(
                                 session_id, measurements, frame_results, skipped, excluded
                             ),
@@ -999,7 +1110,11 @@ class RunController:
                         logger.info(
                             "skipping sub-frame %s of session %s: %s", frame.id, session_id, exc
                         )
-                        skipped.append(SkippedFrame(frame_id=frame.id, reason=str(exc)))
+                        skipped.append(
+                            SkippedFrame(
+                                frame_id=frame.id, reason=str(exc), kind=_skip_kind(exc)
+                            )
+                        )
                     else:
                         measurements.append(measurement)
                         frame_results.append(fm)
