@@ -446,6 +446,50 @@ def test_pause_resume_skip_stop_passthroughs_drive_the_executor(harness, project
     assert ex.snapshot.state == ExecutorState.DONE
 
 
+def test_stop_in_flight_marks_stopping_until_the_executor_reaches_done(harness, project):
+    """Ticket 09: ``stop()`` marks the view state ``stopping`` immediately
+    (and emits it) while the executor is still in an active state, and the
+    terminal DONE snapshot — emitted after the capture stored the final
+    frames — clears the flag."""
+    qc = harness.queue_controller
+    qc.add_entry(coord_entry(5.5, -5.0))
+    states: list[ObserveViewState] = []
+    harness.controller.add_listener(states.append)
+    ex = harness.controller.start_night(project, frames_per_target=100)
+    assert wait_until(lambda: ex.state == ExecutorState.STACKING)
+    assert not harness.controller.stopping
+    assert not harness.controller.snapshot.stopping
+
+    # stop is in flight: the flag is set and emitted right away, while the
+    # executor has not transitioned yet (still STACKING, night still active)
+    harness.controller.stop()
+    assert harness.controller.stopping
+    snap = harness.controller.snapshot
+    assert snap.stopping
+    assert snap.night_active
+    assert snap.executor_state == ExecutorState.STACKING
+    assert any(s.stopping for s in states), "no stopping snapshot emitted on stop"
+
+    # the run finishes: the stop is honored, the executor reaches DONE
+    assert ex.wait(timeout=5)
+    assert ex.snapshot.state == ExecutorState.DONE
+    assert not harness.controller.stopping
+    assert not harness.controller.snapshot.stopping
+    assert states[-1].executor_state == ExecutorState.DONE
+    assert not states[-1].stopping
+    # every stopping snapshot came before the terminal one
+    assert all(
+        s.executor_state not in (ExecutorState.DONE, ExecutorState.ABORTED)
+        for s in states
+        if s.stopping
+    )
+
+    # stop with no night running is a no-op and never marks stopping
+    harness.controller.stop()
+    assert not harness.controller.stopping
+    assert not harness.controller.snapshot.stopping
+
+
 def test_park_calls_device_park_and_notifies(harness):
     harness.controller.park()
     assert harness.device.calls_of("park") == [("park",)]

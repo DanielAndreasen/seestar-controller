@@ -22,7 +22,12 @@ dependency — it needs the system GTK headers to build)::
   **Stop**, **Park**, **Session log** (ticket 04 — opens the per-session event
   log + stored frames dialog) — all bound to the controller's passthroughs,
   with an inline status label for errors (start without connection/project,
-  park while disconnected). **Start night** hitting a stale open session
+  park while disconnected) and for the busy state of an in-flight stop
+  (ticket 09 — while the executor stops and the final Stacked frame is still
+  downloading, the night controls are insensitized and the status row shows
+  "Stopping… downloading final frames…" until the executor reaches ``done``
+  and the capture has stored the final frames). **Start night** hitting a
+  stale open session
   (ticket 05 — the app was killed mid-night) opens the
   :class:`~.stale_session_dialog.StaleSessionDialog` (Resume / Close-and-start-new,
   presented via ``GLib.idle_add``) instead of surfacing the raw
@@ -78,6 +83,10 @@ logger = logging.getLogger(__name__)
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
 LEFT_PANE_POSITION = 560
+
+#: Status text shown while a stop is in flight (ticket 09): the executor is
+#: stopping and the capture is downloading the final Stacked frame.
+STOPPING_STATUS_TEXT = "Stopping… downloading final frames…"
 
 
 def texture_from_array(arr: np.ndarray) -> Gdk.Texture:
@@ -412,22 +421,29 @@ class ObserveView(Gtk.Box):
         elif frame is None:
             self._preview_placeholder.set_visible(True)
 
-        # buttons
+        # buttons — ticket 09: while a stop is in flight (state.stopping) the
+        # night controls are gated, so the user cannot stack commands onto the
+        # stopping run; they re-enable when the terminal snapshot arrives.
         connected = self._controller.connection.status == ConnectionStatus.CONNECTED
         has_project = self._project is not None or self._controller.project is not None
+        busy = state.stopping
         self._start_button.set_sensitive(
-            connected and has_project and not state.night_active
+            connected and has_project and not state.night_active and not busy
         )
-        self._pause_button.set_sensitive(state.night_active)
+        self._pause_button.set_sensitive(state.night_active and not busy)
         self._pause_button.set_label(
             "Resume" if state.executor_state.value == "paused" else "Pause"
         )
-        self._skip_button.set_sensitive(state.night_active)
-        self._stop_button.set_sensitive(state.night_active)
-        self._park_button.set_sensitive(connected)
+        self._skip_button.set_sensitive(state.night_active and not busy)
+        self._stop_button.set_sensitive(state.night_active and not busy)
+        self._park_button.set_sensitive(connected and not busy)
 
-        # inline error from the executor
-        if state.error:
+        # status row — the in-flight stop (ticket 09) takes precedence: it is
+        # the feedback that keeps the window from looking hung while the
+        # executor stops and the final frames download.
+        if state.stopping:
+            self._set_status(STOPPING_STATUS_TEXT, error=False)
+        elif state.error:
             self._set_status(state.error, error=True)
         elif not state.night_active and state.executor_state.value in ("done", "aborted"):
             self._set_status(f"night {state.executor_state.value}", error=False)
