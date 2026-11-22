@@ -128,15 +128,24 @@ persisted WCS; re-solving re-persisted it (n_stars=1 parsed from the
   (`GAIA_COLUMNS`, :133) and they are carried through `GaiaStar`
   (:239-243), `CrossmatchRow` (`gaia/matching.py`) into the persisted
   cross-match table.
-* **Caveat as of main @5f36978** (see ISSUES 04/05): the ESA fallback is
-  reached but currently answers HTTP 400 — `build_cone_query` quotes the ESA
-  table as `FROM "gaiadr3.gaia_source"`, which the archive does not resolve
-  (it needs `gaiadr3.gaia_source` unquoted or `"gaiadr3"."gaia_source"`), and
-  `ESA_GAIA_COLUMNS` (:150) still lacks the three error columns. Until fixed,
-  the working offline path is the disk cache: seed it once from the ESA
-  mirror with an unquoted 12-column ADQL (the headless driver does exactly
-  this, §8), after which `run_crossmatch()` is served from cache with no
-  network.
+* The disk cache key is **versioned** (`CACHE_FORMAT_VERSION = 2`,
+  `gaia/query.py:127`, included as `"v": 2` in `gaia_cache_key` :285-310) and a
+  cached row must carry **exactly the 12 star fields**
+  (`_is_gaia_rows`, :658-667), so entries written by an older cache format
+  are never served — they are simply refetched.
+* Since the issue-04/05 fixes (main past d554d28) the ESA fallback **works
+  end-to-end**: `build_cone_query` schema-quotes a dotted table
+  (`_quote_table_ref`, :375-385 → `FROM "gaiadr3"."gaia_source"`, which the
+  archive resolves) and `ESA_GAIA_COLUMNS` (:165-178) selects all 12 columns
+  incl. `parallax_error`/`pmra_error`/`pmdec_error`. Verified by the re-run:
+  with VizieR down, `run_crossmatch()` attempt 1 succeeded in ~45 s (30 s
+  VizieR timeout, then the ESA fetch) — `47/104 matched`, no cache seeding
+  needed.
+* Offline path (still supported): if every endpoint fails, a valid — even
+  expired — v2 cache entry is served as a stale fallback; with no cache at
+  all, `GaiaUnavailableError` surfaces. The headless driver can additionally
+  seed the cache from the ESA mirror with a hand-built unquoted 12-column
+  ADQL (§8) as a last resort.
 
 ## 6. Open the H-R diagram view
 
@@ -207,10 +216,12 @@ snap = solve.solve_open_stack()               # Solve button equivalent
 
 xmatch = CrossmatchController(viewer_controller=viewer, invoke_on_main=invoke)
 xsnap = xmatch.run_crossmatch()               # Cross-match button equivalent
-# attempt 1 walks the endpoint chain (VizieR -> ESA) with the disk cache first;
-# if every endpoint fails, the driver seeds the repo's Gaia disk cache from
-# the ESA mirror (unquoted 12-column ADQL — workaround for ISSUES 04/05)
-# and calls run_crossmatch() again — served from cache with no network.
+# attempt 1: disk cache (v2 key) first, then the endpoint chain VizieR -> ESA
+# (on the re-run VizieR timed out and the ESA mirror answered with the fixed
+# schema-quoted 12-column ADQL — success in ~45 s, no seeding needed);
+# only if every endpoint fails does the driver seed the repo's Gaia disk
+# cache from the ESA mirror (hand-built unquoted 12-column ADQL) and call
+# run_crossmatch() again — served from cache with no network.
 # -> store.crossmatch.list_crossmatched_stacks(project) == [(3, 47, 104)]
 
 hr = HrDiagramController(viewer_controller=viewer, invoke_on_main=invoke)
@@ -229,7 +240,7 @@ hr.export_table('.../crossmatch-table.csv')   # Export CSV equivalent
 Outputs land in the project's `reports/hr-ngc7789/` directory and are copied
 next to the script into `docs/hr-ngc7789/artifacts/`:
 
-| Artifact | Meaning (re-run on main @5f36978) |
+| Artifact | Meaning (re-run on main past d554d28, ESA fallback working) |
 |---|---|
 | `/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/cmd.png` | CMD page, 46 points (720×560) |
 | `.../hr-ngc7789/hr.png` | H-R page, **44 points** (was 0 before the issue-02 fix) |
@@ -242,10 +253,17 @@ Repo-side copies: `docs/hr-ngc7789/artifacts/` (same six files).
 
 ## 9. ISSUES
 
-Issues 01–03 below were reported on this branch, fixed and merged to main
-(merges 81af987 / d82cda6 / 81f1f89, main @5f36978) — **verified fixed** by the
-re-run. Issues 04–06 are **new**, found during the re-run; they are reported,
-not fixed.
+Issues 01–06 were all reported on this branch and are now fixed and merged to
+main — **verified fixed** by the re-runs:
+
+* 01–03: merges 81af987 / d82cda6 / 81f1f89 (main @5f36978), verified in the
+  first re-run (44 H-R points).
+* 04–06: merges cd708da / 3cfa7ff / d554d28 (main past d554d28), verified in
+  the second re-run: `run_crossmatch()` attempt 1 now succeeds via the ESA
+  mirror fallback with the fixed ADQL (45.4 s, no cache seeding), writing a
+  v2-keyed cache entry; H-R still 44 points, CMD 46.
+
+**No new issues were found in the second re-run.**
 
 ### ISSUE 01 (FIXED on main, verified) — Gaia cross-match hard-failed when the hardcoded VizieR TAP endpoint was down
 
@@ -262,25 +280,33 @@ not fixed.
 * Was: `astrometry/solve.py:349-350` hardcoded zeros → panel always showed "solved: 0 stars".
 * Fix (verified): `_parse_solve_field_output` / `_match_file_rows` (`solve.py:296-320+`) parse the `.match` file and the "solved with N stars, RMS x arcsec" line. Re-run: `solved: 1 stars (solve-field)` (`n_stars=1`, `rms_arcsec=None` — allowed, "None when it reports none"; solve-field printed no RMS line for a 1-star match).
 
-### ISSUE 04 (NEW) — ESA fallback is reached but answers HTTP 400: `build_cone_query` quotes the dotted ESA table name as one identifier
+### ISSUE 04 (FIXED on main, verified) — ESA fallback answered HTTP 400: `build_cone_query` quoted the dotted ESA table name as one identifier
 
 * **Exact error** (run-log attempt 1, and reproduced manually): `Gaia TAP at https://gea.esac.esa.int/tap-server/tap/sync returned HTTP 400 (400) for the query`; server body: `Cannot parse query '... FROM "gaiadr3.gaia_source" ...': 14 unresolved identifiers: gaiadr3.gaia_source [l.1 c.126 - l.1 c.147], ra [...], ... - Unknown table ""gaiadr3.gaia_source"" !`
 * **file:line**: `src/seestar_controller/gaia/query.py` — `build_cone_query` FROM clause `f'FROM "{dialect.table}"'` (~:379-380), `ESA_GAIA_DR3_TABLE = "gaiadr3.gaia_source"` (:96), `_TAP_DIALECTS` (:207-216). The archive resolves `gaiadr3.gaia_source` unquoted or `"gaiadr3"."gaia_source"`, but not the single quoted `"gaiadr3.gaia_source"` (verified: quoted table → 400, unquoted or schema-quoted → 200; quoted *columns* are fine).
 * **Repro**: `build_cone_query(0.9653, 55.3454, 0.7765, url=ESA_GAIA_TAP_SYNC_URL)` → `fetch_gaia_tap_json(adql, url=ESA_GAIA_TAP_SYNC_URL)` → `GaiaUnavailableError` HTTP 400. Also visible end-to-end: `CrossmatchController.run_crossmatch()` with an empty cache fails with the aggregated `GaiaUnavailableError` listing VizieR (timeout) and ESA (400).
 * **Root cause**: the VizieR dialect's table `I/355/gaiadr3` is safely quoted as one identifier on VizieR, but the same quoting breaks for the dotted ESA table on the archive.
-* **Suggested fix**: in `build_cone_query`, emit the table unquoted (or split on "." and quote schema and table separately) for the ESA dialect.
+* **Fix (verified)**: `_quote_table_ref` (`query.py:375-385`) splits a dotted
+  table name and quotes each part (`FROM "gaiadr3"."gaia_source"`), which the
+  archive resolves (HTTP 200 in the re-run).
 
-### ISSUE 05 (NEW) — `ESA_GAIA_COLUMNS` lacks the error columns, so even a successful ESA fallback would leave the H-R page empty
+### ISSUE 05 (FIXED on main, verified) — `ESA_GAIA_COLUMNS` lacked the error columns, so even a successful ESA fallback would have left the H-R page empty
 
 * **file:line**: `src/seestar_controller/gaia/query.py:150-160` — `ESA_GAIA_COLUMNS` selects only the 9 original columns; `GAIA_COLUMNS` (:133-146) has 12 incl. `PlxError`/`pmRAError`/`pmDEError`. `_COLUMN_ALIASES` (:163-178) already maps the archive spellings, and `_row_to_star`/`parse_gaia_response` handle them — only the ESA select list is missing them.
 * **Repro**: `build_cone_query(0.9653, 55.3454, 0.7765, url=ESA_GAIA_TAP_SYNC_URL)` (with the ISSUE-04 quoting fixed, e.g. unquoted table) returns stars with `parallax_error=None` → `hr_points` drops them all → 0 H-R points.
-* **Suggested fix**: add `"parallax_error"`, `"pmra_error"`, `"pmdec_error"` to `ESA_GAIA_COLUMNS`.
+* **Fix (verified)**: `ESA_GAIA_COLUMNS` (`query.py:165-178`) now lists all
+  12 columns incl. `parallax_error`/`pmra_error`/`pmdec_error`; the ESA
+  fetch in the re-run returned them (46/104 persisted rows with
+  `parallax_error`, 44 H-R points).
 
-### ISSUE 06 (NEW) — pre-fix Gaia cache entries are shape-valid but error-less and are served fresh for up to 7 days
+### ISSUE 06 (FIXED on main, verified) — pre-fix Gaia cache entries were shape-valid but error-less and served fresh for up to 7 days
 
 * **file:line**: `gaia/query.py:583` `_REQUIRED_STAR_FIELDS = _STAR_FIELDS - {"parallax_error", "pmra_error", "pmdec_error"}`; `:626-630` `_is_gaia_rows` accepts any payload with required ⊆ keys ⊆ star fields; `:604-623` `_row_to_star` reads errors with `.get` → `None`; cache key `gaia_cache_key` (:267-292) has **no schema/column version**, TTL `DEFAULT_TTL_S = 7*24*3600` (:111).
 * **Repro (verified)**: write a 9-field (pre-issue-02) row into `QueryCache` under `gaia_cache_key(10.0, 20.0, 0.1, ...)`, then `query_gaia_cached(10.0, 20.0, 0.1, cache, timeout=5)` returns it **with no HTTP at all** and `parallax_error=None` → cross-match "succeeds" but `hr_points` is empty until the entry expires (7 days) or the cache is cleared manually.
-* **Suggested fix**: include a column-schema version in `gaia_cache_key` (or require the error fields in `_REQUIRED_STAR_FIELDS`), so old entries are refetched once.
+* **Fix (verified)**: `CACHE_FORMAT_VERSION = 2` (`query.py:127`) is part of
+  `gaia_cache_key` (`"v": 2`, :307) and `_is_gaia_rows` (:658-667) now requires
+  exactly the 12 `_STAR_FIELDS` keys per row. The re-run wrote a new v2 entry
+  (`a3dd8709….json`) alongside the orphaned v1 file, which is never matched.
 
 ### Minor behavioural note (not a bug): after cross-matching, `refresh()` leaves `frame_id=None`\n
 `HrDiagramController.refresh()` only auto-selects a stack when the viewer's

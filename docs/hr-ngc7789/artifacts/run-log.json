@@ -1,21 +1,21 @@
 [
   {
     "step": "open_project",
-    "t": 1795360718.541,
+    "t": 1795363145.095,
     "path": "/home/daniel/SeestarProjects/ngc7789",
     "name": "NGC7789",
     "slug": "ngc7789"
   },
   {
     "step": "controllers wired",
-    "t": 1795360718.541,
+    "t": 1795363145.096,
     "viewer_project": "NGC7789",
     "crossmatch_project": "NGC7789",
     "hr_project": "NGC7789"
   },
   {
     "step": "open_stack",
-    "t": 1795360718.749,
+    "t": 1795363145.345,
     "frame_id": 3,
     "label": "2026-11-20T21:33:38.685+00:00 \u2014 M 31",
     "shape": [
@@ -26,7 +26,7 @@
   },
   {
     "step": "load_frame_wcs",
-    "t": 1795360718.749,
+    "t": 1795363145.345,
     "frame_id": 3,
     "solver": "solve-field",
     "n_stars": 1,
@@ -37,74 +37,41 @@
   },
   {
     "step": "solve.refresh_solved",
-    "t": 1795360718.749,
+    "t": 1795363145.345,
     "status": "solved (solve-field, 1 stars)",
     "error": null
   },
   {
     "step": "solve_open_stack",
-    "t": 1795360722.524,
+    "t": 1795363149.393,
     "status": "solved: 1 stars (solve-field)",
     "error": null,
     "solver": "solve-field",
     "n_stars": 1,
     "rms_arcsec": null,
-    "secs": 3.8
+    "secs": 4.0
   },
   {
     "step": "crossmatch before",
-    "t": 1795360722.524,
+    "t": 1795363149.393,
     "crossmatched": [
       3
     ]
   },
   {
     "step": "run_crossmatch (attempt 1, default cache)",
-    "t": 1795360759.172,
-    "status": null,
-    "error": "GaiaUnavailableError: Gaia DR3 cone search around (ra=0.9653, dec=55.3454) radius=0.7765 deg failed and no cached result is available: could not reach the Gaia TAP at any endpoint (https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync, https://gea.esac.esa.int/tap-server/tap/sync): https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync: could not reach Gaia TAP at https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync: <urlopen error timed out>; https://gea.esac.esa.int/tap-server/tap/sync: Gaia TAP at https://gea.esac.esa.int/tap-server/tap/sync returned HTTP 400 (400) for the query. Retry when the network is back \u2014 previously queried fields are served from the offline cache at /home/daniel/.config/seestar-controller/cache/gaia",
-    "stack_frame_id": 3,
-    "n_rows": 104,
-    "radius_arcsec": 1.5,
-    "g_limit": 20.0,
-    "secs": 36.6
-  },
-  {
-    "step": "offline cache seeding: attempt",
-    "t": 1795360759.172,
-    "note": "repo offline path = gaia disk cache; seeding it from the ESA Gaia archive mirror"
-  },
-  {
-    "step": "seed query",
-    "t": 1795360759.185,
-    "center": [
-      0.9652500365386623,
-      55.345379719539864
-    ],
-    "radius_deg": 0.7765007685440583,
-    "key": "{\"dec\": 55.3454, \"g_limit\": 20.0, \"maxrec\": 100000, \"ra\": 0.9653, \"radius_deg\": 0.7765}",
-    "adql_esa": "SELECT ra, dec, source_id, phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag, parallax, parallax_error, pmra, pmra_error, pmdec, pmdec_error FROM gaiadr3.gaia_source WHERE CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', 0.9653, 55.3454, 0.7765)) = 1 AND phot_g_mean_mag < 20.0 ORDER BY phot_g_mean_mag"
-  },
-  {
-    "step": "cache seeded",
-    "t": 1795360772.421,
-    "n_stars": 72776,
-    "cache_file": "/home/daniel/.config/seestar-controller/cache/gaia/73ffda0a36659992f78f681bda676545ee0da79d69faff69a6c412dfdd284f31.json",
-    "secs": 13.2
-  },
-  {
-    "step": "run_crossmatch (attempt 2, seeded cache)",
-    "t": 1795360773.023,
+    "t": 1795363194.811,
     "status": "47/104 matched \u00b7 r=1.5\u2033 \u00b7 G<20",
     "error": null,
     "stack_frame_id": 3,
     "n_rows": 104,
-    "matched": 47,
-    "secs": 0.6
+    "radius_arcsec": 1.5,
+    "g_limit": 20.0,
+    "secs": 45.4
   },
   {
     "step": "crossmatch after",
-    "t": 1795360773.023,
+    "t": 1795363194.811,
     "crossmatched": [
       [
         3,
@@ -115,7 +82,7 @@
   },
   {
     "step": "hr.refresh (1)",
-    "t": 1795360773.073,
+    "t": 1795363194.864,
     "stacks": [
       3
     ],
@@ -125,7 +92,7 @@
   },
   {
     "step": "hr.refresh (2)",
-    "t": 1795360773.114,
+    "t": 1795363194.9,
     "frame_id": 3,
     "stack_label": "2026-11-20T21:33:38.685+00:00 \u2014 M 31",
     "n_table": 104,
@@ -142,39 +109,39 @@
   },
   {
     "step": "export png",
-    "t": 1795360773.171,
+    "t": 1795363194.963,
     "kind": "cmd",
     "n_points": 46,
     "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/cmd.png"
   },
   {
     "step": "export png",
-    "t": 1795360773.217,
+    "t": 1795363195.008,
     "kind": "hr",
     "n_points": 44,
     "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/hr.png"
   },
   {
     "step": "export png",
-    "t": 1795360773.247,
+    "t": 1795363195.039,
     "kind": "stack-marked",
     "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/stack-marked.png"
   },
   {
     "step": "export csv",
-    "t": 1795360773.255,
+    "t": 1795363195.046,
     "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-table.csv",
     "n_rows": 104
   },
   {
     "step": "export png",
-    "t": 1795360773.376,
+    "t": 1795363195.169,
     "kind": "crossmatch-overlay",
     "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-overlay.png"
   },
   {
     "step": "done",
-    "t": 1795360773.376,
+    "t": 1795363195.169,
     "exports": {
       "cmd.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/cmd.png",
       "hr.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/hr.png",
@@ -182,6 +149,6 @@
       "crossmatch-table.csv": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-table.csv",
       "crossmatch-overlay.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-overlay.png"
     },
-    "attempt1_error": "GaiaUnavailableError: Gaia DR3 cone search around (ra=0.9653, dec=55.3454) radius=0.7765 deg failed and no cached result is available: could not reach the Gaia TAP at any endpoint (https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync, https://gea.esac.esa.int/tap-server/tap/sync): https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync: could not reach Gaia TAP at https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync: <urlopen error timed out>; https://gea.esac.esa.int/tap-server/tap/sync: Gaia TAP at https://gea.esac.esa.int/tap-server/tap/sync returned HTTP 400 (400) for the query. Retry when the network is back \u2014 previously queried fields are served from the offline cache at /home/daniel/.config/seestar-controller/cache/gaia"
+    "attempt1_error": null
   }
 ]
