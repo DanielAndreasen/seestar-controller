@@ -1,6 +1,6 @@
 # Issue 07: catalog comp list is nearest-first only — cannot sort by magnitude (needed to pick comps of similar brightness)
 
-**Status:** implemented in edadf16 (pending review)
+**Status:** completed — reviewed (APPROVE), merged to main in 7d53a06
 
 ## Found while
 Live session 2026-11-22 (project vw-cep): while picking comparison stars for VW Cep, the Catalog comps list could only be browsed nearest-first; finding comps with magnitude close to the target (the whole point of differential photometry) was guesswork.
