@@ -221,8 +221,6 @@ __all__ = [
     "ExecutorState",
     "ExecutorStateError",
     "FirstSubFrame",
-    "FIRST_SUB_PREVIEW_MAX_PX",
-    "FIRST_SUB_SOURCE",
     "FrameStoredEvent",
     "FrameStoredListener",
     "InvokeOnMain",
