@@ -224,9 +224,9 @@ def test_star_picker_lists_sub_and_row_click_opens_it(gtk, project, viewer):
     # selecting the raw sub row opens it in the viewer
     picker.list_box.select_row(picker._rows[raw.id])
     pump_main()
-    assert viewer.current_stack() is not None
-    assert viewer.current_stack().frame_id == raw.id
-    assert pc.image is viewer.current_image()  # the pick controller followed
+    assert viewer.current_stack is not None
+    assert viewer.current_stack.frame_id == raw.id
+    assert pc.image is viewer.current_image  # the pick controller followed
 
 
 # --- the H-R view's frame dropdown includes the cross-matched sub -------------
