@@ -115,7 +115,9 @@ class MoverOverlayView(Gtk.Box):
             tooltip_text="The session whose subs are scanned for movers",
         )
         self._session_dropdown.set_hexpand(True)
-        self._session_dropdown.connect("notify::selected", self._on_session_selected)
+        self._session_selected_handler = self._session_dropdown.connect(
+            "notify::selected", self._on_session_selected
+        )
         header.append(self._session_dropdown)
         self._refresh_button = Gtk.Button(
             label="Refresh",
@@ -258,12 +260,32 @@ class MoverOverlayView(Gtk.Box):
         selection when still present). Returns the session ids."""
         sessions = list(self._controller.sessions)
         previous = self.selected_session_id()
-        self._session_ids = list(sessions)
-        self._session_dropdown.set_model(Gtk.StringList.new(self._session_ids))
-        if self._session_ids:
-            index = self._session_ids.index(previous) if previous in self._session_ids else 0
-            self._session_dropdown.set_selected(index)
+        index = sessions.index(previous) if previous in sessions else 0
+        self._set_dropdown(sessions, index if sessions else None)
         return self._session_ids
+
+    def _set_dropdown(self, sessions: list[str], index: int | None) -> bool:
+        """Replace the dropdown model/selection programmatically and make the
+        controller follow the selection. The ``notify::selected`` handler is
+        blocked throughout (``set_model`` already auto-selects and notifies),
+        so the change does not re-enter through it; the controller is driven
+        explicitly instead. Returns True when that changed the controller's
+        session — the controller then notifies with the FRESH snapshot
+        (rendered nested, or queued on the main loop), so the caller must not
+        paint over it with a stale snapshot."""
+        self._session_dropdown.handler_block(self._session_selected_handler)
+        try:
+            self._session_ids = list(sessions)
+            self._session_dropdown.set_model(Gtk.StringList.new(self._session_ids))
+            if index is not None and self._session_ids:
+                self._session_dropdown.set_selected(index)
+        finally:
+            self._session_dropdown.handler_unblock(self._session_selected_handler)
+        session_id = self.selected_session_id()
+        if session_id is not None and session_id != self._controller.session_id:
+            self._controller.select_session(session_id)
+            return True
+        return False
 
     # -- events ------------------------------------------------------------------------
 
@@ -348,22 +370,30 @@ class MoverOverlayView(Gtk.Box):
     def _render(self, snapshot: MoverSnapshot) -> bool:
         """Render a frozen snapshot: the dropdown (only when the session list
         changed), the movers list, the annotated frame, the frame label and
-        the status. Returns ``GLib.SOURCE_REMOVE`` (one-shot idle callback)."""
+        the status. Returns ``GLib.SOURCE_REMOVE`` (one-shot idle callback).
+
+        When the render has to (auto-)select a dropdown entry, the controller
+        is driven to that session and the fresh notification re-renders the
+        view — the render then returns early, so this (now stale) snapshot
+        cannot clobber the fresh state (e.g. blank the frame label)."""
         if tuple(snapshot.sessions) != tuple(self._session_ids):
             previous = self.selected_session_id()
-            self._session_ids = list(snapshot.sessions)
-            self._session_dropdown.set_model(Gtk.StringList.new(self._session_ids))
-            if self._session_ids:
-                if previous in self._session_ids:
-                    index = self._session_ids.index(previous)
-                elif snapshot.session_id in self._session_ids:
-                    index = self._session_ids.index(snapshot.session_id)
+            sessions = list(snapshot.sessions)
+            if sessions:
+                if previous in sessions:
+                    index = sessions.index(previous)
+                elif snapshot.session_id in sessions:
+                    index = sessions.index(snapshot.session_id)
                 else:
                     index = 0
-                self._session_dropdown.set_selected(index)
+            else:
+                index = None
+            if self._set_dropdown(sessions, index):
+                return GLib.SOURCE_REMOVE
         elif snapshot.session_id is None and self._session_ids:
             # auto-select the first session so the view shows something
-            self._session_dropdown.set_selected(0)
+            if self._set_dropdown(list(self._session_ids), 0):
+                return GLib.SOURCE_REMOVE
 
         # movers list
         while (row := self._movers_list.get_row_at_index(0)) is not None:
