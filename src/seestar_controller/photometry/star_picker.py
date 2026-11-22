@@ -22,7 +22,10 @@ window passes both down via
 - **left pane** — the project's **stacks** as a :class:`Gtk.ListBox` (one row
   per :class:`~seestar_controller.enhance.fits_io.StackInfo`, selecting a row
   opens the stack via the viewer controller — the pick controller adopts the
-  opened image automatically), a **Refresh** button, the **role selector**
+  opened image automatically; the list defaults to the stacks, newest-first —
+  photometry is done on stacks, so the subs stay behind the **Show all
+  frames** check button next to Refresh, image-enhance issue 05), a
+  **Refresh** button, the **role selector**
   (Target / Comp / Check :class:`Gtk.DropDown` — the check star is designated
   here and persisted via store.stars on Save, check-star-plot ticket 02),
   the **aperture** spin buttons
@@ -66,7 +69,7 @@ from gi.repository import Adw, Gtk
 
 from ..enhance.fits_io import EnhanceError, StackInfo
 from ..enhance.render import render_preview
-from ..enhance.viewer import texture_from_pil
+from ..enhance.viewer import subtitle_markup, texture_from_pil
 from ..enhance.viewer_controller import ViewerController, ViewerSnapshot
 from .picking import (
     ROLE_CHECK,
@@ -205,7 +208,16 @@ class StarPickerView(Gtk.Box):
             tooltip_text="Re-list the stacks of the current project",
         )
         self._refresh_button.connect("clicked", self._on_refresh_clicked)
-        left.append(self._refresh_button)
+        self._show_all_button = Gtk.CheckButton(
+            label="Show all frames",
+            tooltip_text="Also list the subs and enhanced frames (default: stacks only, "
+            "newest first — photometry is done on stacks)",
+        )
+        self._show_all_button.connect("toggled", self._on_show_all_toggled)
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        controls.append(self._refresh_button)
+        controls.append(self._show_all_button)
+        left.append(controls)
 
         picking_group = Adw.PreferencesGroup(title="Picking")
         role_row = Adw.ActionRow(
@@ -370,6 +382,17 @@ class StarPickerView(Gtk.Box):
     def list_box(self) -> Gtk.ListBox:
         """The stack list."""
         return self._list_box
+
+    @property
+    def refresh_button(self) -> Gtk.Button:
+        """The Refresh button (re-lists the stacks)."""
+        return self._refresh_button
+
+    @property
+    def show_all_button(self) -> Gtk.CheckButton:
+        """The 'Show all frames' check button next to Refresh (the list
+        filter toggle — image-enhance issue 05)."""
+        return self._show_all_button
 
     @property
     def picks_list(self) -> Gtk.ListBox:
@@ -563,12 +586,15 @@ class StarPickerView(Gtk.Box):
         if ids != self._stack_ids:
             self._stack_ids = ids
             self._rebuild_rows(snapshot.stacks)
-        if snapshot.current is not None and snapshot.current.frame_id in self._rows:
-            self._updating = True
-            try:
+        self._updating = True
+        try:
+            # keep the toggle in sync with the controller's filter
+            if self._show_all_button.get_active() != snapshot.show_all:
+                self._show_all_button.set_active(snapshot.show_all)
+            if snapshot.current is not None and snapshot.current.frame_id in self._rows:
                 self._list_box.select_row(self._rows[snapshot.current.frame_id])
-            finally:
-                self._updating = False
+        finally:
+            self._updating = False
         if snapshot.error:
             self._set_status(snapshot.error, error=True)
 
@@ -653,6 +679,14 @@ class StarPickerView(Gtk.Box):
         except EnhanceError as exc:
             self._set_status(str(exc), error=True)
 
+    def _on_show_all_toggled(self, button: Gtk.CheckButton) -> None:
+        """'Show all frames' toggled: switch the controller's list filter
+        (stacks by default — photometry is done on stacks; all stored frames
+        when on)."""
+        if self._updating:
+            return
+        self._viewer_controller.set_show_all(button.get_active())
+
     def _on_aperture_changed(self, _spin: Gtk.SpinButton) -> None:
         if self._updating:
             return
@@ -688,7 +722,8 @@ class StarPickerView(Gtk.Box):
     # -- list rows + status ------------------------------------------------------------------
 
     def _rebuild_rows(self, stacks: tuple[StackInfo, ...]) -> None:
-        """Rebuild the stack list rows from ``stacks``."""
+        """Rebuild the stack list rows from ``stacks`` (the subtitle carries
+        the entry kind, bolded at the front so it scans)."""
         self._rows = {}
         while (row := self._list_box.get_row_at_index(0)) is not None:
             self._list_box.remove(row)
@@ -699,11 +734,9 @@ class StarPickerView(Gtk.Box):
             box.set_margin_start(8)
             box.set_margin_end(8)
             box.append(Gtk.Label(label=stack.label(), xalign=0.0))
-            box.append(
-                Gtk.Label(
-                    label=stack.subtitle(), xalign=0.0, css_classes=["dim-label", "caption"]
-                )
-            )
+            subtitle = Gtk.Label(xalign=0.0, css_classes=["caption"])
+            subtitle.set_markup(subtitle_markup(stack))
+            box.append(subtitle)
             row = Gtk.ListBoxRow(child=box)
             row.frame_id = stack.frame_id  # type: ignore[attr-defined]
             self._rows[stack.frame_id] = row

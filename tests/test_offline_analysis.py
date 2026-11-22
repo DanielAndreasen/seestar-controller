@@ -302,19 +302,28 @@ def test_open_project_offline_switches_mode_and_pushes_project_to_all_controller
 def test_viewer_lists_and_opens_stored_stacks_offline(opened):
     app = opened.app
     stacks = app.viewer.refresh_stacks()
-    # sub-frames ticket 01: the viewer lists ALL stored frames — the 8 subs
-    # (date_obs_str(0..7)) then the stack (date_obs_str(50)), ordered by jd
-    assert [s.kind for s in stacks] == ["sub"] * N_SUBS + ["stack"]
-    assert stacks[-1].frame_id == opened.stored.stack.id
+    # image-enhance issue 05: the DEFAULT list shows the stacks only — here
+    # the single stack on top (newest first), not buried among the 8 subs
+    assert [s.kind for s in stacks] == ["stack"]
+    assert stacks[0].frame_id == opened.stored.stack.id
+    # the full listing behind the show-all toggle carries all stored frames,
+    # still newest-first: the stack (date_obs_str(50)) then the 8 subs
+    all_frames = app.viewer.all_stacks
+    assert [s.kind for s in all_frames] == ["stack"] + ["sub"] * N_SUBS
     image = app.viewer.open_stack(opened.stored.stack.id)
     assert image.data.shape == (SIZE, SIZE)
     assert app.viewer.current_stack is not None
     assert app.viewer.current_stack.frame_id == opened.stored.stack.id
-    # a sub opens exactly like a stack
-    sub_image = app.viewer.open_stack(stacks[0].frame_id)
+    # a sub opens exactly like a stack — even while filtered out of the
+    # default list (open_stack looks frames up in the full listing)
+    sub = next(s for s in all_frames if s.kind == "sub")
+    sub_image = app.viewer.open_stack(sub.frame_id)
     assert sub_image.data.shape == (SIZE, SIZE)
     assert app.viewer.current_stack is not None
     assert app.viewer.current_stack.kind == "sub"
+    # the show-all toggle lists the subs too (newest first)
+    app.viewer.set_show_all(True)
+    assert [s.kind for s in app.viewer.stacks] == ["stack"] + ["sub"] * N_SUBS
     _assert_link_untouched(app)
 
 

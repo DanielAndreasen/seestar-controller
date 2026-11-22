@@ -18,14 +18,15 @@ dependency — it needs the system GTK headers to build)::
 app owns one shared instance; the window passes it down via
 :func:`seestar_controller.ui.views.build_view`):
 
-- **left pane** — the project's listed entries (all stored **frames** — subs,
-  stacks, enhanced, sub-frames ticket 01 — PLUS the file-based stitched
-  **mosaics**, app-improvement ticket 08) as a :class:`Gtk.ListBox` (one row
-  per :class:`~seestar_controller.enhance.fits_io.StackInfo`, label + subtitle
-  with the entry kind) inside a scrolled window, plus a **Refresh** button
-  (re-lists the entries — newly stored frames and newly stitched mosaics
-  appear) and an inline status label for errors; selecting a row opens that
-  entry via
+- **left pane** — the project's listed entries as a :class:`Gtk.ListBox`
+  (one row per :class:`~seestar_controller.enhance.fits_io.StackInfo`, label +
+  subtitle with the entry kind emphasized) inside a scrolled window, plus a
+  **Refresh** button (re-lists the entries — newly stored frames and newly
+  stitched mosaics appear) and a **Show all frames** check button (the
+  list defaults to the stacks + file-based mosaics, newest-first — with 100+
+  subs the stack row would be buried otherwise; toggling lists the subs and
+  enhanced frames too, image-enhance issue 05) and an inline status label
+  for errors; selecting a row opens that entry via
   :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.open_stack`
   (a stored frame) or
   :meth:`~seestar_controller.enhance.viewer_controller.ViewerController.open_path`
@@ -66,6 +67,16 @@ from .viewer_controller import ViewerController, ViewerSnapshot
 LEFT_PANE_POSITION = 360
 
 
+def subtitle_markup(stack: StackInfo) -> str:
+    """The row subtitle as Pango markup with the entry ``kind`` EMPHASIZED
+    (bold) at the front, so the kind scans at a glance in a long list:
+    ``<b>stack</b> · session … · jd …`` (image-enhance issue 05)."""
+    subtitle = stack.subtitle()
+    kind = stack.kind
+    rest = subtitle[len(kind) :] if subtitle.startswith(kind) else f" {subtitle}"
+    return f"<b>{GLib.markup_escape_text(kind)}</b>{GLib.markup_escape_text(rest)}"
+
+
 def texture_from_pil(image: Image.Image) -> Gdk.Texture:
     """Build a :class:`Gdk.Texture` from a PIL image (PNG bytes ->
     ``Gdk.Texture.new_from_bytes`` — the same pattern as the Observe view's
@@ -76,9 +87,9 @@ def texture_from_pil(image: Image.Image) -> Gdk.Texture:
 
 
 class ImageViewer(Gtk.Box):
-    """The Enhance-view image viewer: entry list (all stored frames — subs
-    included — plus the file-based mosaics) on the left, tone-mapped preview
-    on the right, driven by a pure
+    """The Enhance-view image viewer: entry list (stacks + file-based
+    mosaics by default, newest-first; subs/enhanced behind the "show all"
+    toggle) on the left, tone-mapped preview on the right, driven by a pure
     :class:`~seestar_controller.enhance.viewer_controller.ViewerController`.
 
     Constructed with the controller (the app passes its shared instance; a
@@ -142,10 +153,20 @@ class ImageViewer(Gtk.Box):
 
         self._refresh_button = Gtk.Button(
             label="Refresh",
-            tooltip_text="Re-list the entries (frames and mosaics) of the current project",
+            tooltip_text="Re-list the entries (stacks and mosaics; subs/enhanced with "
+            "'Show all frames') of the current project",
         )
         self._refresh_button.connect("clicked", self._on_refresh_clicked)
-        left.append(self._refresh_button)
+        self._show_all_button = Gtk.CheckButton(
+            label="Show all frames",
+            tooltip_text="Also list the subs and enhanced frames (default: stacks and "
+            "mosaics only, newest first)",
+        )
+        self._show_all_button.connect("toggled", self._on_show_all_toggled)
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        controls.append(self._refresh_button)
+        controls.append(self._show_all_button)
+        left.append(controls)
 
         self._status_label = Gtk.Label(label="", wrap=True, halign=Gtk.Align.CENTER)
         left.append(self._status_label)
@@ -221,8 +242,14 @@ class ImageViewer(Gtk.Box):
 
     @property
     def refresh_button(self) -> Gtk.Button:
-        """The Refresh button (re-lists the frames)."""
+        """The Refresh button (re-lists the entries)."""
         return self._refresh_button
+
+    @property
+    def show_all_button(self) -> Gtk.CheckButton:
+        """The 'Show all frames' check button next to Refresh (the list
+        filter toggle — image-enhance issue 05)."""
+        return self._show_all_button
 
     def row_count(self) -> int:
         """The number of frame rows currently shown (test helper)."""
@@ -238,14 +265,15 @@ class ImageViewer(Gtk.Box):
         return label.get_label() if label is not None else ""
 
     def row_subtitle(self, index: int) -> str:
-        """The subtitle (kind · session · jd · …) of the frame row at
-        ``index`` (test helper)."""
+        """The plain-text subtitle (kind · session · jd · …) of the frame row
+        at ``index`` (test helper; the widget renders it with the kind
+        bolded via Pango markup)."""
         row = self._list_box.get_row_at_index(index)
         if row is None:
             return ""
         child = row.get_child()
         subtitle = child.get_last_child() if child is not None else None
-        return subtitle.get_label() if subtitle is not None else ""
+        return subtitle.get_text() if subtitle is not None else ""
 
     # -- rendering ---------------------------------------------------------------------
 
@@ -258,13 +286,17 @@ class ImageViewer(Gtk.Box):
             self._keys = keys
             self._rebuild_rows(snapshot.stacks)
 
-        # select the current entry's row (without re-opening it)
-        if snapshot.current is not None and snapshot.current.key in self._rows:
-            self._updating = True
-            try:
+        # keep the toggle in sync with the controller's filter (without
+        # re-entering the toggled handler)
+        self._updating = True
+        try:
+            if self._show_all_button.get_active() != snapshot.show_all:
+                self._show_all_button.set_active(snapshot.show_all)
+            # select the current entry's row (without re-opening it)
+            if snapshot.current is not None and snapshot.current.key in self._rows:
                 self._list_box.select_row(self._rows[snapshot.current.key])
-            finally:
-                self._updating = False
+        finally:
+            self._updating = False
 
         # preview picture + placeholder + info label
         if snapshot.project_name is None:
@@ -300,7 +332,7 @@ class ImageViewer(Gtk.Box):
     def _rebuild_rows(self, stacks: tuple[StackInfo, ...]) -> None:
         """Rebuild the entry list rows from ``stacks`` (one row per listed
         entry — a stored frame or a file-based mosaic; the subtitle carries
-        the entry kind)."""
+        the entry kind, bolded at the front so it scans)."""
         self._rows = {}
         while (row := self._list_box.get_row_at_index(0)) is not None:
             self._list_box.remove(row)
@@ -311,11 +343,9 @@ class ImageViewer(Gtk.Box):
             box.set_margin_start(8)
             box.set_margin_end(8)
             box.append(Gtk.Label(label=stack.label(), xalign=0.0))
-            box.append(
-                Gtk.Label(
-                    label=stack.subtitle(), xalign=0.0, css_classes=["dim-label", "caption"]
-                )
-            )
+            subtitle = Gtk.Label(xalign=0.0, css_classes=["caption"])
+            subtitle.set_markup(subtitle_markup(stack))
+            box.append(subtitle)
             row = Gtk.ListBoxRow(child=box)
             row.key = stack.key  # type: ignore[attr-defined]
             row.frame_id = stack.frame_id  # type: ignore[attr-defined]
@@ -359,3 +389,10 @@ class ImageViewer(Gtk.Box):
             self._controller.refresh_stacks()
         except EnhanceError as exc:
             self._set_status(str(exc), error=True)
+
+    def _on_show_all_toggled(self, button: Gtk.CheckButton) -> None:
+        """'Show all frames' toggled: switch the controller's list filter
+        (stacks + mosaics by default, all stored frames when on)."""
+        if self._updating:
+            return
+        self._controller.set_show_all(button.get_active())

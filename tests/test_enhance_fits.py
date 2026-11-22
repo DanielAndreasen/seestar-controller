@@ -574,14 +574,24 @@ def test_controller_lists_stacks_on_init(project, stored_stacks):
     stack_frames, sub = stored_stacks
     vc = ViewerController(project)
     assert vc.project is project
-    # sub-frames ticket 01: ALL stored frames are listed (subs included),
-    # ordered by jd — the two stacks (DATE1, DATE2) then the sub (DATE3)
-    assert [s.frame_id for s in vc.stacks] == [f.id for f in stack_frames] + [sub.id]
-    assert [s.kind for s in vc.stacks] == ["stack", "stack", "sub"]
+    # image-enhance issue 05: the DEFAULT list shows the stacks only
+    # (kind="stack"), NEWEST-FIRST — the sub (DATE3) is behind the show-all
+    # toggle, and the full listing stays in all_stacks
+    assert [s.frame_id for s in vc.stacks] == [stack_frames[1].id, stack_frames[0].id]
+    assert [s.kind for s in vc.stacks] == ["stack", "stack"]
+    assert not vc.show_all and vc.snapshot.show_all is False
+    assert [s.frame_id for s in vc.all_stacks] == [sub.id, stack_frames[1].id, stack_frames[0].id]
+    # the show-all toggle lists every stored frame, still newest-first
+    vc.set_show_all(True)
+    assert vc.show_all and vc.snapshot.show_all is True
+    assert [s.frame_id for s in vc.stacks] == [sub.id, stack_frames[1].id, stack_frames[0].id]
+    assert [s.kind for s in vc.stacks] == ["sub", "stack", "stack"]
+    vc.set_show_all(False)
+    assert [s.frame_id for s in vc.stacks] == [stack_frames[1].id, stack_frames[0].id]
     snap = vc.snapshot
     assert isinstance(snap, ViewerSnapshot)
     assert snap.project_name == "M 42 night"
-    assert len(snap.stacks) == 3
+    assert len(snap.stacks) == 2
     assert snap.current is None and snap.image is None and snap.preview is None
     assert snap.error is None
 
@@ -594,7 +604,8 @@ def test_controller_open_stack_loads_and_renders(project, stored_stacks):
     image = vc.open_stack(stack_frames[0].id)
     assert isinstance(image, FitsImage)
     assert image.shape == (32, 32)
-    assert vc.current_stack is vc.stacks[0]
+    assert vc.current_stack is not None and vc.current_stack.frame_id == stack_frames[0].id
+    assert vc.current_stack.kind == "stack"
     assert vc.current_image is image
     assert isinstance(vc.preview, Image.Image)
     assert max(vc.preview.size) <= 1024
@@ -611,7 +622,7 @@ def test_controller_open_stack_cache_by_path_and_mtime(project, stored_stacks):
     again = vc.open_stack(stack_frames[0].id)
     assert again is first  # unchanged file -> cache hit
     # touch the file (new mtime) -> re-read
-    path = vc.stacks[0].path
+    path = next(s.path for s in vc.all_stacks if s.frame_id == stack_frames[0].id)
     os.utime(path, (time.time() + 5, time.time() + 5))
     reread = vc.open_stack(stack_frames[0].id)
     assert reread is not first
@@ -632,7 +643,8 @@ def test_controller_open_unknown_id_raises_and_records(project, stored_stacks):
 def test_controller_open_corrupt_file_raises(project, stored_stacks):
     stack_frames, _sub = stored_stacks
     vc = ViewerController(project)
-    vc.stacks[0].path.write_bytes(b"garbage, not FITS" * 50)
+    path = next(s.path for s in vc.all_stacks if s.frame_id == stack_frames[0].id)
+    path.write_bytes(b"garbage, not FITS" * 50)
     with pytest.raises(EnhanceError):
         vc.open_stack(stack_frames[0].id)
     assert vc.snapshot.error is not None
@@ -656,7 +668,10 @@ def test_controller_set_project_and_clear(project, stored_stacks, root):
     seen = []
     vc.add_listener(seen.append)
     vc.set_project(project)
-    assert len(vc.stacks) == 3  # 2 stacks + 1 sub (all stored frames)
+    # default list filter (issue 05): the 2 stacks only; the sub is in all_stacks
+    assert len(vc.stacks) == 2
+    assert all(s.kind == "stack" for s in vc.stacks)
+    assert len(vc.all_stacks) == 3  # 2 stacks + 1 sub (all stored frames)
     assert vc.snapshot.project_name == "M 42 night"
     # open a stack, then switch project: the open stack is closed
     vc.open_stack(vc.stacks[0].frame_id)

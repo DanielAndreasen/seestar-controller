@@ -281,6 +281,71 @@ def test_picker_lists_stacks_and_open_stack_shows_preview(picker, viewer_control
     assert "64x64" in picker._info_label.get_label()
 
 
+@pytest.fixture()
+def mixed_project(tmp_path):
+    """Issue 05 fixture: a project with two subs AND one stack (jd order:
+    sub, stack, sub) — an unfiltered list would bury the stack among subs."""
+    p = create_project("M 42 mixed", root=tmp_path / "projects")
+    session = start_session(p, clock=frozen(T0))
+    sub1 = store_frame(
+        p, session, KIND_SUB,
+        fits_bytes(synthetic_image(64, seed=3), date_obs=DATE1),
+        meta={"target": "M 42"},
+    )
+    stack = store_frame(
+        p, session, KIND_STACK,
+        fits_bytes(synthetic_image(64, seed=4), date_obs="2026-11-20T22:00:10.000"),
+        meta={"target": "M 42"},
+    )
+    sub2 = store_frame(
+        p, session, KIND_SUB,
+        fits_bytes(synthetic_image(64, seed=5), date_obs="2026-11-20T22:00:20.000"),
+        meta={"target": "M 42"},
+    )
+    yield p, [sub1, stack, sub2]
+    p.close()
+
+
+def test_picker_lists_stacks_only_by_default_show_all_lists_subs(gtk, mixed_project):
+    """Issue 05: the star picker shares the ViewerController, so its frame
+    list DEFAULTS TO THE STACKS ONLY (picking is done on stacks), newest
+    first; the "Show all frames" toggle also lists the subs, and a sub row
+    can still be opened with the toggle on."""
+    from seestar_controller.photometry.star_picker import StarPickerView
+
+    _p, (sub1, stack, sub2) = mixed_project
+    vc = ViewerController(_p)
+    vc.refresh_stacks()
+    pc = PickController(viewer_controller=vc)
+    sc = SuggestionController(pc, lookup=_mock_lookup([]))
+    picker = StarPickerView(
+        picker_controller=pc, viewer_controller=vc, suggest_controller=sc
+    )
+    pump_main()
+    # default: only the stack row, and the toggle is off
+    assert not vc.show_all
+    assert not picker.show_all_button.get_active()
+    assert set(picker._rows) == {stack.id}
+    assert vc.stacks[0].frame_id == stack.id
+    # flip the toggle next to Refresh: subs appear, newest first
+    picker.show_all_button.set_active(True)
+    pump_main()
+    assert vc.show_all
+    assert set(picker._rows) == {sub1.id, stack.id, sub2.id}
+    assert [s.frame_id for s in vc.stacks] == [sub2.id, stack.id, sub1.id]
+    # selecting the stack row opens it for picking (as before)
+    picker.list_box.select_row(picker._rows[stack.id])
+    pump_main()
+    assert vc.current_stack is not None and vc.current_stack.frame_id == stack.id
+    assert vc.current_stack.kind == KIND_STACK
+    assert picker.controller.image is vc.current_image
+    # a sub row is openable with show-all on
+    picker.list_box.select_row(picker._rows[sub2.id])
+    pump_main()
+    assert vc.current_stack is not None and vc.current_stack.frame_id == sub2.id
+    assert vc.current_stack.kind == KIND_SUB
+
+
 def test_click_picks_star_with_dropdown_role(picker, viewer_controller):
     viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
     pump_main()

@@ -11,11 +11,14 @@ Covers (``.scratch/sub-frames/issues/01-viewer-opens-subs.md``):
   stack-only view; None project -> :class:`EnhanceError`; empty project -> [];
 - :class:`~seestar_controller.enhance.viewer_controller.ViewerController` —
   a project with ONLY subs (the "interrupted session" case: empty stacks/)
-  lists the subs; ``open_stack`` on a sub frame id loads the FITS and renders
-  the preview exactly like a stack (grayscale sub -> mode ``L`` preview, RGB
-  sub -> mode ``RGB`` preview — the RGB path of :func:`~.fits_io.load_fits`
-  + :func:`~.render.render_preview`); the snapshot carries the open sub;
-  unknown id -> :class:`EnhanceError` recorded in the snapshot;
+  lists nothing by default (issue 05: the default list is stacks only) and
+  the subs behind the ``show_all`` toggle, newest-first;
+  ``open_stack`` on any frame id (sub, stack, enhanced — visible or not)
+  loads the FITS and renders the preview exactly like a stack (grayscale sub
+  -> mode ``L`` preview, RGB sub -> mode ``RGB`` preview — the RGB path of
+  :func:`~.fits_io.load_fits` + :func:`~.render.render_preview`); the
+  snapshot carries the open frame; unknown id -> :class:`EnhanceError`
+  recorded in the snapshot;
 - the package boundary: a subprocess test asserting the touched pure modules
   still import no ``gi`` (mirrors tests/test_enhance_fits.py);
 - ``list_project_frames`` is exported from the package.
@@ -224,12 +227,18 @@ def test_list_project_frames_none_project_raises():
 def test_viewer_lists_subs_of_subs_only_project(subs_only_project):
     project, subs = subs_only_project
     vc = ViewerController(project)
-    assert [s.frame_id for s in vc.stacks] == [f.id for f in subs]
+    # image-enhance issue 05: the DEFAULT list is stacks only, so a subs-only
+    # project lists nothing until the show-all toggle is switched on
+    assert not vc.stacks
+    assert not vc.show_all
+    vc.set_show_all(True)
+    assert [s.frame_id for s in vc.stacks] == [subs[1].id, subs[0].id]  # newest first
     assert [s.kind for s in vc.stacks] == ["sub", "sub"]
     snap = vc.snapshot
     assert isinstance(snap, ViewerSnapshot)
     assert snap.project_name == "NGC7789 subs only"
     assert len(snap.stacks) == 2
+    assert snap.show_all is True
     assert snap.current is None and snap.error is None
 
 
@@ -281,6 +290,58 @@ def test_viewer_open_stack_and_enhanced_still_work(project, stored_frames):
     assert vc.current_stack is not None and vc.current_stack.kind == "enhanced"
 
 
+# --- image-enhance issue 05: default stack list is stacks-only, newest-first, show-all toggle ------
+
+
+def test_viewer_default_lists_only_stacks_newest_first(project, stored_frames):
+    """Issue 05: with subs + a stack + an enhanced frame stored, the default
+    list contains ONLY the stack; the show-all toggle lists everything,
+    always NEWEST-FIRST (descending jd)."""
+    vc = ViewerController(project)
+    assert vc.show_all is False
+    assert [s.frame_id for s in vc.stacks] == [stored_frames["stack"].id]
+    assert [s.kind for s in vc.stacks] == ["stack"]
+    # the full listing (any kind) stays available and is newest-first too
+    assert [s.frame_id for s in vc.all_stacks] == [
+        stored_frames["enhanced"].id,  # DATE4
+        stored_frames["rgb_sub"].id,   # DATE3
+        stored_frames["stack"].id,     # DATE2
+        stored_frames["sub"].id,       # DATE1
+    ]
+    # the toggle switches the visible list, not the stored listing
+    seen = []
+    vc.add_listener(seen.append)
+    vc.set_show_all(True)
+    assert vc.show_all and vc.snapshot.show_all is True
+    assert [s.frame_id for s in vc.stacks] == [s.frame_id for s in vc.all_stacks]
+    assert [s.kind for s in vc.stacks] == ["enhanced", "sub", "stack", "sub"]
+    assert seen and seen[-1].show_all is True
+    vc.set_show_all(False)
+    assert not vc.show_all and vc.snapshot.show_all is False
+    assert [s.frame_id for s in vc.stacks] == [stored_frames["stack"].id]
+    # re-setting the same value is a no-op (no extra notification)
+    n = len(seen)
+    vc.set_show_all(False)
+    assert len(seen) == n
+
+
+def test_viewer_open_stack_opens_any_kind_even_when_filtered_out(project, stored_frames):
+    """Issue 05: open_stack still opens a sub/enhanced frame even though the
+    default list hides it (lookup goes through the full listing), and with
+    show-all on the same frames are visible in the list too."""
+    vc = ViewerController(project)
+    assert all(s.kind == "stack" for s in vc.stacks)
+    image = vc.open_stack(stored_frames["sub"].id)  # sub not in the visible list
+    assert image.shape == (32, 32)
+    assert vc.current_stack is not None and vc.current_stack.kind == "sub"
+    assert vc.current_stack.frame_id == stored_frames["sub"].id
+    vc.set_show_all(True)
+    rgb = vc.open_stack(stored_frames["rgb_sub"].id)
+    assert rgb.is_rgb and vc.current_stack is not None and vc.current_stack.kind == "sub"
+    enh = vc.open_stack(stored_frames["enhanced"].id)
+    assert enh.shape == (48, 48) and vc.current_stack.kind == "enhanced"
+
+
 def test_viewer_open_unknown_id_raises_and_records(subs_only_project):
     project, _subs = subs_only_project
     vc = ViewerController(project)
@@ -295,6 +356,7 @@ def test_viewer_refresh_picks_up_newly_stored_sub(subs_only_project):
     """A sub stored after the listing is found by open_stack (refresh-once)."""
     project, subs = subs_only_project
     vc = ViewerController(project)
+    vc.set_show_all(True)  # issue 05: subs are behind the show-all toggle
     assert len(vc.stacks) == 2
     late = store_frame(
         project, subs[0].session_id, KIND_SUB,
@@ -303,6 +365,8 @@ def test_viewer_refresh_picks_up_newly_stored_sub(subs_only_project):
     image = vc.open_stack(late.id)  # not in the stale list -> refresh once
     assert image.shape == (16, 16)
     assert len(vc.stacks) == 3
+    # newest-first: the late sub (DATE4) is on top
+    assert vc.stacks[0].frame_id == late.id
 
 
 # --- package boundary + exports --------------------------------------------------------

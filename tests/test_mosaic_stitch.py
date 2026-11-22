@@ -739,8 +739,11 @@ def test_stitched_mosaic_is_listed_and_openable_in_enhance_viewer(project):
     with pytest.raises(EnhanceError):
         list_project_mosaics(None)
 
-    # the viewer controller lists it among its entries and opens it by path
+    # the viewer controller lists it among its entries (issue 05: mosaics
+    # are file-based entries and stay in the DEFAULT stacks-only list) and
+    # opens it by path
     vc = ViewerController(project)
+    assert not vc.show_all
     assert info in vc.stacks
     assert vc.mosaics == (info,)
     seen = []
@@ -814,6 +817,11 @@ def test_mosaic_entry_has_no_preset_but_the_pipeline_consumes_it(project):
     assert frame.kind == "enhanced"
     assert frame.session_id == sid
     assert [f.id for f in list_frames(project, session_id=sid, kind="enhanced")] == [frame.id]
-    # the enhanced derivative is a normal frame: listed and openable by id
-    assert frame.id in [s.frame_id for s in vc.refresh_stacks()]
+    # the enhanced derivative is a normal frame: in the full listing once
+    # refreshed (and in the visible list once show-all is on), openable by id
+    vc.refresh_stacks()
+    assert frame.id in [s.frame_id for s in vc.all_stacks]
+    assert frame.id not in [s.frame_id for s in vc.stacks]  # default: stacks+mosaics
+    vc.set_show_all(True)
+    assert frame.id in [s.frame_id for s in vc.stacks]
     assert vc.open_stack(frame.id).data.shape == (TILE, TILE + 64)

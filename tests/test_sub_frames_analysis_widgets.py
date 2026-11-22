@@ -208,6 +208,9 @@ def test_star_picker_lists_sub_and_row_click_opens_it(gtk, project, viewer):
     """The star picker's frame list shows the subs (with the kind in the
     row subtitle); selecting the sub row opens it in the shared viewer."""
     _p, raw, solved = project
+    # issue 05: the picker list defaults to stacks only — flip the show-all
+    # toggle so the subs are listed
+    viewer.set_show_all(True)
     pc = PickController(viewer_controller=viewer)
     suggest = SuggestionController(pc, lookup=lambda coord, radius_deg: [])
     picker = StarPickerView(
@@ -217,9 +220,10 @@ def test_star_picker_lists_sub_and_row_click_opens_it(gtk, project, viewer):
     rows = [picker.list_box.get_row_at_index(i) for i in range(2)]
     assert all(r is not None for r in rows)
     assert set(picker._rows) == {raw.id, solved.id}
-    # the listed frames are the subs, with the kind in the row subtitle
-    assert {s.kind for s in viewer.stacks} == {KIND_SUB}
-    assert all("sub" in s.subtitle() for s in viewer.stacks)
+    # the listed frames are the subs, newest first, with the kind in the subtitle
+    assert [s.kind for s in viewer.stacks] == [KIND_SUB, KIND_SUB]
+    assert [s.frame_id for s in viewer.stacks] == [solved.id, raw.id]  # newest first
+    assert all(s.subtitle().startswith("sub") for s in viewer.stacks)
 
     # selecting the raw sub row opens it in the viewer
     picker.list_box.select_row(picker._rows[raw.id])
