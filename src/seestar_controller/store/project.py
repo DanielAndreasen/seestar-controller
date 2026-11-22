@@ -63,6 +63,16 @@ directory, but only when the path really is a project (parseable
 module-level :data:`_OPEN_PROJECTS` weak set and unregisters on
 :meth:`Project.close`, and :func:`delete_project` refuses with
 :class:`~.errors.ProjectOpenError` while any live handle has the same path.
+
+Re-opening (issue 08): :func:`open_project` on a path that is ALREADY open is
+a no-op — it returns the existing live handle instead of a second
+:class:`Project`, so re-opening a project can never swap the handle
+controllers hold. A handle whose db was nevertheless closed (e.g. it missed
+the re-open event) is revived in place by :meth:`Project.ensure_open`, which
+reconnects to ``db.sqlite`` (WAL, foreign keys ON) and re-registers the
+handle — the app controllers call it before every store access (see their
+``_call_store``), so a stale handle can no longer raise
+``sqlite3.ProgrammingError: Cannot operate on a closed database``.
 """
 
 from __future__ import annotations
@@ -124,9 +134,21 @@ _CONFIG_PLACEHOLDERS = ("target", "star_picks", "period")
 _NON_ALNUM_RUN = re.compile(r"[^a-z0-9]+")
 
 #: The live open-project handles (weak refs): :func:`open_project` registers
-#: every :class:`Project` it returns, :meth:`Project.close` discards it. Used
-#: by :func:`delete_project` to refuse deleting a project that is still open.
+#: every :class:`Project` it returns, :meth:`Project.close` discards it,
+#: :meth:`Project.ensure_open` re-registers a revived one. Used by
+#: :func:`open_project` (re-opening an open path returns the existing handle)
+#: and by :func:`delete_project` (refuses deleting a project that is open).
 _OPEN_PROJECTS: weakref.WeakSet[Project] = weakref.WeakSet()
+
+
+def _connect_db(db_path: Path) -> sqlite3.Connection:
+    """Open ``db_path`` in WAL mode with foreign keys ON — the connection
+    setup shared by :func:`open_project` and :meth:`Project.ensure_open`
+    (crash safety + referential integrity on every connection)."""
+    db = sqlite3.connect(db_path)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA foreign_keys=ON")
+    return db
 
 
 def default_project_root(env: Mapping[str, str] | None = None) -> Path:
@@ -225,7 +247,10 @@ class Project:
     - ``db`` — the open :class:`sqlite3.Connection` to ``db.sqlite`` with
       foreign keys ON; use ``with project.db:`` for transactional writes.
 
-    Use :meth:`close` (or a ``with`` block) to close the db connection.
+    Use :meth:`close` (or a ``with`` block) to close the db connection, and
+    :meth:`ensure_open` to revive a handle whose db was closed (issue 08 —
+    e.g. the same project path was re-opened while this handle was still
+    referenced by a controller).
     """
 
     def __init__(
@@ -234,6 +259,7 @@ class Project:
         self.path = Path(path)
         self.config = config
         self.db = db
+        self._db_closed = False
 
     @property
     def name(self) -> str:
@@ -271,6 +297,24 @@ class Project:
         Idempotent."""
         _OPEN_PROJECTS.discard(self)
         self.db.close()
+        self._db_closed = True
+
+    def ensure_open(self) -> None:
+        """Make sure this handle's db connection is live, reopening it when
+        it was closed (issue 08): a :class:`Project` whose db was closed —
+        e.g. because the same project path was re-opened and this stale
+        handle was kept by a controller — gets a fresh connection to
+        ``db.sqlite`` (WAL mode, foreign keys ON, see :func:`_connect_db`)
+        and is registered as open again. No-op while the db is still open.
+
+        Must be called on the thread that owns the db connection (the app
+        controllers call it from their ``_call_store``, right before the
+        store call itself, so the sqlite thread-affinity is preserved).
+        """
+        if self._db_closed:
+            self.db = _connect_db(self.db_path)
+            self._db_closed = False
+            _OPEN_PROJECTS.add(self)
 
     def __enter__(self) -> Self:
         return self
@@ -354,8 +398,23 @@ def _missing_tables(db: sqlite3.Connection) -> list[str]:
     return sorted(set(schema.SCHEMA_TABLES) - tables)
 
 
-def open_project(path: str | Path) -> Project:
+def open_project(path: str | Path, *, fresh: bool = False) -> Project:
     """Open and validate the project at ``path`` (its directory).
+
+    Re-opening an ALREADY-OPEN path is a no-op (issue 08): when a live
+    handle from a previous :func:`open_project` call has the same (resolved)
+    path, that existing handle is returned instead of a new :class:`Project`
+    with a second db connection — so re-opening a project can never swap the
+    handle the controllers hold. The returned handle is guaranteed live
+    (:meth:`Project.ensure_open` revives it if its db was closed).
+
+    ``fresh=True`` opts out of the no-op and always opens a new
+    :class:`Project` with its own db connection, even when the path is
+    already open — for callers that genuinely need a second, thread-local
+    connection (the report worker thread, whose sqlite objects must be
+    created on that thread; WAL makes the concurrent access safe). The extra
+    handle is registered in :data:`_OPEN_PROJECTS` like any other and is
+    closed by the caller.
 
     Validation: ``path`` must be an existing directory containing a parseable
     ``project.json`` with the required keys (``name``, ``slug``,
@@ -379,6 +438,16 @@ def open_project(path: str | Path) -> Project:
     success the caller owns the connection (see :class:`Project`).
     """
     path = Path(path)
+    resolved = path.resolve()
+    if not fresh:
+        for open_handle in _OPEN_PROJECTS:
+            if Path(open_handle.path).resolve() == resolved:
+                # already open: return the existing live handle (issue 08) —
+                # opening a second connection would leave every holder of the
+                # old handle with a closed db ("Cannot operate on a closed
+                # database") once that handle is closed
+                open_handle.ensure_open()
+                return open_handle
     if not path.is_dir():
         raise ProjectNotFoundError(f"no project at {path} (not a directory)")
     config_path = path / PROJECT_FILE
@@ -409,9 +478,7 @@ def open_project(path: str | Path) -> Project:
     db: sqlite3.Connection | None = None
     opened = False
     try:
-        db = sqlite3.connect(db_path)
-        db.execute("PRAGMA journal_mode=WAL")  # crash safety, also for migrated dbs
-        db.execute("PRAGMA foreign_keys=ON")
+        db = _connect_db(db_path)
         user_version = db.execute("PRAGMA user_version").fetchone()[0]
         if user_version >= 1:
             # a db at version >= 1 must already have all tables; a v0 db is

@@ -268,12 +268,15 @@ class SessionReportPanel(Gtk.Box):
         connection is bound to that thread (``sqlite3.connect`` default
         ``check_same_thread=True``) — a store read from the worker through
         it raises ``sqlite3.ProgrammingError``. So the project directory is
-        re-opened here with :func:`~seestar_controller.store.open_project`:
-        the db runs in WAL mode, so a second connection on another thread is
-        a safe concurrent reader, and the whole report (data collection,
-        plot rendering, atomic file write) runs on the worker against it —
-        every sqlite object is used only on the thread that created it and
-        the main loop stays free. The fresh connection is closed when done.
+        re-opened here with :func:`~seestar_controller.store.open_project`
+        (``fresh=True`` — since issue 08 a plain re-open of an open path
+        returns the existing main-thread handle, which stays thread-bound):
+        the fresh handle gets its own db connection created on this worker
+        thread, the db runs in WAL mode, so it is a safe concurrent reader,
+        and the whole report (data collection, plot rendering, atomic file
+        write) runs on the worker against it — every sqlite object is used
+        only on the thread that created it and the main loop stays free. The
+        fresh connection is closed when done.
 
         A project handle without a ``path`` (not a real store project) is
         passed through unchanged — ``func`` applies its own contract.
@@ -281,7 +284,7 @@ class SessionReportPanel(Gtk.Box):
         project_path = getattr(self._project, "path", None)
         if project_path is None:
             return func(self._project, self._session_id)
-        with open_project(project_path) as worker_project:
+        with open_project(project_path, fresh=True) as worker_project:
             return func(worker_project, self._session_id)
 
     def _on_worker_done(self, what: str, outcome: tuple[bool, Path | None, Exception | None]) -> bool:

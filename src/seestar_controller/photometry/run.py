@@ -623,15 +623,25 @@ class RunController:
         waits for the result — so :meth:`run_session` is safe to call from a
         worker thread while every sqlite access stays on the db-owning thread
         (the same pattern as observing's ``SessionCapture``).
-        """
+
+        Before ``fn`` runs, the current project handle is ensured live
+        (:meth:`~seestar_controller.store.project.Project.ensure_open`) when
+        its db was closed (issue 08: re-opening a project used to leave
+        controllers holding a stale, closed handle) — on the same thread
+        ``fn`` runs on, so the sqlite thread-affinity is preserved."""
+        project = self._project
         db_thread = self._db_thread_id
         if db_thread is None or db_thread == threading.get_ident():
+            if project is not None:
+                project.ensure_open()  # issue 08: revive a closed db handle
             return fn()
         box: dict[str, Any] = {}
         done = threading.Event()
 
         def wrapper() -> None:
             try:
+                if project is not None:
+                    project.ensure_open()  # issue 08: same, on the db thread
                 box["result"] = fn()
             except BaseException as exc:  # re-raised on the calling thread  # noqa: BLE001
                 box["error"] = exc

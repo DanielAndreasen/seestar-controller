@@ -482,15 +482,26 @@ class SolveController:
         """Run the store callable ``fn`` and return its result — direct on
         the db-owning thread, otherwise marshalled through
         ``invoke_on_main`` with a wait (the same pattern as the gaia
-        cross-match controller)."""
+        cross-match controller).
+
+        Before ``fn`` runs, the current project handle is ensured live
+        (:meth:`~seestar_controller.store.project.Project.ensure_open`) when
+        its db was closed (issue 08: re-opening a project used to leave
+        controllers holding a stale, closed handle) — on the same thread
+        ``fn`` runs on, so the sqlite thread-affinity is preserved."""
+        project = self._project
         db_thread = self._db_thread_id
         if db_thread is None or db_thread == threading.get_ident():
+            if project is not None:
+                project.ensure_open()  # issue 08: revive a closed db handle
             return fn()
         box: dict[str, Any] = {}
         done = threading.Event()
 
         def wrapper() -> None:
             try:
+                if project is not None:
+                    project.ensure_open()  # issue 08: same, on the db thread
                 box["result"] = fn()
             except BaseException as exc:  # re-raised on the calling thread  # noqa: BLE001
                 box["error"] = exc
@@ -793,15 +804,26 @@ class DriftController:
         """Run the store callable ``fn`` and return its result — direct on
         the db-owning thread, otherwise marshalled through
         ``invoke_on_main`` with a wait (the same pattern as the gaia
-        cross-match controller)."""
+        cross-match controller).
+
+        Before ``fn`` runs, the current project handle is ensured live
+        (:meth:`~seestar_controller.store.project.Project.ensure_open`) when
+        its db was closed (issue 08: re-opening a project used to leave
+        controllers holding a stale, closed handle) — on the same thread
+        ``fn`` runs on, so the sqlite thread-affinity is preserved."""
+        project = self._project
         db_thread = self._db_thread_id
         if db_thread is None or db_thread == threading.get_ident():
+            if project is not None:
+                project.ensure_open()  # issue 08: revive a closed db handle
             return fn()
         box: dict[str, Any] = {}
         done = threading.Event()
 
         def wrapper() -> None:
             try:
+                if project is not None:
+                    project.ensure_open()  # issue 08: same, on the db thread
                 box["result"] = fn()
             except BaseException as exc:  # re-raised on the calling thread  # noqa: BLE001
                 box["error"] = exc

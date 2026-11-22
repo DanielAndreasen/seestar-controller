@@ -49,6 +49,7 @@ from seestar_controller.frame_quality import (
     session_trends,
     trend_to_screen,
 )
+from seestar_controller.frame_quality import trends as trends_module
 from seestar_controller.store import (
     KIND_SUB,
     SessionNotFoundError,
@@ -659,11 +660,17 @@ def test_quality_controller_follows_viewer_controller(project):
     assert viewer._listeners == []
 
 
-def test_quality_controller_snapshot_never_raises_on_store_failure(project):
+def test_quality_controller_snapshot_never_raises_on_store_failure(project, monkeypatch):
     _project_with_two_sessions(project)
     qc = QualityController(project)
     assert qc.snapshot.error is None
-    project.close()  # the db is gone now — reads fail
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("injected store failure")
+
+    # issue 08: a closed db handle is revived by ensure_open(), so the failure
+    # is injected at the store function instead of via project.close()
+    monkeypatch.setattr(trends_module, "list_sessions", boom)
     snap = qc.snapshot
     assert snap.error is not None
     assert "Error" in snap.error
