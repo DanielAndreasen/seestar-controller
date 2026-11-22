@@ -282,6 +282,38 @@ def test_viewer_no_project_placeholder(gtk):
 # --- image-enhance issue 05: default list is stacks only (newest first), "Show all" toggle lists subs ---
 
 
+def test_viewer_row_subtitle_markup_bolds_the_kind(viewer, viewer_controller):
+    """Reviewer follow-up: row_subtitle() reads get_text(), which would pass
+    even without the markup — assert the rendered subtitle label's Pango
+    markup really carries the bold kind, and that subtitle_markup() escapes
+    markup-special characters in the rest of the subtitle."""
+    from seestar_controller.enhance.viewer import subtitle_markup
+
+    stack = viewer_controller.stacks[0]  # newest stack is row 0
+    assert stack.kind == "stack"
+    # the shared helper: kind bolded at the front
+    assert subtitle_markup(stack).startswith("<b>stack</b>")
+    # the rendered row label exposes the same markup via get_label()
+    # (GTK4 has no get_markup(); get_label() returns the set markup string)
+    row = viewer.list_box.get_row_at_index(0)
+    label = row.get_child().get_last_child()
+    assert "<b>stack</b>" in label.get_label()
+    # ...while the plain-text helpers still see the unescaped subtitle
+    assert label.get_text() == viewer.row_subtitle(0) == stack.subtitle()
+    # escaping: markup-special characters in the rest are escaped
+    from pathlib import Path
+
+    from seestar_controller.enhance.fits_io import StackInfo
+
+    esc = StackInfo(
+        frame_id=1, session_id="A&B <x>", session_started_at=None,
+        path=Path("/tmp/x.fits"), jd=2461365.5, utc="2026-11-20T22:00:00.000+00:00",
+        target=None, exposure=None, gain=None, kind="sub",
+    )
+    assert esc.subtitle() == "sub · session A&B <x> · jd 2461365.500000"
+    assert subtitle_markup(esc) == "<b>sub</b> · session A&amp;B &lt;x&gt; · jd 2461365.500000"
+
+
 def test_viewer_default_lists_stacks_only_newest_first(gtk, mixed_project):
     from seestar_controller.enhance.viewer import ImageViewer
 
