@@ -115,6 +115,20 @@ def _check_stack(stack: StackInfo | None) -> StackInfo:
     return stack
 
 
+def _check_frame_id(stack: StackInfo) -> int:
+    """The frames-row id of ``stack`` for the per-frame preset functions;
+    :class:`EnhanceError` for a file-based entry (a stitched mosaic has no
+    ``frames`` row, so it has no per-frame preset — app-improvement ticket
+    08)."""
+    if stack.frame_id is None:
+        raise EnhanceError(
+            f"cannot use a preset with the file-based {stack.kind} "
+            f"{stack.session_id!r}: presets are per stored frame (a frames row "
+            "id) and this entry has none"
+        )
+    return stack.frame_id
+
+
 def _check_pipeline(pipeline: Pipeline | None) -> Pipeline:
     if not isinstance(pipeline, Pipeline):
         raise EnhanceError(f"needs a Pipeline, got {pipeline!r}")
@@ -293,7 +307,7 @@ def save_preset_for(
     stack = _check_stack(stack)
     pipeline = _check_pipeline(pipeline)
     try:
-        return save_preset(project, stack.frame_id, pipeline.to_dict())
+        return save_preset(project, _check_frame_id(stack), pipeline.to_dict())
     except ProjectError as exc:
         raise EnhanceError(
             f"cannot save the preset of stack {stack.frame_id}: {exc}"
@@ -310,6 +324,9 @@ def load_preset_for(project: Project, stack: StackInfo) -> Pipeline | None:
     """
     project = _check_project(project)
     stack = _check_stack(stack)
+    if stack.frame_id is None:
+        # a file-based entry (a stitched mosaic) has no frames row -> no preset
+        return None
     try:
         preset = load_preset(project, stack.frame_id)
     except ProjectError as exc:
@@ -328,7 +345,7 @@ def delete_preset_for(project: Project, stack: StackInfo) -> bool:
     project = _check_project(project)
     stack = _check_stack(stack)
     try:
-        return delete_preset(project, stack.frame_id)
+        return delete_preset(project, _check_frame_id(stack))
     except ProjectError as exc:
         raise EnhanceError(
             f"cannot delete the preset of stack {stack.frame_id}: {exc}"

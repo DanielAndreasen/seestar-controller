@@ -15,14 +15,19 @@ and the Enhance view's :class:`~.viewer.ImageViewer` widget renders:
 - :meth:`set_project` — set/replace the current store project (the Projects
   view is a later ticket, so for now the app sets it programmatically; with no
   project the view shows a "no project" placeholder);
-- :meth:`refresh_stacks` / :attr:`stacks` — (re-)list the project's stored
-  frames via :func:`~.fits_io.list_project_frames` — ALL of them (subs,
-  stacks, enhanced; sub-frames ticket 01), each carrying its ``kind``;
+- :meth:`refresh_stacks` / :attr:`stacks` — (re-)list the project's listed
+  entries via :func:`~.fits_io.list_project_frames` — ALL stored frames (subs,
+  stacks, enhanced; sub-frames ticket 01) — PLUS the file-based stitched
+  mosaics via :func:`~.fits_io.list_project_mosaics` (app-improvement ticket
+  08), each carrying its ``kind``;
 - :meth:`open_stack` — open one frame by frame id (any kind — a sub opens
   exactly like a stack): the FITS is loaded through
   :func:`~.fits_io.load_fits` (cached by ``path`` + mtime, so re-opening an
   unchanged file is free and a changed file is re-read) and a tone-mapped
   preview is rendered through :func:`~.render.render_preview`;
+- :meth:`open_path` — the open-file path: open ANY FITS file by path (a
+  stitched mosaic is file-based, not a ``frames`` row, so this is how it is
+  opened — app-improvement ticket 08), listed or not;
 - listeners — registered with :meth:`add_listener` / :meth:`remove_listener`,
   notified with a frozen :class:`ViewerSnapshot` after every change (stack
   list refreshed, stack opened, error). Listener exceptions are isolated
@@ -37,18 +42,24 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import NoReturn
 
 from PIL import Image
 
+from seestar_controller.mosaic import MOSAICS_DIR
 from seestar_controller.store.project import Project
 
 from .fits_io import (
+    KIND_FILE,
+    KIND_MOSAIC,
     EnhanceError,
     FitsImage,
     StackInfo,
     list_project_frames,
+    list_project_mosaics,
     load_fits,
+    stack_info_for_path,
 )
 from .render import DEFAULT_MAX_PREVIEW_SIZE, render_preview
 
@@ -65,9 +76,10 @@ class ViewerSnapshot:
 
     - ``project_name`` — the current project's display name (None when no
       project is set);
-    - ``stacks`` — the listed frames (tuple of :class:`StackInfo` — all
-      stored frames, subs included, each with its ``kind``);
-    - ``current`` — the currently open frame (None when none is open);
+    - ``stacks`` — the listed entries (tuple of :class:`StackInfo` — all
+      stored frames, subs included, plus the file-based mosaics, each with
+      its ``kind``);
+    - ``current`` — the currently open entry (None when none is open);
     - ``image`` — the loaded :class:`FitsImage` of the current frame;
     - ``preview`` — the tone-mapped preview (:class:`PIL.Image.Image`) of the
       current frame;
@@ -88,8 +100,8 @@ ViewerListener = Callable[[ViewerSnapshot], None]
 
 class ViewerController:
     """The app-level Enhance-viewer controller: the current project, its
-    stored frames (all kinds — subs, stacks, enhanced), the open frame +
-    preview, and observer notification.
+    listed entries (all stored frames — subs, stacks, enhanced — plus the
+    file-based mosaics), the open entry + preview, and observer notification.
 
     - ``project`` — the store project (None = no project yet; the view shows
       a placeholder then);
@@ -148,15 +160,24 @@ class ViewerController:
 
     @property
     def stacks(self) -> tuple[StackInfo, ...]:
-        """The listed frames of the current project — ALL stored frames
-        (subs, stacks, enhanced; empty when no project)."""
+        """The listed entries of the current project — ALL stored frames
+        (subs, stacks, enhanced) PLUS the file-based stitched mosaics
+        (``kind="mosaic"``, ``frame_id=None``; app-improvement ticket 08),
+        ordered by ``jd`` (empty when no project)."""
         return self._stacks
 
+    @property
+    def mosaics(self) -> tuple[StackInfo, ...]:
+        """The file-based entries of :attr:`stacks` — the stitched mosaics
+        (``frame_id=None``)."""
+        return tuple(s for s in self._stacks if s.frame_id is None)
+
     def refresh_stacks(self) -> tuple[StackInfo, ...]:
-        """(Re-)list the current project's stored frames (all kinds — subs
-        included); returns them and notifies the listeners. Raises
-        :class:`EnhanceError` when no project is set or the listing fails
-        (the error is also recorded in the snapshot)."""
+        """(Re-)list the current project's entries — all stored frames (all
+        kinds — subs included) plus the file-based mosaics; returns them and
+        notifies the listeners. Raises :class:`EnhanceError` when no project
+        is set or the listing fails (the error is also recorded in the
+        snapshot)."""
         if self._project is None:
             self._stacks = ()
             self._error = None
@@ -165,7 +186,9 @@ class ViewerController:
                 "no project — set one with set_project() first "
                 "(the Projects view is a later ticket)"
             )
-        stacks = tuple(list_project_frames(self._project))
+        frames = list_project_frames(self._project)
+        mosaics = list_project_mosaics(self._project)
+        stacks = tuple(sorted((*frames, *mosaics), key=lambda info: info.jd))
         self._stacks = stacks
         self._error = None
         self._notify()
@@ -175,7 +198,8 @@ class ViewerController:
 
     @property
     def current_stack(self) -> StackInfo | None:
-        """The currently open frame (None when none is open)."""
+        """The currently open entry (a stored frame or a file-based mosaic;
+        None when none is open)."""
         return self._current
 
     @property
@@ -188,23 +212,32 @@ class ViewerController:
         """The tone-mapped preview of the current frame."""
         return self._preview
 
-    def open_stack(self, frame_id: int) -> FitsImage:
+    def open_stack(self, frame_id: int | None) -> FitsImage:
         """Open the frame with frame id ``frame_id`` — any kind (a sub opens
         exactly like a stack): load its FITS (cached by path + mtime), render
         the preview, set it as current, notify the listeners, and return the
         :class:`FitsImage`.
 
-        Raises :class:`EnhanceError` when no project is set, the id is unknown
-        (the frame list is refreshed once first, so newly stored frames are
-        found), the file is missing/unreadable, or the render fails. The
-        error is also recorded in the snapshot and the listeners are
-        notified before the raise.
+        Raises :class:`EnhanceError` when no project is set, ``frame_id`` is
+        ``None`` (a file-based entry such as a mosaic has no frame id — open
+        it by path with :meth:`open_path`), the id is unknown (the entry list
+        is refreshed once first, so newly stored frames are found), the file
+        is missing/unreadable, or the render fails. The error is also
+        recorded in the snapshot and the listeners are notified before the
+        raise.
         """
         if self._project is None:
             self._fail(
                 EnhanceError(
                     "no project — set one with set_project() first "
                     "(the Projects view is a later ticket)"
+                )
+            )
+        if frame_id is None:
+            self._fail(
+                EnhanceError(
+                    "file-based entries (mosaics, arbitrary files) have no frame "
+                    "id — open them by path with open_path()"
                 )
             )
         stack = next((s for s in self._stacks if s.frame_id == frame_id), None)
@@ -220,25 +253,80 @@ class ViewerController:
                 EnhanceError(
                     f"project {self._project.slug!r} has no frame with frame id "
                     f"{frame_id!r} (listed: "
-                    f"{[s.frame_id for s in self._stacks] or 'none'})"
+                    f"{[s.frame_id for s in self._stacks if s.frame_id is not None] or 'none'})"
                 )
             )
+        return self._open(stack)
+
+    def open_path(self, path: str | Path) -> FitsImage:
+        """Open ANY FITS file by ``path`` — the open-file path for file-based
+        products: a stitched mosaic (``mosaics/<session>.fits``) is NOT a
+        ``frames`` row, so this is how it is opened in the Enhance view
+        (app-improvement ticket 08).
+
+        A relative ``path`` is resolved against the current project's
+        directory. When the file is one of the listed entries (a stored frame
+        or a listed mosaic), that entry is opened; otherwise a transient
+        :class:`StackInfo` is built from the file (``kind="mosaic"`` inside the
+        project's ``mosaics/`` directory, else ``"file"``; ``frame_id=None``).
+        The FITS is loaded (cached by path + mtime), the preview rendered, the
+        entry set as current, the listeners notified, and the
+        :class:`FitsImage` returned.
+
+        Raises :class:`EnhanceError` when no project is set, the file cannot
+        be stat-ed/read, or the render fails (recorded in the snapshot and
+        notified before the raise).
+        """
+        if self._project is None:
+            self._fail(
+                EnhanceError(
+                    "no project — set one with set_project() first "
+                    "(the Projects view is a later ticket)"
+                )
+            )
+        file_path = Path(path)
+        if not file_path.is_absolute():
+            file_path = self._project.path / file_path
+        info = next((s for s in self._stacks if s.path == file_path), None)
+        if info is None:
+            # maybe a new file was written since the last listing: refresh once
+            try:
+                self.refresh_stacks()
+            except EnhanceError:
+                pass  # keep the old list; the transient entry below is built
+            info = next((s for s in self._stacks if s.path == file_path), None)
+        if info is None:
+            kind = (
+                KIND_MOSAIC
+                if file_path.parent == self._project.path / MOSAICS_DIR
+                else KIND_FILE
+            )
+            try:
+                info = stack_info_for_path(file_path, kind=kind)
+            except EnhanceError as exc:
+                self._fail(exc)  # records the error, notifies, raises
+        return self._open(info)
+
+    def _open(self, info: StackInfo) -> FitsImage:
+        """Open the listed entry ``info``: load its FITS (cached by path +
+        mtime), render the preview, set it as current, notify, and return
+        the :class:`FitsImage`. Errors go through :meth:`_fail`."""
         try:
-            mtime = stack.path.stat().st_mtime
+            mtime = info.path.stat().st_mtime
         except OSError as exc:
-            self._fail(EnhanceError(f"cannot stat frame file {stack.path}: {exc}"))
-        key = (str(stack.path), mtime)
+            self._fail(EnhanceError(f"cannot stat frame file {info.path}: {exc}"))
+        key = (str(info.path), mtime)
         try:
             image = self._cache.get(key)
             if image is None:
-                image = load_fits(stack.path)
+                image = load_fits(info.path)
                 self._cache[key] = image
                 while len(self._cache) > MAX_CACHE_ENTRIES:
                     self._cache.pop(next(iter(self._cache)))
             preview = render_preview(image, max_size=self._preview_max_size)
         except EnhanceError as exc:
             self._fail(exc)  # records the error, notifies, raises
-        self._current = stack
+        self._current = info
         self._image = image
         self._preview = preview
         self._error = None

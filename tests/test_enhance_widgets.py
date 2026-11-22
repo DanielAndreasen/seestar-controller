@@ -35,11 +35,19 @@ hands the shared controllers to the Enhance view, the app owns one shared
 :class:`~seestar_controller.enhance.ViewerController` and one shared
 :class:`~seestar_controller.enhance.EditorController`, and the window passes
 them down to the Enhance page.
+
+App-improvement ticket 08 adds the stitched-mosaic coverage: a mosaic is a
+FILE-based product (``mosaics/<session>.fits``, NOT a ``frames`` row), so the
+Enhance view lists it as an extra row (``frame_id=None``, ``kind="mosaic"``)
+and opens it by path — selecting its row in the viewer/editor calls
+:meth:`~seestar_controller.enhance.ViewerController.open_path`, and stitching
+a session from the Projects view opens the mosaic in the shared viewer and
+switches to the Enhance view.
 """
 
 import io
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pytest
@@ -61,6 +69,7 @@ from seestar_controller.enhance import (
     ViewerController,
     default_pipeline,
 )
+from seestar_controller.mosaic import mosaic_path
 from seestar_controller.store import (
     KIND_STACK,
     create_project,
@@ -466,3 +475,186 @@ def test_enhance_view_exposes_persistence_buttons(gtk):
     assert view.save_preset_button is view.editor_widget.save_preset_button
     assert view.export_png_button is view.editor_widget.export_png_button
     assert view.export_jpeg_button is view.editor_widget.export_jpeg_button
+
+
+# --- app-improvement ticket 08: stitched mosaics listed + openable in the Enhance view -------------
+
+#: geometry of the synthetic WCS tiles used by the Projects-view stitch test
+M_CANVAS = 48
+M_TILE = 32
+M_SCALE = 0.001
+
+
+def _write_mosaic(project, session_id: str, size: int = 96, seed: int = 5):
+    """Write a synthetic mosaic FITS where :func:`stitch_session` puts it
+    (``mosaics/<session_id>.fits``) and return its path."""
+    path = mosaic_path(project, session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    hdu = pyfits.PrimaryHDU(data=synthetic_image(size, seed=seed))
+    hdu.header["DATE-OBS"] = DATE2
+    hdu.header["EXPTIME"] = 10.0
+    hdu.header["OBJECT"] = "M 42"
+    buf = io.BytesIO()
+    pyfits.HDUList([hdu]).writeto(buf)
+    path.write_bytes(buf.getvalue())
+    return path
+
+
+def _mosaic_row_index(view) -> int:
+    """The index of the file-based (mosaic) row in a viewer/editor list."""
+    for i in range(view.row_count()):
+        row = view.list_box.get_row_at_index(i)
+        if getattr(row, "frame_id", None) is None:
+            return i
+    raise AssertionError("no file-based (mosaic) row listed")
+
+
+def _wcs_tile_bytes(canvas, x0: int, y0: int, i: int, size: int = M_TILE) -> bytes:
+    """A 32x32 FITS cutout of the canvas at ``(x0, y0)`` carrying the WCS of
+    the cutout (CRVAL = the canvas sky position of its center pixel) — the
+    shape :func:`~seestar_controller.mosaic.stitch_session` consumes."""
+    from astropy.wcs import WCS
+
+    hdu = pyfits.PrimaryHDU(
+        data=np.asarray(canvas[y0 : y0 + size, x0 : x0 + size], dtype=np.float32)
+    )
+    cw = WCS(
+        {
+            "CTYPE1": "RA---CAR",
+            "CTYPE2": "DEC--CAR",
+            "CRVAL1": 83.0,
+            "CRVAL2": 22.0,
+            "CRPIX1": (canvas.shape[1] + 1) / 2.0,
+            "CRPIX2": (canvas.shape[0] + 1) / 2.0,
+            "CDELT1": -M_SCALE,
+            "CDELT2": M_SCALE,
+        }
+    )
+    sky = cw.pixel_to_world(x0 + (size - 1) / 2.0, y0 + (size - 1) / 2.0)
+    hdu.header["CTYPE1"] = "RA---CAR"
+    hdu.header["CTYPE2"] = "DEC--CAR"
+    hdu.header["CRVAL1"] = float(sky.ra.deg)
+    hdu.header["CRVAL2"] = float(sky.dec.deg)
+    hdu.header["CRPIX1"] = (size + 1) / 2.0
+    hdu.header["CRPIX2"] = (size + 1) / 2.0
+    hdu.header["CDELT1"] = -M_SCALE
+    hdu.header["CDELT2"] = M_SCALE
+    instant = T0 + timedelta(seconds=10 * i)
+    hdu.header["DATE-OBS"] = instant.isoformat(timespec="milliseconds").replace("+00:00", "")
+    hdu.header["EXPTIME"] = 10.0
+    hdu.header["OBJECT"] = "M 42"
+    buf = io.BytesIO()
+    pyfits.HDUList([hdu]).writeto(buf)
+    return buf.getvalue()
+
+
+def test_viewer_lists_and_opens_stitched_mosaic(gtk, viewer, viewer_controller, project):
+    """A stitched mosaic (file-based, NOT a ``frames`` row) shows up as an
+    extra row in the image viewer after Refresh, and selecting the row opens
+    it by path in the same viewer (open-path dispatch on ``frame_id=None``)."""
+    from seestar_controller.store import get_open_session
+
+    session_id = get_open_session(project).id  # ty: ignore[missing-union-attribute]
+    assert viewer.row_count() == 2  # only the two stored stacks so far
+    mosaic = _write_mosaic(project, session_id)
+    viewer.refresh_button.emit("clicked")
+    assert viewer.row_count() == 3
+    idx = _mosaic_row_index(viewer)
+    assert "mosaic" in viewer.row_label(idx) and session_id in viewer.row_label(idx)
+    assert "mosaic" in viewer.row_subtitle(idx)
+    row = viewer.list_box.get_row_at_index(idx)
+    assert getattr(row, "frame_id", None) is None
+    assert getattr(row, "entry_path", None) == str(mosaic)
+    # selecting the mosaic row opens the file in the viewer
+    viewer.list_box.select_row(row)
+    current = viewer_controller.current_stack
+    assert current is not None
+    assert current.kind == "mosaic" and current.frame_id is None
+    assert current.path == mosaic
+    image = viewer_controller.current_image
+    assert image is not None and image.shape == (96, 96)
+    assert viewer.picture.get_paintable() is not None
+    assert not viewer.placeholder.get_visible()
+    assert "mosaic" in viewer.info_label.get_label()
+    assert viewer.list_box.get_selected_row() is row
+
+
+def test_editor_row_selection_opens_mosaic(editor, viewer_controller, project):
+    """The EnhanceEditor's entry list carries the mosaic row too; selecting
+    it opens the mosaic by path and the editor renders before/after."""
+    from seestar_controller.store import get_open_session
+
+    session_id = get_open_session(project).id  # ty: ignore[missing-union-attribute]
+    _write_mosaic(project, session_id)
+    viewer_controller.refresh_stacks()  # the editor re-lists on the snapshot
+    assert editor.row_count() == 3
+    idx = _mosaic_row_index(editor)
+    assert "mosaic" in editor.row_label(idx)
+    editor.list_box.select_row(editor.list_box.get_row_at_index(idx))
+    current = viewer_controller.current_stack
+    assert current is not None and current.kind == "mosaic" and current.frame_id is None
+    assert editor.controller.wait(5.0)
+    pump_main()
+    assert editor.before_picture.get_paintable() is not None
+    assert editor.after_picture.get_paintable() is not None
+    assert not editor.placeholder.get_visible()
+    assert "mosaic" in editor.info_label.get_label()
+
+
+def test_projects_view_stitch_opens_mosaic_in_enhance_view(gtk, tmp_path):
+    """End to end (the ticket's acceptance): stitching a session from the
+    Projects view writes ``mosaics/<sid>.fits`` AND opens the mosaic in the
+    shared image viewer (by path — it is not a ``frames`` row) and switches
+    to the Enhance view, where the mosaic is listed as a row."""
+    from seestar_controller.store import close_session
+    from seestar_controller.ui.project_controller import ProjectController
+    from seestar_controller.ui.state import AppState
+    from seestar_controller.ui.views import build_view
+
+    root = tmp_path / "projects"
+    root.mkdir()
+    project = create_project("M 42 night", root=root)
+    sid = start_session(project, clock=frozen(T0))
+    # two overlapping WCS tiles: 32x32 cutouts of a 48x48 canvas at (0,0)/(16,0)
+    yy, xx = np.mgrid[0:M_CANVAS, 0:M_CANVAS]
+    canvas = np.full((M_CANVAS, M_CANVAS), 100.0)
+    canvas = canvas + 9000.0 * np.exp(-(((yy - 16.0) ** 2 + (xx - 16.0) ** 2) / 8.0))
+    canvas = canvas + 6000.0 * np.exp(-(((yy - 16.0) ** 2 + (xx - 40.0) ** 2) / 8.0))
+    for i, (x0, y0) in enumerate([(0, 0), (16, 0)]):
+        store_frame(
+            project, sid, KIND_STACK, _wcs_tile_bytes(canvas, x0, y0, i),
+            meta={"target": "M 42"},
+        )
+    close_session(project, sid)
+    project_path = project.path
+    project.close()
+
+    state = AppState(tmp_path / "settings.json")
+    state.set_setting("project_root", str(root))
+    controller = ProjectController(state)
+    controller.open_project(project_path)
+    vc = ViewerController()
+    shown: list[str] = []
+    page = build_view(
+        "projects", project_controller=controller, viewer_controller=vc,
+        show_view=shown.append,
+    )
+    pump_main()
+    assert page.session_count() == 1
+    page.click_stitch(0)
+    pump_main()
+    # the mosaic was written and opened in the shared viewer by path
+    mosaic = mosaic_path(project, sid)
+    assert mosaic.is_file() and mosaic.stat().st_size > 0
+    current = vc.current_stack
+    assert current is not None and current.kind == "mosaic" and current.frame_id is None
+    assert current.path == mosaic
+    assert vc.current_image is not None and vc.current_image.shape == (M_TILE, M_TILE + 16)
+    assert shown == ["enhance"]
+    label = page.data_status_label.get_label()
+    assert "stitched mosaic" in label and "opened in the image viewer" in label
+    # the Enhance view over the same shared controller lists the mosaic as a row
+    enhance = build_view("enhance", viewer_controller=vc, editor_controller=EditorController(vc))
+    assert enhance.editor_widget.row_count() == 3
+    idx = _mosaic_row_index(enhance.editor_widget)
+    assert "mosaic" in enhance.editor_widget.row_label(idx) and sid in enhance.editor_widget.row_label(idx)

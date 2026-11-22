@@ -8,7 +8,11 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   manually and NaN-safe; :func:`~.fits_io.list_project_frames` ->
   :class:`~.fits_io.StackInfo` via the store's frames/sessions — ALL stored
   frames (subs, stacks, enhanced; :func:`~.fits_io.list_project_stacks` is
-  the stack-only view);
+  the stack-only view) plus — app-improvement ticket 08 —
+  :func:`~.fits_io.list_project_mosaics` (the file-based stitched mosaics,
+  ``kind="mosaic"``, no ``frames`` row) and
+  :func:`~.fits_io.stack_info_for_path` (an arbitrary FITS file opened by
+  path);
   :class:`~.fits_io.EnhanceError`), :mod:`.render` (:func:`~.render.tonemap`
   percentile tone mapping with linear/asinh/log/sqrt stretches + gamma,
   :func:`~.render.to_pil_image`, :func:`~.render.downscale`,
@@ -74,12 +78,16 @@ from .editor_controller import (
     default_render_fn,
 )
 from .fits_io import (
+    KIND_FILE,
+    KIND_MOSAIC,
     EnhanceError,
     FitsImage,
     StackInfo,
     list_project_frames,
+    list_project_mosaics,
     list_project_stacks,
     load_fits,
+    stack_info_for_path,
 )
 from .ops import (
     BACKGROUND_METHODS,
@@ -166,6 +174,8 @@ __all__ = [
     "DEFAULT_STRETCH",
     "ENHANCED_HISTORY",
     "EXPORT_FORMATS",
+    "KIND_FILE",
+    "KIND_MOSAIC",
     "LOG_BASE",
     "MAX_CACHE_ENTRIES",
     "MAX_UNDO_ENTRIES",
@@ -208,6 +218,7 @@ __all__ = [
     "downscale",
     "export_render",
     "list_project_frames",
+    "list_project_mosaics",
     "list_project_stacks",
     "load_fits",
     "load_preset_for",
@@ -215,6 +226,7 @@ __all__ = [
     "render_preview",
     "save_enhanced",
     "save_preset_for",
+    "stack_info_for_path",
     "to_pil_image",
     "tonemap",
 ]
