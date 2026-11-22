@@ -25,7 +25,11 @@ during a night and captures the data as it arrives:
   stored into the current session via
   :func:`~seestar_controller.store.frames.store_frame` (FITS file under
   ``subs/<session>/`` / ``stacks/<session>/`` + the ``frames`` db row),
-  deduplicated by the Scope frame id;
+  deduplicated by the Scope frame id — and every frame actually stored fires
+  a :class:`FrameStoredEvent` to the registered frame listeners
+  (:meth:`SessionCapture.add_frame_listener`, observing ticket 07 — the app
+  forwards it to the Projects view so its stored-data browser refreshes
+  live during a night, no project reopen needed);
 - **session event log** — :class:`SessionLog` records timestamped events:
   the executor's own log (goto / stack start-stop / errors / session
   open-close, mirrored from :attr:`~.executor.NightExecutor.log`) plus the
@@ -129,6 +133,29 @@ LOG_SOURCES = (LOG_SOURCE_EXECUTOR, LOG_SOURCE_CAPTURE)
 #: A session-log listener: called with the new :class:`LogEvent` on every
 #: append (synchronously, on the appending thread).
 LogListener = Callable[["LogEvent"], None]
+
+
+@dataclass(frozen=True)
+class FrameStoredEvent:
+    """One frame stored into a session by the capture (observing ticket 07 —
+    the event the UI listens to for a live stored-data refresh).
+
+    - ``session_id`` — the session the frame was stored into;
+    - ``kind`` — ``"sub"`` or ``"stack"``;
+    - ``frame_id`` — the Scope frame id (the dedupe key);
+    - ``path`` — the stored FITS file path relative to the project root.
+    """
+
+    session_id: str
+    kind: str
+    frame_id: str
+    path: str
+
+
+#: A frame-stored listener: called with the :class:`FrameStoredEvent` when the
+#: capture stores a frame into the session (synchronously, on the storing
+#: thread — the app marshals it onto the main loop via ``invoke_on_main``).
+FrameStoredListener = Callable[[FrameStoredEvent], None]
 
 
 def _direct_invoke(callback: Callable[[], Any]) -> None:
@@ -346,6 +373,12 @@ class SessionCapture:
     :meth:`poll_once` to run one cycle synchronously on the calling thread
     (tests). Capture errors never raise — they become ``error`` events and
     bus notifications.
+
+    Every frame actually stored (in :meth:`_apply`) fires a
+    :class:`FrameStoredEvent` to the registered frame listeners
+    (:meth:`add_frame_listener`) — observing ticket 07: the app forwards the
+    event to the Projects view so its stored-data browser re-renders live
+    during a night, without a project reopen.
     """
 
     def __init__(
@@ -379,6 +412,7 @@ class SessionCapture:
         self._stored_ids: set[str] = {
             event.frame_id for event in self._log.events() if event.frame_id
         }
+        self._frame_listeners: list[FrameStoredListener] = []
         # per-kind "since" watermark: a Stack is recorded when stacking stops,
         # i.e. AFTER the last sub-frames, so a single watermark would skip
         # subs recorded just before the Stack but downloaded in a later poll.
@@ -473,6 +507,25 @@ class SessionCapture:
     def remove_listener(self, listener: LogListener) -> None:
         """Unregister a log listener (no-op when not registered)."""
         self._log.remove_listener(listener)
+
+    @property
+    def frame_listeners(self) -> tuple[FrameStoredListener, ...]:
+        """The registered frame-stored listeners, in registration order."""
+        return tuple(self._frame_listeners)
+
+    def add_frame_listener(self, listener: FrameStoredListener) -> FrameStoredListener:
+        """Register a frame-stored listener (idempotent); returns it
+        (decorator form). The listener is called with a
+        :class:`FrameStoredEvent` on every frame stored into the session,
+        synchronously on the storing thread (observing ticket 07)."""
+        if listener not in self._frame_listeners:
+            self._frame_listeners.append(listener)
+        return listener
+
+    def remove_frame_listener(self, listener: FrameStoredListener) -> None:
+        """Unregister a frame-stored listener (no-op when not registered)."""
+        if listener in self._frame_listeners:
+            self._frame_listeners.remove(listener)
 
     # -- lifecycle -----------------------------------------------------------------
 
@@ -659,6 +712,14 @@ class SessionCapture:
                         f"({len(fits)} bytes)",
                         frame_id=meta.id,
                     )
+                    self._notify_frame_stored(
+                        FrameStoredEvent(
+                            session_id=self._session_id,
+                            kind=kind,
+                            frame_id=meta.id,
+                            path=frame.path,
+                        )
+                    )
         except Exception:
             logger.exception("capture apply failed")
         return stored
@@ -734,3 +795,13 @@ class SessionCapture:
             self._bus.push(Notification(severity, title, message, CAPTURE_SOURCE))
         except Exception:
             logger.exception("could not push capture notification")
+
+    def _notify_frame_stored(self, event: FrameStoredEvent) -> None:
+        """Notify the frame-stored listeners (observing ticket 07); a failing
+        listener is logged and skipped — it never breaks the others nor
+        :meth:`_apply`. Never raises."""
+        for listener in list(self._frame_listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("frame-stored listener failed")

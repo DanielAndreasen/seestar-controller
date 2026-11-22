@@ -65,7 +65,11 @@ What it does:
   :class:`~.capture.SessionCapture` for the opened session (sub-frames /
   Stacks downloaded into the session as they arrive + the per-session event
   log, exposed via :attr:`capture`); DONE/ABORTED stops it. A capture
-  failure pushes a warning notification but never kills the night.
+  failure pushes a warning notification but never kills the night. Every
+  frame the capture stores is re-emitted to the **frame-stored listeners**
+  (:meth:`add_frame_listener`) as a :class:`~.capture.FrameStoredEvent`,
+  marshalled through ``invoke_on_main`` (ticket 07 — the Projects view
+  re-renders its stored-data browser on it, live during a night);
 - stale sessions (ticket 05) — when a previous session of the project is
   still marked open (the app was killed mid-night), :meth:`start_night`
   raises :class:`StaleSessionError` (a
@@ -116,7 +120,7 @@ from seestar_controller.ui.notifications import (
     NotificationSeverity,
 )
 
-from .capture import SessionCapture
+from .capture import FrameStoredEvent, FrameStoredListener, SessionCapture
 from .executor import ExecutorSnapshot, ExecutorState, NightExecutor
 from .queue import QueueEntry, QueueEvent
 from .queue_controller import PlanQueueController
@@ -213,6 +217,12 @@ ObserveViewListener = Callable[[ObserveViewState], None]
 #: :class:`~seestar_controller.link.preview.PreviewFrame` (throttled to
 #: ``preview_max_fps``; always via ``invoke_on_main``).
 PreviewFrameListener = Callable[[Any], None]
+
+# NOTE: the frame-stored listener alias :data:`~.capture.FrameStoredListener`
+# (``Callable[[FrameStoredEvent], None]``) is imported from :mod:`.capture`
+# above — listeners registered via :meth:`ObserveController.add_frame_listener`
+# receive a :class:`~.capture.FrameStoredEvent`, always via
+# ``invoke_on_main`` (observing ticket 07).
 
 #: Marshals a zero-argument callback onto the "main" thread (same alias as
 #: the ui connection controller / the executor).
@@ -334,6 +344,12 @@ class ObserveController:
       :class:`~.capture.SessionCapture` for the night's session;
     - ``invoke_on_main`` — the marshalling callable (default: direct call);
     - ``preview_max_fps`` — the preview display throttle (None disables).
+
+    Frame-stored events (observing ticket 07): every frame the session
+    capture stores into the night's session is re-emitted to the listeners
+    registered via :meth:`add_frame_listener`, always via
+    ``invoke_on_main`` — the Projects view uses this to refresh its
+    stored-data browser live during a night.
     """
 
     def __init__(
@@ -375,6 +391,7 @@ class ObserveController:
         self._project: Any | None = None
         self._listeners: list[ObserveViewListener] = []
         self._preview_listeners: list[PreviewFrameListener] = []
+        self._frame_listeners: list[FrameStoredListener] = []
         self._queue_controller.add_listener(self._on_queue_event)
 
     # -- accessors ---------------------------------------------------------------
@@ -522,6 +539,27 @@ class ObserveController:
             return decorator
         self.add_preview_listener(listener)
         return listener
+
+    @property
+    def frame_listeners(self) -> tuple[FrameStoredListener, ...]:
+        """The registered frame-stored listeners, in registration order."""
+        return tuple(self._frame_listeners)
+
+    def add_frame_listener(self, listener: FrameStoredListener) -> FrameStoredListener:
+        """Register a frame-stored listener (idempotent); returns it, so it
+        can be used as a decorator. The listener receives a
+        :class:`~.capture.FrameStoredEvent` when the session capture stores a
+        frame into the night's session — always via ``invoke_on_main``
+        (observing ticket 07: the Projects view re-renders its stored-data
+        browser on it, live during a night)."""
+        if listener not in self._frame_listeners:
+            self._frame_listeners.append(listener)
+        return listener
+
+    def remove_frame_listener(self, listener: FrameStoredListener) -> None:
+        """Unregister a frame-stored listener (no-op when not registered)."""
+        if listener in self._frame_listeners:
+            self._frame_listeners.remove(listener)
 
     # -- notifications -------------------------------------------------------------
 
@@ -722,11 +760,14 @@ class ObserveController:
         night."""
         with self._lock:
             old = self._capture
-        if old is not None and old.running:
-            try:
-                old.stop()
-            except Exception:
-                logger.exception("stopping the previous session capture failed")
+        if old is not None:
+            # ticket 07: detach the frame-stored forwarding from the old capture
+            old.remove_frame_listener(self._on_capture_frame_stored)
+            if old.running:
+                try:
+                    old.stop()
+                except Exception:
+                    logger.exception("stopping the previous session capture failed")
         try:
             capture = self._capture_factory(
                 device,
@@ -747,6 +788,9 @@ class ObserveController:
             return
         with self._lock:
             self._capture = capture
+        # ticket 07: forward every frame the capture stores to the
+        # frame-stored listeners (marshalled via invoke_on_main)
+        capture.add_frame_listener(self._on_capture_frame_stored)
         try:
             capture.start()
         except Exception as exc:  # noqa: BLE001 - warn, never kill the night
@@ -762,11 +806,14 @@ class ObserveController:
         """Stop the session capture (idempotent; never raises)."""
         with self._lock:
             capture = self._capture
-        if capture is not None and capture.running:
-            try:
-                capture.stop()
-            except Exception:
-                logger.exception("stopping the session capture failed")
+        if capture is not None:
+            # ticket 07: detach the frame-stored forwarding
+            capture.remove_frame_listener(self._on_capture_frame_stored)
+            if capture.running:
+                try:
+                    capture.stop()
+                except Exception:
+                    logger.exception("stopping the session capture failed")
 
     def _start_preview(self, device: Any) -> None:
         """Start the preview stream best-effort (tele socket); a failure is a
@@ -858,6 +905,13 @@ class ObserveController:
         terminal state stop the preview and notify."""
         self._invoke_on_main(lambda: self._handle_executor_snapshot(snapshot))
 
+    def _on_capture_frame_stored(self, event: FrameStoredEvent) -> None:
+        """A frame was stored into the night's session by the capture (any
+        thread): re-emit the event to the frame-stored listeners via
+        ``invoke_on_main`` (observing ticket 07 — the Projects view's
+        stored-data browser re-renders on it, main-loop safe)."""
+        self._invoke_on_main(lambda: self._emit_frame_stored(event))
+
     def _handle_executor_snapshot(self, snapshot: ExecutorSnapshot) -> None:
         """Apply an executor snapshot (runs via ``invoke_on_main``)."""
         terminal = snapshot.state in _TERMINAL_EXECUTOR_STATES
@@ -930,3 +984,12 @@ class ObserveController:
                 listener(snapshot)
             except Exception:
                 logger.exception("observe view listener failed")
+
+    def _emit_frame_stored(self, event: FrameStoredEvent) -> None:
+        """Notify the frame-stored listeners (runs via ``invoke_on_main``;
+        a failing listener never breaks the others)."""
+        for listener in list(self._frame_listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("frame-stored listener failed")
