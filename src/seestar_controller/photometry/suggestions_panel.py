@@ -28,6 +28,11 @@ with the comp-search radius from the settings; the window passes it down via
   :meth:`search` as the controller's ``search_runner``, so the AUTOMATIC
   searches (target pick changed, radius changed) go through the worker thread
   too — never on the main loop;
+- a **sort dropdown** next to Search (issue 07): nearest-first (the default,
+  the historical order), brightest-first, or closest-in-magnitude-to-the
+  target pick — it sets the controller's
+  :attr:`~seestar_controller.photometry.suggest.SuggestionController.sort_mode`,
+  which re-sorts the current suggestions client-side (no new catalog lookup);
 - one :class:`Gtk.ListBox` row per suggestion (name, band/mag, distance from
   the target) with an **Add** button — clicking it calls
   :meth:`~seestar_controller.photometry.suggest.SuggestionController.add_suggestion`,
@@ -53,16 +58,21 @@ gi.require_version("Adw", "1")
 from gi.repository import GLib, Gtk
 
 from .suggest import (
+    SORT_MODES,
     CompSuggestion,
     SuggestionController,
     SuggestionError,
     SuggestionSnapshot,
 )
 
+#: The sort dropdown's labels, in :data:`~.suggest.SORT_MODES` order
+#: ("distance", "magnitude", "closest_mag" — issue 07).
+SORT_LABELS = ("Nearest first", "Brightest first", "Closest mag to target")
+
 
 class SuggestionsPanel(Gtk.Box):
-    """The catalog-assist panel: Search button + suggestions list (one Add
-    button per row) + status label, observing a
+    """The catalog-assist panel: Search button + sort dropdown (issue 07) +
+    suggestions list (one Add button per row) + status label, observing a
     :class:`~seestar_controller.photometry.suggest.SuggestionController`.
 
     Constructed with the shared suggestion controller (the app passes it; a
@@ -101,6 +111,17 @@ class SuggestionsPanel(Gtk.Box):
         )
         self._search_button.connect("clicked", self._on_search_clicked)
         search_row.append(self._search_button)
+        # issue 07: sort control next to Search — nearest-first (default),
+        # brightest-first, or closest in magnitude to the target pick
+        self._sort_dropdown = Gtk.DropDown(
+            model=Gtk.StringList.new(list(SORT_LABELS)),
+            selected=SORT_MODES.index(suggest_controller.sort_mode),
+        )
+        self._sort_dropdown.set_tooltip_text(
+            "Sort the catalog comp suggestions (re-sorts the current list, no new search)"
+        )
+        self._sort_dropdown.connect("notify::selected", self._on_sort_selected)
+        search_row.append(self._sort_dropdown)
         self._radius_label = Gtk.Label(
             label=self._radius_text(),
             xalign=0.0,
@@ -151,6 +172,12 @@ class SuggestionsPanel(Gtk.Box):
         return self._search_button
 
     @property
+    def sort_dropdown(self) -> Gtk.DropDown:
+        """The sort dropdown next to Search (issue 07): its selection maps to
+        :data:`~.suggest.SORT_MODES` via :data:`SORT_LABELS`."""
+        return self._sort_dropdown
+
+    @property
     def status_label(self) -> Gtk.Label:
         """The status label (suggestion count / clean catalog error)."""
         return self._status_label
@@ -197,6 +224,18 @@ class SuggestionsPanel(Gtk.Box):
         self._set_status("searching the catalog…", error=False)
         self.search()
 
+    def _on_sort_selected(self, dropdown: Gtk.DropDown, *_args) -> None:
+        """Sort dropdown handler (issue 07): map the selected label to a
+        :data:`~.suggest.SORT_MODES` mode and set it on the controller — the
+        setter re-sorts the current suggestions client-side and notifies, so
+        the rows re-render in the new order (no new catalog lookup)."""
+        index = int(dropdown.get_selected())
+        if not 0 <= index < len(SORT_MODES):
+            return
+        mode = SORT_MODES[index]
+        if mode != self._controller.sort_mode:
+            self._controller.sort_mode = mode
+
     def _on_add_clicked(self, button: Gtk.Button, *_args) -> None:
         index = getattr(button, "suggestion_index", None)
         if index is None:
@@ -221,6 +260,13 @@ class SuggestionsPanel(Gtk.Box):
         """Render a frozen snapshot: rebuild the suggestion rows and the
         status label. Returns ``GLib.SOURCE_REMOVE`` (one-shot idle callback)."""
         self._radius_label.set_label(self._radius_text())
+        # keep the sort dropdown in sync with the controller's sort mode
+        # (e.g. when it was changed elsewhere); setting the same value is a
+        # no-op for the notify::selected handler
+        if snapshot.sort_mode in SORT_MODES:
+            selected = SORT_MODES.index(snapshot.sort_mode)
+            if int(self._sort_dropdown.get_selected()) != selected:
+                self._sort_dropdown.set_selected(selected)
         while (row := self._list_box.get_row_at_index(0)) is not None:
             self._list_box.remove(row)
         for index, suggestion in enumerate(snapshot.suggestions):

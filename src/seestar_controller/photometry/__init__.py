@@ -33,7 +33,9 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   :class:`~.suggest.SuggestionController` lists the standard stars near the
   target pick via an injectable catalog callable (default: the lazy
   :class:`~seestar_controller.catalog.facade.Catalog`), re-filtered against the
-  configured radius and sorted nearest-first, and adds one as a comp pick via
+  configured radius and sorted by the active ``sort_mode`` (nearest-first by
+  default; by magnitude or closest-to-target-magnitude optionally, issue 07),
+  and adds one as a comp pick via
   :meth:`~.picking.PickController.add_at_sky`. Frozen
   :class:`~.suggest.CompSuggestion` / :class:`~.suggest.SuggestionSnapshot`
   snapshots, listener pattern like :class:`~.picking.PickController`, and
@@ -86,8 +88,8 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   persisted via store.stars on Save, check-star-plot ticket 02) + aperture
   spins + picks list + Save picks button),
   :mod:`.suggestions_panel` (:class:`~.suggestions_panel.SuggestionsPanel`,
-  the catalog-assist list next to the image: Search button, one row per
-  suggestion with an Add button, clean error status), and
+  the catalog-assist list next to the image: Search button + sort dropdown,
+  one row per suggestion with an Add button, clean error status), and
   :mod:`.results_view` (:class:`~.results_view.ResultsPanel`, ticket 04: the
   session chooser + Run button + progress, the per-frame measurements table
   with outlier checkboxes, and the mag-vs-jd scatter plot on a
@@ -159,12 +161,17 @@ from .suggest import (
     DEFAULT_COMP_SEARCH_RADIUS_DEG,
     MAX_COMP_SEARCH_RADIUS_DEG,
     NO_WCS_HINT,
+    SORT_CLOSEST_MAG,
+    SORT_DISTANCE,
+    SORT_MAGNITUDE,
+    SORT_MODES,
     CompSuggestion,
     LookupFn,
     SearchRunner,
     SuggestionController,
     SuggestionError,
     SuggestionSnapshot,
+    SuggestionSortMode,
     SuggestListener,
     default_standards_lookup,
 )
@@ -201,6 +208,10 @@ __all__ = [
     "ROLE_COMP",
     "ROLE_TARGET",
     "SNAP_WINDOW_PX",
+    "SORT_CLOSEST_MAG",
+    "SORT_DISTANCE",
+    "SORT_MAGNITUDE",
+    "SORT_MODES",
     "ApertureParams",
     "CompSuggestion",
     "ExcludedFrame",
@@ -232,6 +243,7 @@ __all__ = [
     "SuggestionController",
     "SuggestionError",
     "SuggestionSnapshot",
+    "SuggestionSortMode",
     "SuggestionsPanel",
     "default_standards_lookup",
     "differential_mag",

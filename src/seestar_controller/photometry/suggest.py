@@ -38,11 +38,13 @@ What lives here:
   layer is settings-agnostic: the app injects the value read from the
   settings, see :func:`seestar_controller.ui.settings.comp_search_radius_deg`).
   :meth:`~SuggestionController.refresh` runs the cone search (radius-filtered,
-  nearest-first), :meth:`~SuggestionController.add_suggestion` adds one as a
-  comp pick, :meth:`~SuggestionController.set_radius` changes the configured
-  radius (re-searching when a target is set), and listeners get frozen
-  :class:`SuggestionSnapshot`\\ s on every change (idempotent registration,
-  isolated listener exceptions — the same pattern as
+  sorted by the active :attr:`~SuggestionController.sort_mode` — nearest-first
+  by default, optionally by magnitude or by closeness of magnitude to the
+  target pick, issue 07), :meth:`~SuggestionController.add_suggestion` adds
+  one as a comp pick, :meth:`~SuggestionController.set_radius` changes the
+  configured radius (re-searching when a target is set), and listeners get
+  frozen :class:`SuggestionSnapshot`\\ s on every change (idempotent
+  registration, isolated listener exceptions — the same pattern as
   :class:`~.picking.PickController`).
 
 Conventions (documented choices):
@@ -50,9 +52,10 @@ Conventions (documented choices):
 - **The radius is authoritative here too:** the catalog already filters its
   cone server- and client-side, but the controller re-filters every returned
   star with :func:`~seestar_controller.catalog.coords.angular_distance`
-  (``distance <= radius``, RA-0 seam safe) and sorts the suggestions
-  nearest-first — so a mocked/foreign ``lookup`` cannot leak out-of-radius
-  stars.
+  (``distance <= radius``, RA-0 seam safe) and sorts the suggestions by the
+  active sort mode (:data:`SORT_DISTANCE` — nearest-first — by default;
+  :data:`SORT_MAGNITUDE` / :data:`SORT_CLOSEST_MAG`, issue 07) — so a
+  mocked/foreign ``lookup`` cannot leak out-of-radius stars.
 - **Catalog failures are a snapshot error state, not an exception:**
   :meth:`~SuggestionController.refresh` catches ANY exception from the
   ``lookup`` callable (e.g. :class:`~seestar_controller.catalog.facade.CatalogUnavailableError`
@@ -91,7 +94,7 @@ import logging
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from seestar_controller.catalog.coords import J2000Coord, angular_distance
 from seestar_controller.store.stars import ROLE_COMP
@@ -155,6 +158,28 @@ LookupFn = Callable[[Any, float], Sequence[Any]]
 #: the GLib main loop.
 SearchRunner = Callable[[], Any]
 
+#: Sort mode: **nearest first** — by ``distance_deg`` from the target pick.
+#: This is the default (the historical behavior).
+SORT_DISTANCE = "distance"
+
+#: Sort mode: **brightest first** — by ``magnitude`` ascending; suggestions
+#: with unknown magnitude sort last (the catalog's ``_sort_stars``
+#: convention), the name as tie-break.
+SORT_MAGNITUDE = "magnitude"
+
+#: Sort mode: **closest in magnitude to the target pick** — by
+#: ``abs(magnitude - target_magnitude)`` using the controller's
+#: :attr:`~SuggestionController.target_magnitude` (unknown magnitudes last,
+#: name tie-break); when no target magnitude is set it falls back to
+#: nearest-first (issue 07).
+SORT_CLOSEST_MAG = "closest_mag"
+
+#: All valid sort modes, in dropdown order.
+SORT_MODES = (SORT_DISTANCE, SORT_MAGNITUDE, SORT_CLOSEST_MAG)
+
+#: A suggestion sort mode — one of :data:`SORT_MODES`.
+SuggestionSortMode = Literal["distance", "magnitude", "closest_mag"]
+
 
 def default_standards_lookup(coord: Any, radius_deg: float) -> Sequence[Any]:
     """The default ``lookup`` callable: the catalog facade's cached,
@@ -190,6 +215,51 @@ def _validate_radius(value: Any) -> float:
     return radius
 
 
+def _validate_sort_mode(value: Any) -> str:
+    """Validate a suggestion sort mode: one of :data:`SORT_MODES`; returns it.
+    Raises :class:`SuggestionError` otherwise."""
+    if not isinstance(value, str) or value not in SORT_MODES:
+        raise SuggestionError(f"sort_mode must be one of {SORT_MODES}, got {value!r}")
+    return value
+
+
+def _validate_target_magnitude(value: Any) -> float | None:
+    """Validate the reference magnitude for :data:`SORT_CLOSEST_MAG`: a
+    finite real number (not a bool) or None; returns the float (None
+    passed through). Raises :class:`SuggestionError` otherwise."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise SuggestionError(f"target_magnitude must be a finite number or None, got {value!r}")
+    return float(value)
+
+
+def _suggestion_sort_key(
+    suggestion: CompSuggestion, mode: str, target_magnitude: float | None
+) -> tuple[Any, ...]:
+    """The sort key of one suggestion under ``mode`` (one of
+    :data:`SORT_MODES`), with ``target_magnitude`` as the reference for
+    :data:`SORT_CLOSEST_MAG`:
+
+    - ``SORT_DISTANCE`` — ``(distance_deg, name)``: nearest first (default);
+    - ``SORT_MAGNITUDE`` — ``(mag unknown, magnitude, name)``: brightest
+      first, unknown magnitudes last;
+    - ``SORT_CLOSEST_MAG`` — ``(mag unknown, abs(magnitude - target_mag),
+      name)`` when a target magnitude is set, else the distance key
+      (graceful fallback when the target pick's magnitude is unknown).
+
+    The name tie-break keeps the order deterministic.
+    """
+    if mode == SORT_MAGNITUDE:
+        mag = suggestion.magnitude
+        return (mag is None, mag if mag is not None else 0.0, suggestion.name)
+    if mode == SORT_CLOSEST_MAG and target_magnitude is not None:
+        mag = suggestion.magnitude
+        delta = abs(mag - target_magnitude) if mag is not None else 0.0
+        return (mag is None, delta, suggestion.name)
+    return (suggestion.distance_deg, suggestion.name)
+
+
 @dataclass(frozen=True)
 class CompSuggestion:
     """One frozen catalog suggestion: a standard star near the target.
@@ -221,18 +291,23 @@ class SuggestionSnapshot:
     - ``target`` — the target pick's J2000 coord (None when no target is
       picked yet);
     - ``radius_deg`` — the configured comp-search radius;
-    - ``suggestions`` — the suggestions, nearest-first, as a tuple;
+    - ``suggestions`` — the suggestions, sorted by the active sort mode (see
+      ``sort_mode``), as a tuple;
     - ``error`` — a clean one-line message when the assist cannot run: the
       last catalog lookup failed (e.g. offline with no cache), OR the target
       pick has no sky coordinates because the frame has no WCS
       (:data:`NO_WCS_HINT` — plate-solve first, ticket 05); None when
-      healthy — never a traceback.
+      healthy — never a traceback;
+    - ``sort_mode`` — the active sort mode (one of :data:`SORT_MODES`;
+      default :data:`SORT_DISTANCE`, the historical nearest-first order) —
+      appended with a default, so positional construction stays compatible.
     """
 
     target: J2000Coord | None
     radius_deg: float
     suggestions: tuple[CompSuggestion, ...]
     error: str | None
+    sort_mode: str = SORT_DISTANCE
 
 
 #: A suggestion listener: called with a frozen :class:`SuggestionSnapshot` on
@@ -284,6 +359,17 @@ class SuggestionController:
       -> inline (synchronous). The widget layer sets its worker-thread search
       here, so the blocking catalog lookup never runs on the GLib main loop.
       Settable via the :attr:`search_runner` property.
+    - ``sort_mode`` — how the suggestions are sorted, one of
+      :data:`SORT_MODES` (default :data:`SORT_DISTANCE` = the historical
+      nearest-first order; issue 07 also offers :data:`SORT_MAGNITUDE` and
+      :data:`SORT_CLOSEST_MAG`). Settable via the :attr:`sort_mode` property —
+      changing it re-sorts the current suggestions client-side (no catalog
+      re-lookup) and notifies.
+    - ``target_magnitude`` — the reference magnitude for
+      :data:`SORT_CLOSEST_MAG` ("closest in magnitude to the target pick"):
+      a finite number or None (default None = unknown, in which case
+      :data:`SORT_CLOSEST_MAG` falls back to nearest-first). Settable via the
+      :attr:`target_magnitude` property.
 
     Operations: :meth:`refresh` (run the cone search for the current target —
     synchronous/blocking, call it off the main loop), :meth:`add_suggestion`
@@ -300,11 +386,15 @@ class SuggestionController:
         lookup: LookupFn | None = None,
         radius_deg: float = DEFAULT_COMP_SEARCH_RADIUS_DEG,
         search_runner: SearchRunner | None = None,
+        sort_mode: str = SORT_DISTANCE,
+        target_magnitude: float | None = None,
     ) -> None:
         self._picker: PickController | None = None
         self._lookup: LookupFn = lookup if lookup is not None else default_standards_lookup
         self._radius = _validate_radius(radius_deg)
         self._search_runner: SearchRunner | None = search_runner
+        self._sort_mode = _validate_sort_mode(sort_mode)
+        self._target_magnitude = _validate_target_magnitude(target_magnitude)
         self._target: J2000Coord | None = None
         self._has_target: bool = False
         self._suggestions: tuple[CompSuggestion, ...] = ()
@@ -337,13 +427,58 @@ class SuggestionController:
         self._search_runner = runner
 
     @property
+    def sort_mode(self) -> str:
+        """The active suggestion sort mode, one of :data:`SORT_MODES`
+        (default :data:`SORT_DISTANCE` — nearest-first, the historical
+        behavior). Settable: changing it re-sorts the current suggestions
+        client-side (no catalog re-lookup) and notifies the listeners."""
+        return self._sort_mode
+
+    @sort_mode.setter
+    def sort_mode(self, mode: str) -> None:
+        mode = _validate_sort_mode(mode)
+        if mode == self._sort_mode:
+            return
+        self._sort_mode = mode
+        self._resort()
+
+    @property
+    def target_magnitude(self) -> float | None:
+        """The reference magnitude for :data:`SORT_CLOSEST_MAG` ("closest in
+        magnitude to the target pick"): a finite number or None (default None
+        = unknown — the mode then falls back to nearest-first). Settable:
+        changing it re-sorts (when relevant) and notifies."""
+        return self._target_magnitude
+
+    @target_magnitude.setter
+    def target_magnitude(self, magnitude: float | None) -> None:
+        magnitude = _validate_target_magnitude(magnitude)
+        if magnitude == self._target_magnitude:
+            return
+        self._target_magnitude = magnitude
+        self._resort()
+
+    def _resort(self) -> None:
+        """Re-sort the current suggestions under the active
+        :attr:`sort_mode` / :attr:`target_magnitude` (client-side only — no
+        catalog re-lookup) and notify the listeners."""
+        self._suggestions = tuple(
+            sorted(
+                self._suggestions,
+                key=lambda s: _suggestion_sort_key(s, self._sort_mode, self._target_magnitude),
+            )
+        )
+        self._notify()
+
+    @property
     def target(self) -> J2000Coord | None:
         """The current target coord (None when no target is picked)."""
         return self._target
 
     @property
     def suggestions(self) -> tuple[CompSuggestion, ...]:
-        """The suggestions, nearest-first (a tuple snapshot)."""
+        """The suggestions, sorted by the active :attr:`sort_mode` (a tuple
+        snapshot; nearest-first by default)."""
         return self._suggestions
 
     @property
@@ -359,6 +494,7 @@ class SuggestionController:
             radius_deg=self._radius,
             suggestions=self._suggestions,
             error=self._error,
+            sort_mode=self._sort_mode,
         )
 
     # -- listeners ---------------------------------------------------------------
@@ -486,8 +622,10 @@ class SuggestionController:
           never a traceback, and the controller stays usable;
         - the returned stars are re-filtered against the radius
           (:func:`~seestar_controller.catalog.coords.angular_distance`) and
-          sorted nearest-first; malformed entries (no usable coord) are
-          skipped.
+          sorted by the active :attr:`sort_mode` (:data:`SORT_DISTANCE`
+          nearest-first by default; :data:`SORT_MAGNITUDE` /
+          :data:`SORT_CLOSEST_MAG`, issue 07, sort client-side by magnitude);
+          malformed entries (no usable coord) are skipped.
 
         Notifies the listeners. NOTE: blocks on the catalog lookup — call off
         the main loop.
@@ -539,7 +677,9 @@ class SuggestionController:
                     distance_deg=distance,
                 )
             )
-        suggestions.sort(key=lambda s: (s.distance_deg, s.name))
+        suggestions.sort(
+            key=lambda s: _suggestion_sort_key(s, self._sort_mode, self._target_magnitude)
+        )
         self._suggestions = tuple(suggestions)
         self._error = None
         self._notify()
