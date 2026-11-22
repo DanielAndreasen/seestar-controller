@@ -37,11 +37,12 @@ The "known pre-existing failures" are **not one fixed list**; they depend on the
   - issue 02 → `test_offline_analysis_widgets.py` ×1 — results panel never re-lists sessions after a project is opened
   - issues 03 + 09 → `test_moving_objects_widgets.py` ×5 — re-entrant `_render` clobbers the frame label; tests use GTK3-only APIs
   - issue 04 → `test_observing_widgets.py` ×2 — stale-session dialog cleared only via Adw.Dialog's "closed" signal
+  - display-dependent extra, **not an app bug and not counted in the ×2 above**: on a bare X display with no window manager, `test_observing_widgets.py::test_observe_view_night_buttons_fit_a_laptop_screen` also fails — the window never gets an allocation — and it fails identically on unmodified main
   - issue 10 → `test_sub_frames_analysis_widgets.py` ×1 — test calls `@property`s as methods
   - issue 11 → `test_report_sections.py::test_movers_section_omitted_when_no_moving_objects_package` — fails in both environments (in-worker `sys.modules` pollution under `-n auto`)
   - `test_visibility_planner.py::test_every_visibility_module_is_pure_or_widget_and_the_public_api_is_exported` **passes** in this environment.
 
-  Verified 2026-11-21 in a gi-present venv (gi 3.58.1) by running the six affected widget files: exactly the tests mapped above fail. Do not treat the counts as stable — the `.scratch/app-improvement/issues/` files above are the authoritative root-cause list, and this failure set shrinks as issues 01–04/09–11 land. Re-derive it with `uv run pytest tests/test_observing_widgets.py tests/test_report_widgets.py tests/test_report_sections.py tests/test_moving_objects_widgets.py tests/test_sub_frames_analysis_widgets.py tests/test_offline_analysis_widgets.py -q`.
+  Verified 2026-11-21 in a gi-present venv (gi 3.58.1) by running the six affected widget files: the tests mapped above fail — 13 failed / 79 passed with a window manager, 14 failed / 78 passed on a bare X display without one (the extra failure is the display-dependent allocation test noted above). Do not treat the counts as stable — the `.scratch/app-improvement/issues/` files above are the authoritative root-cause list, and this failure set shrinks as issues 01–04/09–11 land. Re-derive it with `uv run pytest tests/test_observing_widgets.py tests/test_report_widgets.py tests/test_report_sections.py tests/test_moving_objects_widgets.py tests/test_sub_frames_analysis_widgets.py tests/test_offline_analysis_widgets.py -q`.
 
 ## Final end-to-end verification (2026-11-21, commit `390f885`)
 
