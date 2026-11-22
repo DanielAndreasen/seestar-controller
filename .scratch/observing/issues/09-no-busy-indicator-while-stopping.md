@@ -6,7 +6,7 @@
 
 **Blocked by:** None (observing 01-05 done; relates to 07 live refresh)
 
-**Status:** open — found in live test 2026-11-22
+**Status:** implemented in cff007b (pending review)
 
 - [ ] Observe view busy state while executor stop + final frame download is in flight
 - [ ] Status text ("Stopping…") in the observe view
