@@ -6,7 +6,7 @@ Evidence: `src/seestar_controller/observing/capture.py:589` sets `self._since[ki
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in c10a758 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in cac6e0d
 
 - [x] A simulated `store_frame` failure leaves the frame eligible for re-download on the next poll; after the failure is fixed, the frame is stored
 - [x] Watermark never advances past an unstored frame

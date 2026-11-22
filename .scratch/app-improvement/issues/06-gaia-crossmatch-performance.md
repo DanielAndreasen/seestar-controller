@@ -6,7 +6,7 @@ Evidence: `src/seestar_controller/gaia/matching.py:166-172` nested loop computin
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 9e5d673 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in e9aa2a8
 
 - [x] `crossmatch` of 2000 detections × 100k Gaia rows completes in a few seconds (add a scale/perf test with a generous bound)
 - [x] Match results are identical to the brute-force result on the existing test fixtures (radius semantics unchanged)

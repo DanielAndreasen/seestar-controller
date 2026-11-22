@@ -6,7 +6,7 @@ Evidence: `.scratch/dependency-upgrade/spec.md` lists "Known pre-existing failur
 
 **Blocked by:** None (can start immediately); should be updated again after issues 01-04 and 09-11 land
 
-**Status:** implemented in b2c0f23, review amendments in 0ce743d (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 931eb6d
 
 - [x] `docs/wiki/dependency-upgrade.md`, `.scratch/dependency-upgrade/spec.md`, and the AGENTS.md note state both environments explicitly and reference `.scratch/app-improvement/` issues 01-04/09-11 as the known failure root causes
 - [x] Docs-only change

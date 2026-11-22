@@ -6,7 +6,7 @@ Evidence: `.scratch/project-store/spec.md` user story 9 vs `grep -rn "def delete
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 4a38a53 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in c88259a
 
 - [x] Decision recorded in both specs (implement vs descope) and acted on: if implemented, `store.delete_project` removes the project directory/DB safely (refuse when open, tests) and the Projects view offers deletion; if descoped, story 9 is moved to Out of Scope in the project-store spec
 - [x] Full suite green; ty + ruff clean

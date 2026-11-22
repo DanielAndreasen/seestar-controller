@@ -6,7 +6,7 @@ Evidence: `tests/test_moving_objects_widgets.py:150,163,172,202,209,227,243` cal
 
 **Blocked by:** None (can start immediately); issue 03 fixes the remaining src-side failure in the same file
 
-**Status:** implemented in 05b9e12 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in bd0542f
 
 - [x] All tests in `tests/test_moving_objects_widgets.py` use `.emit("clicked")` and GTK4-correct teardown and pass with gi importable — except `::test_mover_overlay_view_lists_session_and_shows_frame`, which the ticket itself assigns to issue 03 (its remaining failure is the src-side frame-label gap, unchanged by this ticket; its `.destroy()` teardown line was deliberately left for issue 03 to keep the merges disjoint)
 - [x] Full suite `uv run pytest -q -n auto` green; ty + ruff clean — see Comments: targeted file run green for this ticket's tests; full suite not run here (coordinator runs it at merge time, after issue 03 lands); ty reports only the 108 pre-existing `gi.repository` diagnostics identical to main, ruff clean

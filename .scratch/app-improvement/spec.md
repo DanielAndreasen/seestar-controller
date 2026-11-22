@@ -1,6 +1,6 @@
 # App Improvement — audit-driven fixes
 
-**Status:** ready-for-agent
+**Status:** completed — all 21 issues implemented, reviewed (approved) and merged to main
 
 Whole-application audit effort (read-only testing + spec/issue verification). Findings are filed as individual tickets under `.scratch/app-improvement/issues/`.
 

@@ -6,7 +6,7 @@ Evidence: `tests/test_sub_frames_analysis_widgets.py:227-229` calls `viewer.curr
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 7d6914b (pending review)
+**Status:** completed — reviewed (approved) and merged to main in d69311a
 
 - [x] The test uses property access (`viewer.current_stack`) and passes with gi importable; full suite green; ty + ruff clean
 

@@ -6,11 +6,11 @@ Evidence: `src/seestar_controller/photometry/results_view.py:184-185` calls `ref
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in d686783 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 4e651b2
 
 - [x] After opening a project (online or offline), the session dropdown lists its sessions and Run stores measurements for the selected session without clicking Refresh
 - [x] `uv run pytest tests/test_offline_analysis_widgets.py -q` passes with gi importable
-- [ ] Full suite `uv run pytest -q -n auto` stays green; ty + ruff clean
+- [x] Full suite `uv run pytest -q -n auto` stays green; ty + ruff clean
 
 ## Comments
 

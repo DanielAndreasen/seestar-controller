@@ -9,7 +9,7 @@ Evidence:
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in b9801dd (pending review)
+**Status:** completed — reviewed (approved) and merged to main in d98b4cf
 
 - [x] The three spec lines above are updated to match the merged reality
 - [x] No code changes; docs-only ticket

@@ -6,7 +6,7 @@ Evidence: `src/seestar_controller/observing/observe_view.py:490,495-497` connect
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 00feba3 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in cd77169
 
 - [x] After resume or close-and-start-new, `stale_dialog` is None and the dialog is dismissed, in gi-present headless runs too
 - [x] `uv run pytest tests/test_observing_widgets.py -q` passes with gi importable; full suite green; ty + ruff clean

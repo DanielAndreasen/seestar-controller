@@ -6,12 +6,12 @@ Evidence: `src/seestar_controller/observing/report_panel.py:224-252` — `_run_w
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in f2a5d3e (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 11e882f
 
 - [x] Clicking "Generate report" in the GUI writes a non-empty `reports/<session>.html`, lists it in the saved-reports box, and opens it
 - [x] Clicking "Export PDF" writes a non-empty `.pdf` next to the HTML
 - [x] `uv run pytest tests/test_report_widgets.py -q` passes with gi importable (no skips hiding failures)
-- [ ] Full suite `uv run pytest -q -n auto` stays green; `uv tool run ty check` and `uv tool run ruff check` clean
+- [x] Full suite `uv run pytest -q -n auto` stays green; `uv tool run ty check` and `uv tool run ruff check` clean
 
 ## Comments
 

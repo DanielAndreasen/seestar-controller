@@ -6,7 +6,7 @@ Evidence: `src/seestar_controller/transit/fit.py:60` `from scipy.optimize import
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 1c4e419 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in bbf25b0
 
 - [x] `scipy` appears in `pyproject.toml` dependencies and `uv.lock` (`uv add scipy` or manual + `uv lock`)
 - [x] `uv run pytest tests/test_transit_fit.py -q` passes; full suite green; ty + ruff clean

@@ -6,7 +6,7 @@ Evidence: `.scratch/mosaic-stitch/spec.md` stories 2-4 + Implementation Decision
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in e8995c2 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in dd9e82f
 
 - [x] Either: after stitching, the mosaic can be opened in the Enhance view — CHOSEN PATH: open-file path in the viewer + a mosaic row in the Enhance view list (`list_project_mosaics` + `ViewerController.open_path`, rows dispatch on `frame_id=None`; the Projects-view Stitch action opens the mosaic and switches to the Enhance view). Registering the mosaic as a `frames` row was rejected: issue 01 decided "no store schema bump", and a `kind="stack"` row would be re-ingested as a tile on the next stitch.
 - [x] Chosen path covered by tests; `uv run pytest tests/test_mosaic_stitch.py tests/test_enhance_widgets.py -q` passes; full suite green; ty + ruff clean

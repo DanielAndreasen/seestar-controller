@@ -6,7 +6,7 @@ Evidence: `src/seestar_controller/link/transport.py:367,374` — `future.result(
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in b1bcdc2 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in f157bed
 
 - [x] `timeout=0` raises `RequestTimeoutError` immediately; `timeout=None` keeps the default; positive values unchanged (add tests)
 - [x] `uv run pytest tests/test_protocol.py tests/test_transport.py -q` (whichever exist) pass; full suite green; ty + ruff clean

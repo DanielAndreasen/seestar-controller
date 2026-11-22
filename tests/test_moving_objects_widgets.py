@@ -147,7 +147,7 @@ def test_mover_overlay_view_lists_session_and_shows_frame(gtk, project, tmp_path
     # no movers yet
     assert view.movers_list.get_row_at_index(0) is None
     assert "frame 1/6" in view.frame_label.get_label()
-    view.destroy()
+    view._on_destroy()  # GTK4 has no Widget.destroy()
 
 
 def test_mover_overlay_view_detect_button_finds_mover(gtk, project, tmp_path):

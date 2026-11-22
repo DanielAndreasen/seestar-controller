@@ -6,7 +6,7 @@ Evidence: `.scratch/check-star-plot/issues/01-check-star-core.md` says the role 
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in a537b5d (pending review)
+**Status:** completed — reviewed (approved) and merged to main in bcf8557
 
 - [x] The issue checkbox is reworded to "stored in the same role column via the v4→v5 CHECK-widening migration"
 - [x] No code changes; docs-only ticket

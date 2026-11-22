@@ -6,7 +6,7 @@ Evidence: `src/seestar_controller/store/project.py:287-311` — after collision-
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 9c176ea (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 3e3bba8
 
 - [x] A failed `create_project` removes the partial directory (all-or-nothing), and the name can be reused afterwards
 - [x] `open_project` closes the db connection on any exception (try/finally or broader except)

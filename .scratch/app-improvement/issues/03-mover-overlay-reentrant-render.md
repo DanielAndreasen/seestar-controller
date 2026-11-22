@@ -6,7 +6,7 @@ Evidence: `src/seestar_controller/moving_objects/overlay_view.py:361-395` — `_
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 226d69c (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 4c31c47
 
 - [x] After listing a session with frames, the frame label shows "frame 1/N" without any extra user action
 - [x] `uv run pytest tests/test_moving_objects_widgets.py -q` passes (together with issue 09's test fixes); full suite green; ty + ruff clean

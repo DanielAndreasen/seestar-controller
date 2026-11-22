@@ -6,7 +6,7 @@ Evidence: `.scratch/session-report/issues/02-quality-movers-sections.md`, `.scra
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 4a8d860 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 86d6892
 
 - [x] Every listed issue file has its acceptance boxes checked (or a pointer to the implementing commit's test list) matching its Status line
 - [x] No code changes; docs-only ticket

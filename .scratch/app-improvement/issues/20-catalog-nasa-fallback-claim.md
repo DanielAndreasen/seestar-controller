@@ -6,7 +6,7 @@ Evidence: `.scratch/catalog/spec.md` Implementation Decisions: "Name resolution:
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 6da9b91 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 535a81b
 
 - [x] Spec text no longer promises an unimplemented NASA fallback (or a fallback resolver is implemented and tested)
 - [x] No code changes if descoped; docs-only otherwise; full suite green if code changes

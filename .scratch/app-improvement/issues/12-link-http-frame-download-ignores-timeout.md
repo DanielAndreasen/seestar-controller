@@ -6,7 +6,7 @@ Evidence: `src/seestar_controller/link/frames.py:445-462` — `fetch_frame_bytes
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in e000de7 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 94afbc9
 
 - [x] The HTTP fetch path receives and uses the caller's timeout (e.g. `Callable[[str, float], bytes]` or `functools.partial`); default behavior unchanged when no timeout given
 - [x] Tests in `tests/test_frames.py` cover timeout forwarding on the HTTP path; full suite green; ty + ruff clean

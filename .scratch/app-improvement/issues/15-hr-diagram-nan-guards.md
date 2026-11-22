@@ -6,7 +6,7 @@ Evidence: `src/seestar_controller/hr_diagram/core.py:200-203` (`float(g)` with n
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in b5ade66 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 1207258
 
 - [x] `absolute_g` / `abs_g_error` (and the plot.py twin) return None for NaN/inf parallax (`math.isfinite(p) and p > 0`), with NaN test cases added
 - [x] `uv run pytest tests/test_hr_diagram.py -q` passes; full suite green; ty + ruff clean

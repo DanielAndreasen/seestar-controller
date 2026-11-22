@@ -6,7 +6,7 @@ Evidence: `tests/test_report_sections.py:271` asserts `"seestar_controller.movin
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 7f8b24f (pending review)
+**Status:** completed — reviewed (approved) and merged to main in d102826
 
 - [x] The test passes both standalone and in the full `uv run pytest -q -n auto` run (enforce isolation via monkeypatch/subprocess like the gi-boundary tests, or drop the sys.modules premise)
 - [x] Full suite green; ty + ruff clean
