@@ -30,7 +30,11 @@ by entry through an explicit state machine::
   ``duration_per_target_s`` wall-clock seconds elapsed on the entry (whichever
   comes first; with neither set the target stacks until skip/stop/pause), then
   ``device.stop_stack()``. A ``stack_finished`` event (the Scope stopped the
-  Stack on its own) also ends the target;
+  Stack on its own) also ends the target. **Issue 11** — before starting, a
+  Scope still reporting a stacking/busy mode (a previous run died mid-stack
+  with the connection lost) is stopped first (best-effort), and a code-259
+  reply to ``start_stack`` is recovered once with a stop + retry, so a stale
+  stacking state does not kill the night;
 - **DONE** — the queue is exhausted (or ``stop()`` was commanded): optionally
   ``device.park()`` (``park_at_end=True`` default — spec user story 11), the
   session is closed, terminal state ``DONE``;
@@ -98,12 +102,18 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from seestar_controller.link.device import StackingProgress
+from seestar_controller.link.compat import ALREADY_RUNNING_CODE
+from seestar_controller.link.device import (
+    MODE_STACKING,
+    StackingProgress,
+    plain_rpc_message,
+)
 from seestar_controller.link.resilience import (
     CONNECTION_LOST_EVENT,
     SCOPE_ERROR_EVENT,
     STACK_FINISHED_EVENT,
 )
+from seestar_controller.link.transport import RpcError
 from seestar_controller.store.errors import SessionOpenError
 from seestar_controller.store.sessions import (
     close_session,
@@ -225,6 +235,29 @@ def _direct_invoke(callback: Callable[[], None]) -> None:
 
 #: Sentinel for "leave the field unchanged" in :meth:`NightExecutor._transition`.
 _UNSET: Any = object()
+
+
+def _error_message(error: Any) -> str:
+    """The user-facing message for a step error: a known state-conflict
+    :class:`~seestar_controller.link.transport.RpcError` (codes 259 / 203 —
+    issue 11) leads with the plain-language message from
+    :func:`~seestar_controller.link.device.plain_rpc_message`, with the raw
+    ``Type: text`` in brackets; everything else keeps the ``Type: text``
+    form."""
+    if isinstance(error, BaseException):
+        message = f"{type(error).__name__}: {error}"
+        plain = plain_rpc_message(error)
+        if plain is not None:
+            return f"{plain} [{message}]"
+        return message
+    return str(error)
+
+
+def _is_already_stacking_error(error: BaseException) -> bool:
+    """Issue 11: an :class:`~seestar_controller.link.transport.RpcError` with
+    code 259 — the Scope is already stacking (``iscope_start_stack`` with
+    ``restart`` while a Stack runs)."""
+    return isinstance(error, RpcError) and error.reply.code == ALREADY_RUNNING_CODE
 
 
 class NightExecutor:
@@ -762,7 +795,7 @@ class NightExecutor:
                 self._device.park()
                 self._log_event(ExecutorState.DONE, "parked at end of run")
             except Exception as exc:  # noqa: BLE001
-                message = f"{type(exc).__name__}: {exc}"
+                message = _error_message(exc)
                 logger.warning("park at end failed: %s", message)
                 self._log_event(ExecutorState.DONE, f"park failed: {message}")
         self._transition(ExecutorState.DONE, error=None, log_detail="run done")
@@ -929,10 +962,9 @@ class NightExecutor:
         )
         with self._lock:
             self._stack_finished = False
-        try:
-            self._device.start_stack(entry.exposure_s, entry.gain, entry.mosaic)
-        except Exception as exc:  # noqa: BLE001
-            return self._handle_error(index, entry, exc)
+        outcome = self._start_stack_recovered(index, entry)
+        if outcome is not None:
+            return outcome
         while True:
             try:
                 cmd = self._commands.get(timeout=self._poll_interval_s)
@@ -953,10 +985,9 @@ class NightExecutor:
                 # resumed: restart the Stack, the frame budget accumulated so far
                 with self._lock:
                     self._stack_finished = False
-                try:
-                    self._device.start_stack(entry.exposure_s, entry.gain, entry.mosaic)
-                except Exception as exc:  # noqa: BLE001
-                    return self._handle_error(index, entry, exc)
+                outcome = self._start_stack_recovered(index, entry)
+                if outcome is not None:
+                    return outcome
                 continue
             pending = self._consume_pending_error()
             if pending is not None:
@@ -990,6 +1021,60 @@ class NightExecutor:
                 )
                 return "next"
 
+    def _start_stack_recovered(self, index: int, entry: QueueEntry) -> str | None:
+        """Start the entry's Stack, recovering once from a stale stacking
+        state (issue 11). Returns ``None`` on success, else the error outcome
+        (``"skip"`` / ``"abort"`` via :meth:`_handle_error`).
+
+        Before the first attempt, a Scope still reporting stacking/busy (a
+        previous run died mid-stack with the connection lost) is stopped
+        first; a code-259 reply to ``start_stack`` ("already running") is
+        recovered with a stop + a single retry. Any other error is handled
+        per the error policy, unchanged."""
+        self._stop_stale_stack_if_stacking(index)
+        try:
+            self._device.start_stack(entry.exposure_s, entry.gain, entry.mosaic)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            if not _is_already_stacking_error(exc):
+                return self._handle_error(index, entry, exc)
+        # code 259: the scope was still stacking — stop it, then retry once
+        self._log_event(
+            ExecutorState.STACKING,
+            f"entry {index}: scope was still stacking — stopped it before starting",
+        )
+        self._stop_stack_quietly()
+        try:
+            self._device.start_stack(entry.exposure_s, entry.gain, entry.mosaic)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            return self._handle_error(index, entry, exc)
+
+    def _stop_stale_stack_if_stacking(self, index: int) -> None:
+        """Issue 11: before starting a Stack, read the Scope's mode — when it
+        still reports stacking/busy (``mode == "stacking"`` or a working
+        Stack progress node), stop the stale Stack first (best-effort,
+        logged), so ``start_stack`` is not rejected with code 259. A failing
+        state read is ignored: ``start_stack`` then reports the real error."""
+        try:
+            state = self._device.state()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("state() before start_stack failed (ignored): %s", exc)
+            return
+        mode = getattr(state, "mode", "")
+        stacking = getattr(state, "stacking", None)
+        if mode != MODE_STACKING and str(getattr(stacking, "state", "")) != "working":
+            return
+        logger.info(
+            "scope still reports mode %r before start_stack — stopping the stale stack",
+            mode,
+        )
+        self._log_event(
+            ExecutorState.STACKING,
+            f"entry {index}: scope was still stacking — stopped it before starting",
+        )
+        self._stop_stack_quietly()
+
     def _stop_stack_quietly(self) -> None:
         """Best-effort ``stop_stack`` (a failing stop must not mask the real
         outcome — e.g. the link is already down)."""
@@ -1001,10 +1086,7 @@ class NightExecutor:
     def _handle_error(self, index: int, entry: QueueEntry, error: Any) -> str:
         """Handle a step error per the error policy. Returns ``"skip"`` or
         ``"abort"``."""
-        if isinstance(error, BaseException):
-            message = f"{type(error).__name__}: {error}"
-        else:
-            message = str(error)
+        message = _error_message(error)
         with self._lock:  # an exception from our own call supersedes a pending event
             self._pending_error = None
         self._log_event(self.state, f"error on entry {index}: {message}")

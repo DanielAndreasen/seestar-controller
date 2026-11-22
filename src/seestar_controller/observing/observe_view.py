@@ -68,6 +68,7 @@ import numpy as np
 from gi.repository import Adw, Gdk, GLib, Gtk
 from PIL import Image
 
+from seestar_controller.link.device import plain_rpc_message
 from seestar_controller.store.errors import SessionOpenError
 from seestar_controller.store.sessions import Session, get_open_session
 from seestar_controller.ui.connection import ConnectionStatus
@@ -575,11 +576,20 @@ class ObserveView(Gtk.Box):
             self._controller.pause()
 
     def _on_park_clicked(self, *_args) -> None:
-        """Park: ``controller.park()``; inline error when not connected."""
+        """Park: ``controller.park()``; inline error when not connected, and
+        in plain language when the Scope rejects the park with a known RPC
+        state conflict (issue 11 — codes 259/203: a stack is still running,
+        stop it on the scope first)."""
         try:
             self._controller.park()
         except ObserveStateError as exc:
             self._set_status(str(exc), error=True)
+            return
+        except Exception as exc:  # noqa: BLE001 - shown inline, never crash the view
+            plain = plain_rpc_message(exc)
+            self._set_status(
+                plain if plain is not None else f"{type(exc).__name__}: {exc}", error=True
+            )
             return
         self._set_status("scope parked", error=False)
 
