@@ -23,7 +23,10 @@ no GTK, see docs/wiki/assumptions.md):
   Observe view renders — ticket 03); and :mod:`.capture`
   (:class:`~.capture.SessionCapture` + :class:`~.capture.SessionLog`,
   :class:`~.capture.LogEvent` — sub-frames/Stacks downloaded into the current
-  session as they arrive + the per-session event log — ticket 04). These
+  session as they arrive + the per-session event log — ticket 04 — plus the
+  :class:`~.capture.FrameStoredEvent` / :data:`~.capture.FrameStoredListener`
+  frame-stored event the app forwards to the Projects view for a live
+  stored-data refresh during a night — ticket 07). These
   import **no ``gi``** but do import the link + store + ui controllers
   (stdlib + link + store + ui.connection / ui.notifications +
   :mod:`.queue`), so they are re-exported here **lazily** (PEP 562) —
@@ -106,6 +109,8 @@ _EXECUTOR_EXPORTS = {
     "ExecutorSnapshot": "executor",
     "ExecutorState": "executor",
     "ExecutorStateError": "executor",
+    "FrameStoredEvent": "capture",
+    "FrameStoredListener": "capture",
     "NightExecutor": "executor",
     "CAPTURE_SOURCE": "capture",
     "KIND_CAPTURE": "capture",
@@ -207,6 +212,8 @@ __all__ = [
     "ExecutorSnapshot",
     "ExecutorState",
     "ExecutorStateError",
+    "FrameStoredEvent",
+    "FrameStoredListener",
     "InvokeOnMain",
     "LogEvent",
     "LogListener",

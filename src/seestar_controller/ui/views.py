@@ -46,7 +46,11 @@ followed by one row per stored frame (kind, id, jd, exposure, target) — all
 read from the project store, so the whole browser works in offline mode with
 no scope connection; the actions run on the main loop (via ``invoke_on_main``,
 like every other store call) and write their products back into the project
-(``mosaics/<session>.fits`` / ``reports/<session>.html``). The
+(``mosaics/<session>.fits`` / ``reports/<session>.html``). Observing ticket 07:
+while a night runs, every frame the session capture stores into the current
+project fires a frame-stored event that the app forwards to this view, which
+re-renders the browser on the main loop (``invoke_on_main``) — new frame rows
+and live subs/stacks counts appear without reopening the project. The
 **Observe** view (observing tickets 01 + 03) already carries the real
 content: the two-pane
 :class:`~seestar_controller.observing.observe_view.ObserveView` widget — the
@@ -150,6 +154,7 @@ from seestar_controller.moving_objects.overlay_view import (
     MoverOverlayView as MoverOverlayWidget,
 )
 from seestar_controller.observing import (
+    FrameStoredEvent,
     ObserveController,
     PlanQueueController,
 )
@@ -1124,7 +1129,12 @@ class ProjectsView(_PlaceholderView):
       visible immediately.
 
     The view re-renders on every controller event (it registers as a
-    listener), so changes from anywhere show up.
+    listener), so changes from anywhere show up. Observing ticket 07: it also
+    listens to the shared observe controller's **frame-stored** events —
+    every frame the session capture stores into the current project mid-night
+    — and re-renders the stored-data browser on the main loop (via
+    ``invoke_on_main``), so new frame rows and live subs/stacks counts appear
+    without reopening the project.
     """
 
     view_id = "projects"
@@ -1134,6 +1144,7 @@ class ProjectsView(_PlaceholderView):
         self,
         project_controller: ProjectController | None = None,
         *,
+        observe_controller: ObserveController | None = None,
         invoke_on_main: Callable[[Callable[[], None]], Any] | None = None,
         viewer_controller: ViewerController | None = None,
         show_view: Callable[[str], None] | None = None,
@@ -1145,6 +1156,11 @@ class ProjectsView(_PlaceholderView):
             if project_controller is not None
             else ProjectController(AppState())
         )
+        #: the shared observe controller whose frame-stored events re-render
+        #: the stored-data browser live during a night (observing ticket 07;
+        #: the app passes its shared instance via :func:`build_view`; None
+        #: when the view is built standalone without one)
+        self._observe_controller = observe_controller
         #: marshals the stored-data actions onto the main loop (the app
         #: window binds GLib.idle_add; standalone/tests call directly)
         self._invoke_on_main = invoke_on_main or _direct_invoke
@@ -1232,6 +1248,9 @@ class ProjectsView(_PlaceholderView):
         self._content.append(self._data_status_label)
 
         self._project_controller.add_listener(self._on_project_event)
+        if self._observe_controller is not None:
+            # observing ticket 07: live stored-data refresh while a night runs
+            self._observe_controller.add_frame_listener(self._on_frame_stored)
         self._rebuild()
 
     # -- public helpers (also used by the widget tests) ---------------------------
@@ -1240,6 +1259,13 @@ class ProjectsView(_PlaceholderView):
     def controller(self) -> ProjectController:
         """The pure-layer project controller backing this view."""
         return self._project_controller
+
+    @property
+    def observe_controller(self) -> ObserveController | None:
+        """The shared observe controller whose frame-stored events re-render
+        the stored-data browser live (observing ticket 07; None when the view
+        was built standalone without one)."""
+        return self._observe_controller
 
     @property
     def viewer_controller(self) -> ViewerController:
@@ -1396,6 +1422,15 @@ class ProjectsView(_PlaceholderView):
     def _on_project_event(self, event: ProjectEvent) -> None:
         """Controller listener: projects and/or current changed -> re-render."""
         self._rebuild()
+
+    def _on_frame_stored(self, event: FrameStoredEvent) -> None:
+        """Observe-controller frame-stored listener (observing ticket 07): the
+        session capture stored a frame into the current project mid-night ->
+        re-render the stored-data browser on the main loop (via
+        ``invoke_on_main``, like every store call), so the new frame row and
+        the session's live subs/stacks counts appear without reopening the
+        project."""
+        self._invoke_on_main(self._rebuild_data)
 
     def _rebuild(self) -> None:
         """Re-render the banner, root line, project list, and the stored-data
@@ -1864,7 +1899,10 @@ def build_view(
     03), and
     ``project_controller`` to the Projects view (projects-view ticket 01) —
     the app window passes its shared controllers; the other views ignore
-    them. ``invoke_on_main`` is forwarded to the Projects view's stored-data
+    them. ``observe_controller`` is also forwarded to the Projects view
+    (observing ticket 07): its frame-stored events re-render the stored-data
+    browser live during a night (the view marshals the re-render through
+    ``invoke_on_main``). ``invoke_on_main`` is forwarded to the Projects view's stored-data
     actions (offline-analysis ticket 02 — the app window binds
     ``GLib.idle_add``, so the Stitch mosaic / Session report actions run on
     the GLib main loop like every other store call). ``viewer_controller``
@@ -1912,6 +1950,7 @@ def build_view(
     if view_id == ProjectsView.view_id:
         return ProjectsView(
             project_controller=project_controller,
+            observe_controller=observe_controller,
             invoke_on_main=invoke_on_main,
             viewer_controller=viewer_controller,
             show_view=show_view,
