@@ -26,7 +26,7 @@ try:
 except ValueError as exc:  # typelibs missing
     pytest.skip(f"GTK 4.0 / libadwaita typelibs missing: {exc}", allow_module_level=True)
 
-from gi.repository import GLib, Gtk  # ty: ignore[import-not-found]
+from gi.repository import GLib, Gtk
 
 from seestar_controller.store import (
     KIND_STACK,
