@@ -19,10 +19,11 @@ the table into the project is issue 02):
    raises :class:`~.errors.WcsMissingError` ("plate-solve the stack first");
 2. :func:`~.query.query_gaia_cached` — a Gaia DR3 cone search around the
    field center (radius = field diagonal + margin) via direct VizieR TAP
-   HTTP, selecting G/BP/RP/parallax/pmRA/pmDE with ``G < 20``, cached on
-   disk under ``<config>/cache/gaia/`` keyed by the rounded center + radius
-   with a TTL (the catalog module's cache pattern); a query failure with no
-   cache raises :class:`~.errors.GaiaUnavailableError`;
+   HTTP, selecting G/BP/RP/parallax(+error)/pmRA(+error)/pmDE(+error) with
+   ``G < 20``, cached on disk under ``<config>/cache/gaia/`` keyed by the
+   rounded center + radius with a TTL (the catalog module's cache pattern);
+   a query failure with no cache raises
+   :class:`~.errors.GaiaUnavailableError`;
 3. :func:`~.matching.crossmatch` — pair every detection with its nearest
    Gaia row within a configurable radius (default 1.5 arcsec); unmatched
    detections are flagged.

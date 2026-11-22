@@ -30,8 +30,11 @@ def star(source_id: int, ra: float, dec: float, g: float = 15.0) -> GaiaStar:
         bp=g + 0.5,
         rp=g - 0.5,
         parallax=1.25,
+        parallax_error=0.05,
         pmra=2.5,
+        pmra_error=0.06,
         pmdec=-3.5,
+        pmdec_error=0.07,
     )
 
 
@@ -52,8 +55,11 @@ def test_crossmatch_pairs_detections_with_their_gaia_rows():
     assert first.bp == pytest.approx(14.5)
     assert first.rp == pytest.approx(13.5)
     assert first.parallax == pytest.approx(1.25)
+    assert first.parallax_error == pytest.approx(0.05)
     assert first.pmra == pytest.approx(2.5)
+    assert first.pmra_error == pytest.approx(0.06)
     assert first.pmdec == pytest.approx(-3.5)
+    assert first.pmdec_error == pytest.approx(0.07)
     assert first.separation_arcsec == pytest.approx(0.5, abs=0.05)
     assert first.x == 10.0 and first.y == 20.0
     assert first.ra_deg == pytest.approx(RA0) and first.dec_deg == pytest.approx(DEC0)
@@ -70,7 +76,9 @@ def test_crossmatch_unmatched_detections_are_flagged():
     assert not unmatched.matched
     assert unmatched.source_id is None
     assert unmatched.g is None and unmatched.bp is None and unmatched.rp is None
-    assert unmatched.parallax is None and unmatched.pmra is None and unmatched.pmdec is None
+    assert unmatched.parallax is None and unmatched.parallax_error is None
+    assert unmatched.pmra is None and unmatched.pmra_error is None
+    assert unmatched.pmdec is None and unmatched.pmdec_error is None
     assert unmatched.separation_arcsec is None
     # the detection's own position is still reported
     assert unmatched.x == 3.0 and unmatched.y == 4.0
@@ -149,6 +157,9 @@ def test_crossmatch_accepts_duck_typed_rows():
     rows = gc.crossmatch([D()], [G()])
     assert rows[0].matched and rows[0].source_id == 5 and rows[0].g == 10.0
     assert rows[0].bp is None  # missing attribute -> None
+    # the duck-typed Gaia row has no error attributes either -> None
+    assert rows[0].parallax is None and rows[0].parallax_error is None
+    assert rows[0].pmra_error is None and rows[0].pmdec_error is None
     sep = rows[0].separation_arcsec
     assert sep is not None and math.isfinite(sep)
 
@@ -187,7 +198,9 @@ def _brute_force(
                 gc.CrossmatchRow(
                     x=float(d.x), y=float(d.y), ra_deg=ra_d, dec_deg=dec_d,
                     matched=True, source_id=s.source_id, g=s.g, bp=s.bp, rp=s.rp,
-                    parallax=s.parallax, pmra=s.pmra, pmdec=s.pmdec,
+                    parallax=s.parallax, parallax_error=s.parallax_error,
+                    pmra=s.pmra, pmra_error=s.pmra_error,
+                    pmdec=s.pmdec, pmdec_error=s.pmdec_error,
                     separation_arcsec=sep,
                 )
             )
