@@ -1,6 +1,6 @@
 # Issue 06: the Photometry view is too crowded — picking + results + mover overlay + variable-scan in one vertical paned
 
-**Status:** needs-triage
+**Status:** implemented in 38f5259 (pending review)
 
 ## Found while
 Live session 2026-11-22 (project vw-cep): guiding a user through the first lightcurve, the Photometry view was "extremely difficult to do anything on — so much going on on so little space".

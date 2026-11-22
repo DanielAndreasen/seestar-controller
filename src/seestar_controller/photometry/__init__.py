@@ -19,7 +19,9 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   RGB stacks use the WCS of their 2D celestial subset; one target and at most
   one check star (check-star-plot ticket 01) with replace semantics, comps
   multiple), :meth:`~.picking.PickController.add_at_sky`
-  (the inverse: sky -> pixel via the WCS -> pick, ticket 02),
+  (the inverse: sky -> pixel via the WCS -> pick, ticket 02 — exposed in the
+  picker's "go to RA/Dec or name" entry, parsed by
+  :func:`~.picking.parse_goto_target`, issue 06),
   :meth:`~.picking.PickController.remove_pick` /
   :meth:`~.picking.PickController.set_role` / :meth:`~.picking.PickController.clear`,
   aperture settings, :meth:`~.picking.PickController.save` /
@@ -134,6 +136,7 @@ from .picking import (
     DEFAULT_SKY_OUT_PX,
     SNAP_WINDOW_PX,
     ApertureParams,
+    GotoTarget,
     PhotometryError,
     PickController,
     PickingError,
@@ -141,6 +144,7 @@ from .picking import (
     PickSession,
     StarPickSpec,
     has_celestial_wcs,
+    parse_goto_target,
     pixel_to_sky,
     sky_to_pixel,
     try_pixel_to_sky,
@@ -217,6 +221,7 @@ __all__ = [
     "ExcludedFrame",
     "FrameMeasurement",
     "FrameSkippedError",
+    "GotoTarget",
     "LookupFn",
     "MeasureReport",
     "MeasurementError",
@@ -258,6 +263,7 @@ __all__ = [
     "measure_frame_data",
     "measure_project",
     "measure_star",
+    "parse_goto_target",
     "pixel_to_sky",
     "sky_to_pixel",
     "try_pixel_to_sky",

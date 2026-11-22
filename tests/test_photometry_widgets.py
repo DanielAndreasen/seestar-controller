@@ -58,6 +58,17 @@ and the results panel plots the check star's differential curve as a second
 series next to the target's (from the last run report's ``frame_results``)
 plus a **target − check** toggle for the target-minus-check curve, with the
 excluded flag carried over to the check series.
+
+Issue 06 (view too crowded): the Photometry view is an ``Adw.ViewStack`` +
+``Adw.ViewSwitcher`` with one workflow tab at a time ("Pick stars" / "Run
+photometry" / "Variables" / "Movers") — asserted via ``view.view_stack`` /
+``view.view_switcher`` / ``view.select_tab``; and the picker's **go to RA/Dec
+or name** entry — ``picker.go_to("5h32m00s, +22d00m00s")`` places the target
+pick via ``PickController.add_at_sky`` on the solved frame, a name is resolved
+through the injectable ``name_resolver`` (mocked here — no network), failures
+(outside the frame, unresolvable name) show as a clean error status, and the
+hover readout (``picker.hover_text`` / ``picker.sky_at_widget`` /
+``picker.hover_label``) shows the RA/Dec of the hovered pixel.
 """
 
 import io
@@ -85,6 +96,7 @@ from seestar_controller.catalog.standards import StandardStar
 from seestar_controller.enhance import ViewerController
 from seestar_controller.photometry import (
     PickController,
+    PickingError,
     RunController,
     SuggestionController,
     sky_to_pixel,
@@ -983,3 +995,181 @@ def test_results_panel_without_check_star_has_empty_check_series(gtk, project):
     panel.set_show_target_minus_check(True)
     assert panel.show_target_minus_check() is True
     assert panel.tmc_plot_points() == ()
+
+
+# ---------------------------------------------------------------------------
+# Issue 06: the Photometry view's workflow tabs + the picker's go-to entry +
+# hover sky-coord readout
+# ---------------------------------------------------------------------------
+
+
+def test_photometry_view_has_four_workflow_tabs(gtk):
+    from seestar_controller.ui.views import (
+        PHOTOMETRY_TABS,
+        PhotometryView,
+        build_view,
+    )
+
+    vc = ViewerController()
+    pc = PickController(viewer_controller=vc)
+    view = build_view("photometry", picker_controller=pc, viewer_controller=vc)
+    assert isinstance(view, PhotometryView)
+    assert view.tabs == PHOTOMETRY_TABS == (
+        ("pick", "Pick stars"),
+        ("run", "Run photometry"),
+        ("variables", "Variables"),
+        ("movers", "Movers"),
+    )
+    stack = view.view_stack
+    assert view.view_switcher.get_stack() is stack
+    pages = stack.get_pages()
+    names = [pages.get_item(i).get_name() for i in range(pages.get_n_items())]
+    titles = [pages.get_item(i).get_title() for i in range(pages.get_n_items())]
+    assert names == ["pick", "run", "variables", "movers"]
+    assert titles == ["Pick stars", "Run photometry", "Variables", "Movers"]
+    # each tab carries its workflow widget; the old properties still work
+    assert stack.get_child_by_name("pick") is view.picker_widget
+    assert stack.get_child_by_name("run") is view.results_panel
+    assert stack.get_child_by_name("variables") is view.variable_scan_view
+    assert stack.get_child_by_name("movers") is view.mover_overlay
+    assert view.tab_child("pick") is view.picker_widget
+    assert view.picker_widget.controller is pc  # the shared controllers still wired
+    # switching tabs switches the visible page
+    assert view.visible_tab == "pick"
+    view.select_tab("run")
+    assert view.visible_tab == "run"
+    assert stack.get_visible_child() is view.results_panel
+    view.select_tab("movers")
+    assert view.visible_tab == "movers"
+    assert stack.get_visible_child() is view.mover_overlay
+    # standalone construction (no controllers passed) has the same tabs
+    standalone = build_view("photometry")
+    assert [t for t, _title in standalone.tabs] == names
+    assert standalone.tab_child("pick") is standalone.picker_widget
+
+
+def test_app_window_photometry_page_has_the_tabs(gtk, tmp_path):
+    from seestar_controller.ui.app import SeestarApplication, SeestarWindow
+
+    app = SeestarApplication(settings_path=str(tmp_path / "settings.json"))
+    window = SeestarWindow(app, app.state)
+    page = window.view_stack.get_child_by_name("photometry")
+    assert [t for t, _title in page.tabs] == ["pick", "run", "variables", "movers"]
+    assert page.tab_child("pick") is page.picker_widget
+    assert page.picker_widget.controller is app.picker_controller
+    assert page.tab_child("run") is page.results_panel
+    assert page.results_panel.controller is app.run_controller
+    page.select_tab("variables")
+    assert page.visible_tab == "variables"
+
+
+def test_goto_entry_places_target_pick_at_sky_coords(picker, viewer_controller):
+    viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
+    pump_main()
+    picker.role_dropdown.set_selected(0)  # Target
+    # wcs_header: crval (83, 22), crpix (33, 33) 1-based, cdelt (-0.001, 0.001)
+    # -> sky (83, 22) is 0-based pixel (32, 32), inside the 64x64 frame;
+    # 5h32m00s == 83.0 deg RA
+    spec = picker.go_to("5h32m00s, +22d00m00s")
+    assert spec.role == "target"
+    assert spec.coord == J2000Coord(ra_deg=83.0, dec_deg=22.0)
+    assert (spec.x, spec.y) == pytest.approx((32.0, 32.0), abs=1e-6)
+    assert spec.label == "Target"
+    assert picker.controller.target is spec
+    assert [m[5] for m in picker.pick_marks()] == ["target"]  # overlay re-rendered
+    # the same flow through the entry + Go button
+    picker.goto_entry.set_text("5.5333333 +22.0")
+    picker.goto_button.emit("clicked")
+    pump_main()
+    target = picker.controller.target
+    assert target is not None and target.coord is not None
+    assert target.coord.ra_deg == pytest.approx(83.0, abs=1e-4)
+    assert "went to" in picker._status_label.get_label()
+
+
+def test_goto_name_resolves_via_name_resolver_and_places_target(picker, viewer_controller):
+    viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
+    pump_main()
+    calls = []
+
+    def resolver(name):
+        calls.append(name)
+        return J2000Coord(ra_deg=83.0, dec_deg=22.0)
+
+    picker._name_resolver = resolver  # mocked — no network in widget tests
+    picker.role_dropdown.set_selected(0)  # Target
+    spec = picker.go_to("M 42")  # the synchronous API resolves through the resolver
+    assert calls == ["M 42"]
+    assert spec.role == "target" and spec.label == "M 42"
+    assert spec.coord == J2000Coord(ra_deg=83.0, dec_deg=22.0)
+    # through the entry + Go button the resolve runs on a worker thread and is
+    # marshalled back to the main loop
+    picker.goto_entry.set_text("M 42")
+    picker.goto_button.emit("clicked")
+    thread = picker._goto_thread
+    assert thread is not None and thread is not threading.current_thread()
+    thread.join(timeout=10.0)
+    pump_main()  # the idle_add'ed result places the pick
+    target = picker.controller.target
+    assert target is not None and target.label == "M 42"
+    assert calls == ["M 42", "M 42"]
+
+
+def test_goto_failures_show_clean_error_status(picker, viewer_controller):
+    viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
+    pump_main()
+    # a sky position mapping outside the 64x64 frame
+    with pytest.raises(PickingError, match="outside"):
+        picker.go_to("0h00m00s, +89d00m00s")
+    assert picker.controller.picks == ()
+    picker.goto_entry.set_text("0h00m00s, +89d00m00s")
+    picker.goto_button.emit("clicked")
+    pump_main()
+    assert picker.controller.picks == ()
+    assert "outside" in picker._status_label.get_label()
+    assert picker._status_label.has_css_class("error")
+    # an unresolvable name
+    def failing_resolver(name):
+        raise RuntimeError("offline and no cache")
+
+    picker._name_resolver = failing_resolver
+    with pytest.raises(PickingError, match="cannot resolve"):
+        picker.go_to("Foo Bar")
+    picker.goto_entry.set_text("Foo Bar")
+    picker.goto_button.emit("clicked")
+    thread = picker._goto_thread
+    assert thread is not None
+    thread.join(timeout=10.0)
+    pump_main()
+    assert picker.controller.picks == ()
+    assert "cannot resolve" in picker._status_label.get_label()
+    assert picker._status_label.has_css_class("error")
+    # a malformed entry
+    picker.goto_entry.set_text("83.0, abc")
+    picker.goto_button.emit("clicked")
+    pump_main()
+    assert "cannot parse" in picker._status_label.get_label()
+
+
+def test_hover_readout_shows_sky_coords_of_hovered_pixel(picker, viewer_controller):
+    from seestar_controller.photometry import try_pixel_to_sky
+
+    viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
+    pump_main()
+    wx, wy = picker.image_to_widget(40, 30)
+    coord = picker.sky_at_widget(wx, wy)
+    expected = try_pixel_to_sky(picker.controller.image.header, 40, 30)
+    assert coord is not None and expected is not None
+    assert coord == expected
+    text = picker.hover_text(wx, wy)
+    assert "RA" in text and "Dec" in text and "px 40.0, 30.0" in text
+    # the motion controller drives the hover label
+    picker._on_motion(None, wx, wy)
+    assert picker.hover_label.get_label() == text
+    picker._on_motion_leave()
+    assert picker.hover_label.get_label() == ""
+    # no image open -> empty readout
+    picker.controller.set_image(None)
+    pump_main()
+    assert picker.hover_text(wx, wy) == ""
+    assert picker.sky_at_widget(wx, wy) is None

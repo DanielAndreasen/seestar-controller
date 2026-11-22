@@ -19,6 +19,10 @@ What lives here:
   conversion (:mod:`astropy.wcs`, lazy), plus the lenient variants
   :func:`try_pixel_to_sky` (None instead of raising) and
   :func:`has_celestial_wcs` (bool) used by the picking/suggest paths;
+- :func:`parse_goto_target` / :class:`GotoTarget` (issue 06) — parse a
+  "go to RA/Dec or name" entry: an ``(RA, Dec)`` pair (RA in hours, Dec in
+  degrees, sexagesimal ok) becomes a coordinate, anything else an object name
+  for the widget layer to resolve;
 - :class:`StarPickSpec` — one picked star (role, pixel, sky coord, label);
 - :class:`ApertureParams` — the aperture radius + sky annulus (pixels) stored
   alongside the picks;
@@ -93,7 +97,7 @@ from typing import Any
 
 import numpy as np
 
-from seestar_controller.catalog.coords import J2000Coord
+from seestar_controller.catalog.coords import CoordinateError, J2000Coord, parse_coords
 from seestar_controller.store.errors import ProjectError, StarPickError
 from seestar_controller.store.frames import header_to_dict
 from seestar_controller.store.stars import (
@@ -314,6 +318,66 @@ def try_pixel_to_sky(
     except PickingError as exc:
         logger.debug("no sky coord for pixel (%s, %s): %s", x, y, exc)
         return None
+
+
+# --- go-to target parsing (issue 06) -------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GotoTarget:
+    """A parsed "go to" entry (issue 06): either a sky coordinate or an object
+    name to resolve.
+
+    - ``kind`` — ``"coords"`` (``coord`` set, ``name`` empty) or ``"name"``
+      (``name`` set, ``coord`` None — resolution happens in the widget layer,
+      which owns the catalog resolver);
+    - ``coord`` — the :class:`~seestar_controller.catalog.coords.J2000Coord`
+      when ``kind == "coords"``;
+    - ``name`` — the (stripped) object name when ``kind == "name"``.
+    """
+
+    kind: str
+    coord: J2000Coord | None = None
+    name: str = ""
+
+
+def parse_goto_target(text: Any) -> GotoTarget:
+    """Parse a "go to RA/Dec or name" entry (issue 06) into a :class:`GotoTarget`.
+
+    - ``"5h32m00s, +22d00m00s"`` / ``"5.5333, 22.0"`` (comma or whitespace
+      separated) — an ``(RA, Dec)`` pair parsed with
+      :func:`~seestar_controller.catalog.coords.parse_coords`: RA in hours
+      (a plain number is HOURS, matching ``link.Device.goto`` and
+      :meth:`J2000Coord.parse`), Dec in degrees; sexagesimal with units
+      (``h m s`` / ``d m s``) also accepted. A comma-separated pair that does
+      NOT parse raises :class:`PickingError` (a malformed coordinate is an
+      error, not a name);
+    - anything else (one token, or several tokens that are not an RA/Dec
+      pair, e.g. ``"M 42"`` or ``"V* bet Per"``) — an object NAME to resolve.
+
+    Raises :class:`PickingError` on a non-string or empty entry.
+    """
+    if not isinstance(text, str):
+        raise PickingError(f"go-to entry must be a string, got {text!r}")
+    stripped = text.strip()
+    if not stripped:
+        raise PickingError("enter a sky coordinate (RA/Dec) or an object name first")
+    if "," in stripped:
+        ra_text, dec_text = (part.strip() for part in stripped.split(",", 1))
+        try:
+            coord = parse_coords(ra_text, dec_text)
+        except CoordinateError as exc:
+            raise PickingError(f"cannot parse {stripped!r} as RA/Dec: {exc}") from exc
+        return GotoTarget(kind="coords", coord=coord)
+    parts = stripped.split()
+    if len(parts) == 2:
+        try:
+            coord = parse_coords(parts[0], parts[1])
+        except CoordinateError:
+            pass  # two tokens that are not RA/Dec — a name like "M 42"
+        else:
+            return GotoTarget(kind="coords", coord=coord)
+    return GotoTarget(kind="name", name=stripped)
 
 
 # --- picks + aperture ------------------------------------------------------------

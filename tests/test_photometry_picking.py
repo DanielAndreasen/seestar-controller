@@ -43,11 +43,13 @@ from seestar_controller import photometry
 from seestar_controller.catalog.coords import J2000Coord
 from seestar_controller.photometry import (
     ApertureParams,
+    GotoTarget,
     PickController,
     PickingError,
     PickSession,
     StarPickSpec,
     has_celestial_wcs,
+    parse_goto_target,
     picking,
     pixel_to_sky,
     sky_to_pixel,
@@ -830,6 +832,44 @@ def test_controller_follows_viewer_open_stack(wcs_stack_project):
     assert ctrl.image is image
 
 
+# --- issue 06: parse_goto_target (the picker's "go to RA/Dec or name" entry) --------------
+
+
+def test_parse_goto_target_coords_comma_sexagesimal_and_decimal():
+    t = parse_goto_target("5h32m00s, +22d00m00s")
+    assert t == GotoTarget(kind="coords", coord=J2000Coord(ra_deg=83.0, dec_deg=22.0), name="")
+    assert t.coord is not None and t.coord.ra_deg == pytest.approx(83.0)
+    t = parse_goto_target("  5.5333333  +22.0  ")  # whitespace-separated, decimal
+    assert t.kind == "coords"
+    assert t.coord is not None and t.coord.ra_deg == pytest.approx(83.0, abs=1e-4)
+    assert t.coord.dec_deg == pytest.approx(22.0)
+    # a plain RA number is HOURS (the link.Device.goto unit), like J2000Coord.parse
+    t = parse_goto_target("83.0, 22.0")
+    assert t.kind == "coords"
+    assert t.coord is not None and t.coord.ra_deg == pytest.approx((83.0 % 24.0) * 15.0)
+
+
+def test_parse_goto_target_names():
+    for text in ("M 42", "NGC1976", "V* bet Per", "m42", "  M   42  "):
+        t = parse_goto_target(text)
+        assert t.kind == "name"
+        assert t.coord is None
+        assert t.name == text.strip()
+
+
+def test_parse_goto_target_errors():
+    with pytest.raises(PickingError, match="string"):
+        parse_goto_target(123)
+    with pytest.raises(PickingError, match="enter a sky coordinate"):
+        parse_goto_target("   ")
+    # a comma-separated pair that does not parse is a malformed coordinate,
+    # not a name
+    with pytest.raises(PickingError, match="cannot parse"):
+        parse_goto_target("83.0, abc")
+    with pytest.raises(PickingError, match="cannot parse"):
+        parse_goto_target("12h00m00s, 95d00m00s")  # Dec out of range
+
+
 # --- package boundary (subprocess + source scan) ----------------------------------------------
 
 
@@ -889,6 +929,7 @@ def test_public_api_is_exported_from_package():
         "DEFAULT_COMP_SEARCH_RADIUS_DEG",
         "DEFAULT_SKY_IN_PX",
         "DEFAULT_SKY_OUT_PX",
+        "GotoTarget",
         "LookupFn",
         "MAX_COMP_SEARCH_RADIUS_DEG",
         "NO_WCS_HINT",
@@ -909,6 +950,7 @@ def test_public_api_is_exported_from_package():
         "SuggestionSnapshot",
         "default_standards_lookup",
         "has_celestial_wcs",
+        "parse_goto_target",
         "pixel_to_sky",
         "sky_to_pixel",
         "try_pixel_to_sky",
