@@ -350,6 +350,18 @@ def _validate_maxrec(maxrec: Any) -> int:
 # --- the wire query -------------------------------------------------------------------
 
 
+def _quote_table_ref(table: str) -> str:
+    """Quote a table name for the ADQL ``FROM`` clause.
+
+    A dotted name is schema-qualified, so each part is quoted on its own
+    (``gaiadr3.gaia_source`` -> ``"gaiadr3"."gaia_source"``): the Gaia archive
+    rejects the single quoted dotted identifier ``"gaiadr3.gaia_source"`` with
+    HTTP 400 (``Unknown table``). A plain name stays one quoted identifier
+    (``I/355/gaiadr3`` -> ``"I/355/gaiadr3"``).
+    """
+    return ".".join(f'"{part}"' for part in table.split("."))
+
+
 def build_cone_query(
     center_ra: float,
     center_dec: float,
@@ -368,14 +380,16 @@ def build_cone_query(
     dialect of its schema — :data:`VIZIER_TAP_SYNC_URL` queries
     :data:`GAIA_DR3_TABLE` with the VizieR spellings, :data:`ESA_GAIA_TAP_SYNC_URL`
     the ESA archive table :data:`ESA_GAIA_DR3_TABLE` with the archive
-    spellings; any other URL gets the VizieR dialect).
+    spellings; any other URL gets the VizieR dialect). The FROM-clause table
+    reference is schema-quoted when the table name is dotted
+    (:func:`_quote_table_ref`) so the Gaia archive resolves it.
     """
     ra, dec, radius = _validate_center_radius(center_ra, center_dec, radius_deg)
     checked_g = _validate_g_limit(g_limit)
     dialect = _TAP_DIALECTS.get(url, _TAP_DIALECTS[VIZIER_TAP_SYNC_URL])
     columns = ", ".join(f'"{name}"' for name in dialect.columns)
     return (
-        f'SELECT {columns} FROM "{dialect.table}" '
+        f"SELECT {columns} FROM {_quote_table_ref(dialect.table)} "
         f"WHERE CONTAINS(POINT('ICRS', \"{dialect.ra}\", \"{dialect.dec}\"), "
         f"CIRCLE('ICRS', {ra!r}, {dec!r}, {radius!r})) = 1 "
         f'AND "{dialect.g}" < {checked_g!r} '
