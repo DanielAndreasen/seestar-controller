@@ -15,7 +15,10 @@ Two solvers (``solver=``):
   :func:`shutil.which` and run as a SUBPROCESS (the only subprocess in the
   package): the frame is written to a temp FITS, ``solve-field --overwrite
   --out <prefix> <fits>`` runs with a timeout, and the ``<prefix>.wcs`` it
-  writes is parsed with astropy. A nonzero exit, a timeout, or a missing
+  writes is parsed with astropy. The matched-star count and RMS of the solve
+  are parsed from what it leaves behind — the row count of the
+  ``<prefix>.match`` FITS table and the "solved with N stars, RMS x arcsec"
+  stdout line. A nonzero exit, a timeout, or a missing
   ``.wcs`` raises :class:`SolveError` with the solver's own message.
 - ``"gaia"`` — the pure-Python fallback built on the merged gaia-crossmatch
   API: a PROVISIONAL TAN WCS is built from a center hint (``center_hint`` or
@@ -47,6 +50,7 @@ stars); :func:`write_wcs_to_fits` writes the cards into the FITS header and
 from __future__ import annotations
 
 import math
+import re
 import shutil
 import subprocess
 import tempfile
@@ -144,9 +148,11 @@ class SolveResult:
     - ``center_ra_deg`` / ``center_dec_deg`` — the solved field center: the
       sky position of the image center pixel (J2000 degrees, RA normalized
       to ``[0, 360)``);
-    - ``n_stars`` — the number of matched stars used (0 for ``solve-field``,
-      which does not report its matches here);
-    - ``rms_arcsec`` — the match RMS in arcsec (None for ``solve-field``);
+    - ``n_stars`` — the number of matched stars used (for ``solve-field``:
+      parsed from its ``.match`` output / stdout line, 0 when neither
+      reports one);
+    - ``rms_arcsec`` — the match RMS in arcsec (for ``solve-field``: parsed
+      from its "RMS ... arcsec" stdout line, None when it reports none);
     - ``matches`` — the :class:`StarMatch` tuple of the final pass (empty for
       ``solve-field``);
     - ``rows`` — the final cross-match rows of the Gaia solver (the
@@ -281,6 +287,50 @@ def _check_center_hint(value: Any) -> tuple[float, float] | None:
 
 # --- solve-field subprocess ---------------------------------------------------------------
 
+#: Matches the matched-star count in a solve-field output line such as
+#: "Field 1: solved with 24 stars" (case-insensitive; the LAST match wins —
+#: it belongs to the final solution).
+_SOLVE_FIELD_N_STARS_RE = re.compile(r"(\d+)\s+stars\b", re.IGNORECASE)
+
+#: Matches the RMS in a solve-field output line such as "RMS 0.42 arcsec".
+_SOLVE_FIELD_RMS_RE = re.compile(
+    r"RMS\s*[:=]?\s*([0-9]*\.?[0-9]+(?:[eE][+-]?\d+)?)\s*arcsec\b", re.IGNORECASE
+)
+
+
+def _parse_solve_field_output(text: str) -> tuple[int | None, float | None]:
+    """Parse ``(n_stars, rms_arcsec)`` from the solve-field stdout/stderr text
+    — its "solved with N stars, RMS x arcsec" line (the last occurrence wins,
+    it is the final solution). Either element is None when the output does
+    not report it."""
+    n_stars: int | None = None
+    for match in _SOLVE_FIELD_N_STARS_RE.finditer(text):
+        n_stars = int(match.group(1))
+    rms_arcsec: float | None = None
+    for match in _SOLVE_FIELD_RMS_RE.finditer(text):
+        value = float(match.group(1))
+        if math.isfinite(value):
+            rms_arcsec = value
+    return n_stars, rms_arcsec
+
+
+def _match_file_rows(match_file: Path) -> int | None:
+    """The matched-star count of the solve — the row count of the
+    ``<out>.match`` FITS BINTABLE solve-field writes next to the solution
+    (None when the file is missing or unreadable)."""
+    if not match_file.exists():
+        return None
+    from astropy.io import fits as pyfits
+
+    try:
+        with pyfits.open(match_file, memmap=False) as hdul:
+            for hdu in hdul[1:]:
+                if getattr(hdu, "data", None) is not None:
+                    return len(hdu.data)
+    except Exception:  # noqa: BLE001 - an unreadable .match just means "no count"
+        return None
+    return None
+
 
 def _solve_with_solve_field(
     data: np.ndarray,
@@ -290,7 +340,8 @@ def _solve_with_solve_field(
     timeout_s: float,
 ) -> SolveResult:
     """Run the local astrometry.net ``solve-field`` binary on the frame (the
-    package's only subprocess) and parse the ``.wcs`` it writes."""
+    package's only subprocess) and parse the ``.wcs`` it writes plus the
+    matched-star count / RMS from its ``.match`` table and stdout line."""
     from astropy.io import fits as pyfits
     from astropy.wcs import WCS
 
@@ -332,6 +383,15 @@ def _solve_with_solve_field(
             wcs = WCS(pyfits.getheader(str(wcs_file)))
         except Exception as exc:
             raise SolveError(f"cannot parse the solve-field WCS file: {exc}") from exc
+        # the matched-star count and RMS of the solve: the row count of the
+        # <out>.match table solve-field wrote (authoritative) and its
+        # "solved with N stars, RMS x arcsec" stdout line (fallback)
+        n_stars, rms_arcsec = _parse_solve_field_output(
+            "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+        )
+        match_rows = _match_file_rows(tdir / "solve.match")
+        if match_rows is not None:
+            n_stars = match_rows
     if wcs.celestial is None:
         raise SolveError("solve-field wrote a non-celestial WCS — cannot use it")
     cards = wcs_to_cards(wcs)
@@ -343,8 +403,8 @@ def _solve_with_solve_field(
         solved_at=utc_now_iso(),
         center_ra_deg=center[0],
         center_dec_deg=center[1],
-        n_stars=0,
-        rms_arcsec=None,
+        n_stars=n_stars if n_stars is not None else 0,
+        rms_arcsec=rms_arcsec,
         matches=(),
         rows=(),
     )
