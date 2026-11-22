@@ -855,14 +855,17 @@ class MockScope:
                     return dict(record)
         raise KeyError(f"unknown frame id {frame_id!r}")
 
-    def fetch_http(self, url: str) -> bytes:
+    def fetch_http(
+        self, url: str, timeout: float = frames.DEFAULT_FETCH_TIMEOUT
+    ) -> bytes:
         """Emulated fw 9.75 HTTP frame download: ``GET http://<host>/<path>``.
 
         ``url`` is the URL :func:`seestar_controller.link.frames.http_frame_url`
-        built; the path after the host must be a stored frame's
-        ``remote_path`` (``MyWorks/<folder>/<filename>``). Returns the FITS
-        bytes; raises ``FileNotFoundError`` for anything else (the real scope
-        answers 404).
+        built and ``timeout`` the per-request timeout the client forwarded
+        (accepted and ignored — the frame store is in memory); the path after
+        the host must be a stored frame's ``remote_path``
+        (``MyWorks/<folder>/<filename>``). Returns the FITS bytes; raises
+        ``FileNotFoundError`` for anything else (the real scope answers 404).
         """
         path = urllib.parse.urlsplit(url).path.lstrip("/")
         path = urllib.parse.unquote(path)

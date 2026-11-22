@@ -649,7 +649,7 @@ def test_download_frames_over_http_on_975(device975, mock975, tmp_path):
 def test_download_frames_http_404_raises(device975, mock975, tmp_path):
     mock975.add_frame("sub", target={"name": "M 31"})
 
-    def broken_fetch(url):
+    def broken_fetch(url, timeout):
         raise FileNotFoundError(url)
 
     with pytest.raises(FileNotFoundError):

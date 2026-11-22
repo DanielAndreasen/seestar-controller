@@ -292,7 +292,13 @@ def http_frame_url(host: str, remote_path: str) -> str:
     return f"http://{host}/{urllib.parse.quote(remote_path, safe='/')}"
 
 
-def default_fetch(url: str, timeout: float = 30.0) -> bytes:
+#: Default per-request timeout (seconds) for the fw 9.75 HTTP frame GET when
+#: the caller of :func:`download_frames` / :func:`fetch_frame_bytes` passes no
+#: ``timeout`` — a hung GET then blocks at most this long.
+DEFAULT_FETCH_TIMEOUT = 30.0
+
+
+def default_fetch(url: str, timeout: float = DEFAULT_FETCH_TIMEOUT) -> bytes:
     """Default HTTP GET for fw 9.75 frame downloads (``urllib``)."""
     with urllib.request.urlopen(url, timeout=timeout) as response:
         return response.read()
@@ -441,22 +447,24 @@ def fetch_frame_bytes(
     transport: Any,
     record: Mapping[str, Any],
     *,
-    fetch: Callable[[str], bytes] | None = None,
+    fetch: Callable[[str, float], bytes] | None = None,
     timeout: float | None = None,
 ) -> bytes:
     """Fetch one frame's FITS bytes.
 
     Records with ``remote_path`` (fw 9.75 album flow) are downloaded over
-    plain HTTP GET from the Scope (``fetch(url) -> bytes``, default
-    :func:`default_fetch`); legacy records go through the ``get_frame``
-    RPC (``fits_b64``).
+    plain HTTP GET from the Scope (``fetch(url, timeout) -> bytes``, default
+    :func:`default_fetch`); the caller's ``timeout`` is forwarded to the
+    fetcher — :data:`DEFAULT_FETCH_TIMEOUT` when not given — so a hung GET
+    blocks for at most that long. Legacy records go through the
+    ``get_frame`` RPC (``fits_b64``).
     """
     remote_path = record.get("remote_path")
     if remote_path:
         host = getattr(transport, "host", "")
         url = http_frame_url(host, str(remote_path))
         fetcher = fetch or default_fetch
-        return fetcher(url)
+        return fetcher(url, DEFAULT_FETCH_TIMEOUT if timeout is None else timeout)
     detail = transport.request(
         GET_FRAME_METHOD, {"id": record["id"]}, timeout=timeout
     )
@@ -576,7 +584,7 @@ def download_frames(
     since: Any = None,
     *,
     timeout: float | None = None,
-    fetch: Callable[[str], bytes] | None = None,
+    fetch: Callable[[str, float], bytes] | None = None,
 ) -> list[DownloadedFrame]:
     """Download frames of one ``kind`` ("sub"/"stack") from the Scope into
     ``dest_dir`` via the transport's command channel.
@@ -588,8 +596,10 @@ def download_frames(
     sidecar into ``dest_dir``, both atomically. Returns the
     :class:`DownloadedFrame` list (path, sidecar, metadata) in time order.
 
-    ``fetch`` injects the fw 9.75 HTTP GET (``fetch(url) -> bytes``);
-    default :func:`default_fetch`.
+    ``timeout`` is the per-request timeout: it bounds the RPC calls and is
+    forwarded to the fw 9.75 HTTP GET (``fetch(url, timeout) -> bytes``,
+    :data:`DEFAULT_FETCH_TIMEOUT` when not given); ``fetch`` injects that
+    HTTP GET, default :func:`default_fetch`.
     """
     kind = normalize_kind(kind)
     since_epoch = normalize_since(since)

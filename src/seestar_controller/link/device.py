@@ -632,7 +632,7 @@ class Device:
         *,
         since: datetime | str | float | None = None,
         timeout: float | None = None,
-        fetch: Callable[[str], bytes] | None = None,
+        fetch: Callable[[str, float], bytes] | None = None,
     ) -> list[frames.DownloadedFrame]:
         """Download sub-frames or Stacks from the Scope into ``dest_dir``.
 
@@ -646,8 +646,12 @@ class Device:
         metadata) in time order. See :mod:`seestar_controller.link.frames`.
 
         On fw 9.75 frames are fetched over plain HTTP GET; ``fetch`` allows
-        injecting that HTTP GET (``fetch(url) -> bytes``), defaulting to
-        :func:`urllib.request.urlopen`.
+        injecting that HTTP GET (``fetch(url, timeout) -> bytes``) — the
+        ``timeout`` argument is forwarded to it
+        (:data:`~seestar_controller.link.frames.DEFAULT_FETCH_TIMEOUT` when
+        not given), defaulting to
+        :func:`~seestar_controller.link.frames.default_fetch`
+        (:func:`urllib.request.urlopen`).
         """
         return frames.download_frames(
             self._transport,
