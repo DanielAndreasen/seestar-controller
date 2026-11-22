@@ -6,7 +6,7 @@ Evidence: ESA dialect selects only 9 columns, so even a working ESA fallback yie
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in dda71df (pending review)
+**Status:** completed — reviewed (APPROVE) and merged to main in 3cfa7ff
 
 - [x] `build_cone_query(url=ESA...)` selects all 12 columns incl. the three error fields
 - [x] Parsed ESA responses populate the error fields on `GaiaStar`

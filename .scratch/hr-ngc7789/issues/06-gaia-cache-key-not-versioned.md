@@ -6,7 +6,7 @@ Evidence: hr-ngc7789 driver re-run had to manually delete the stale cache entry 
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 611ad0d (pending review)
+**Status:** completed — reviewed (APPROVE) and merged to main in d554d28
 
 - [x] Old-format cache entries are either re-fetched or only served via the stale/offline path, never as fresh
 - [x] Stale-offline fallback still works for same-format entries

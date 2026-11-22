@@ -6,7 +6,7 @@ Evidence: `Gaia TAP at https://gea.esac.esa.int/tap-server/tap/sync returned HTT
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 0003d83 (pending review)
+**Status:** completed — reviewed (APPROVE) and merged to main in cd708da
 
 - [x] ESA-dialect ADQL parses on the real archive (table reference unquoted or schema-quoted); VizieR dialect unchanged
 - [x] New test asserts the ESA query string form; existing `test_build_cone_query_esa_mirror_uses_the_gaia_archive_dialect` updated
