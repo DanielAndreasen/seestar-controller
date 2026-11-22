@@ -35,6 +35,7 @@ from seestar_controller.store import (
     default_project_root,
     list_projects,
     open_project,
+    schema,
     slugify,
 )
 
@@ -370,6 +371,54 @@ def test_slug_collision_raises_exists(root):
     assert [p.slug for p in list_projects(root)] == ["m-42"]
 
 
+# --- create: all-or-nothing cleanup on failure --------------------------------------
+
+
+@pytest.mark.parametrize("exc_type", [OSError, KeyboardInterrupt])
+def test_create_write_failure_removes_partial_directory(root, monkeypatch, exc_type):
+    """A failing ``project.json`` write leaves no half-created directory behind
+    (the audit scenario: ``db.sqlite`` + subdirs but no ``project.json``)."""
+
+    def boom(*args, **kwargs):
+        raise exc_type("rename failed")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(exc_type):
+        create_project("M 42", root=root)
+    # all-or-nothing: the partial directory is gone entirely
+    assert not (root / "m-42").exists()
+    assert not list(root.iterdir())
+    # the name is not blocked — it can be reused immediately
+    monkeypatch.undo()
+    p = create_project("M 42", root=root)
+    try:
+        assert p.name == "M 42"
+        assert (root / "m-42" / PROJECT_FILE).is_file()
+        assert (root / "m-42" / DB_FILE).is_file()
+    finally:
+        p.close()
+    with open_project(root / "m-42") as reopened:
+        assert reopened.slug == "m-42"
+
+
+def test_create_db_init_failure_removes_partial_directory(root, monkeypatch):
+    """A failure earlier in the create (here: db init, e.g. no disk space)
+    also removes the partial directory."""
+
+    def boom(conn):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(schema, "initialize_db", boom)
+    with pytest.raises(sqlite3.OperationalError, match="disk full"):
+        create_project("M 42", root=root)
+    assert not (root / "m-42").exists()
+    assert not list(root.iterdir())
+    # the name is reusable afterwards
+    monkeypatch.undo()
+    create_project("M 42", root=root).close()
+    assert [s.slug for s in list_projects(root)] == ["m-42"]
+
+
 # --- open: validation errors -------------------------------------------------------
 
 
@@ -499,6 +548,67 @@ def test_open_user_version_mismatch_raises_invalid(root):
     p.close()
     with pytest.raises(InvalidProjectError, match="user_version"):
         open_project(root / "m-42")
+
+
+# --- open: the db connection is closed on ANY failure path ---------------------------
+
+
+def test_open_closes_db_when_config_mirror_write_fails(root, monkeypatch):
+    """The ``project.json`` mirror write after a migration is inside the
+    guarded region: when it fails, the freshly opened db is closed anyway."""
+    p = create_project("M 42", root=root)
+    p.config["schema_version"] = SCHEMA_VERSION - 1  # stale config copy -> mirror write
+    p.save_config()
+    p.close()
+
+    seen: list[sqlite3.Connection] = []
+
+    def boom(self):
+        seen.append(self.db)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Project, "save_config", boom)
+    with pytest.raises(OSError, match="disk full"):
+        open_project(root / "m-42")
+    assert len(seen) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        seen[0].execute("SELECT 1")  # the connection was closed on the failure path
+
+
+def test_open_closes_db_on_validation_failure(root, monkeypatch):
+    """Any exception after connecting (here: db missing tables) closes the db."""
+    project_dir = root / "m-42"
+    project_dir.mkdir(parents=True)
+    (project_dir / PROJECT_FILE).write_text(
+        json.dumps(
+            {
+                "name": "M 42",
+                "slug": "m-42",
+                "created_at": "2026-11-20T00:00:00+00:00",
+                "schema_version": 1,
+            }
+        )
+    )
+    conn = sqlite3.connect(project_dir / DB_FILE)
+    with conn:
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
+        conn.execute("PRAGMA user_version=1")
+    conn.close()
+
+    real_connect = sqlite3.connect
+    opened: list[sqlite3.Connection] = []
+
+    def tracking_connect(*args, **kwargs):
+        c = real_connect(*args, **kwargs)
+        opened.append(c)
+        return c
+
+    monkeypatch.setattr(sqlite3, "connect", tracking_connect)
+    with pytest.raises(InvalidProjectError, match="missing tables"):
+        open_project(project_dir)
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")  # closed, not leaked
 
 
 # --- save_config: atomic write ------------------------------------------------------

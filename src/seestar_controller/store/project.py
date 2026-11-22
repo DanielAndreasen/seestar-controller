@@ -51,6 +51,9 @@ them); frame and CSV files are likewise temp+rename (see :mod:`.frames` /
 at a final name; a stray ``*.tmp`` left behind by a killed process is ignored
 on open and never surfaces through the API (the store has no locking — spec
 out of scope — so temp files are never deleted, only never read).
+:func:`create_project` is all-or-nothing on top of that: any failure after the
+collision check removes the partially created project directory again, so a
+failed create never blocks the project name.
 """
 
 from __future__ import annotations
@@ -58,6 +61,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 from collections.abc import Mapping
@@ -272,6 +276,12 @@ def create_project(name: str, root: str | Path | None = None) -> Project:
     one transaction), writes ``project.json`` atomically, and returns the
     project via :func:`open_project`.
 
+    All-or-nothing: if any step after the collision check fails (subdir
+    creation, db init, the ``project.json`` write, or the final
+    :func:`open_project`), the partially created ``<root>/<slug>/`` directory
+    is removed again — a failure never leaves a half-initialized project
+    behind, so the name is not blocked and can be reused immediately.
+
     Raises :class:`ProjectExistsError` when ``<root>/<slug>/`` already exists
     (slug collision — documented choice, see :func:`slugify`).
     """
@@ -292,23 +302,29 @@ def create_project(name: str, root: str | Path | None = None) -> Project:
             f"a project already exists at {project_dir} "
             f"(name {name!r} slugs to {slug!r}) — pick a different name"
         ) from None
-    for subdir in PROJECT_SUBDIRS:
-        (project_dir / subdir).mkdir()
-    conn = sqlite3.connect(project_dir / DB_FILE)
     try:
-        schema.initialize_db(conn)
-    finally:
-        conn.close()
-    config: dict[str, Any] = {
-        "schema_version": schema.SCHEMA_VERSION,
-        "name": name,
-        "slug": slug,
-        "created_at": utc_now_iso(),
-    }
-    for placeholder in _CONFIG_PLACEHOLDERS:
-        config[placeholder] = None
-    _atomic_write_json(project_dir / PROJECT_FILE, config)
-    return open_project(project_dir)
+        for subdir in PROJECT_SUBDIRS:
+            (project_dir / subdir).mkdir()
+        conn = sqlite3.connect(project_dir / DB_FILE)
+        try:
+            schema.initialize_db(conn)
+        finally:
+            conn.close()
+        config: dict[str, Any] = {
+            "schema_version": schema.SCHEMA_VERSION,
+            "name": name,
+            "slug": slug,
+            "created_at": utc_now_iso(),
+        }
+        for placeholder in _CONFIG_PLACEHOLDERS:
+            config[placeholder] = None
+        _atomic_write_json(project_dir / PROJECT_FILE, config)
+        return open_project(project_dir)
+    except BaseException:
+        # all-or-nothing: remove the partial directory (best effort — never
+        # mask the original error) so the name stays usable
+        shutil.rmtree(project_dir, ignore_errors=True)
+        raise
 
 
 def _missing_tables(db: sqlite3.Connection) -> list[str]:
@@ -338,6 +354,10 @@ def open_project(path: str | Path) -> Project:
 
     Raises :class:`ProjectNotFoundError` when ``path`` is not a directory and
     :class:`InvalidProjectError` for anything invalid/corrupt/unsupported.
+
+    The db connection is explicitly closed on every failure path (including
+    a failing mirror write of ``project.json``) — no handle is leaked; on
+    success the caller owns the connection (see :class:`Project`).
     """
     path = Path(path)
     if not path.is_dir():
@@ -368,6 +388,7 @@ def open_project(path: str | Path) -> Project:
     if not db_path.is_file():
         raise InvalidProjectError(f"{path} is not a project: missing {DB_FILE}")
     db: sqlite3.Connection | None = None
+    opened = False
     try:
         db = sqlite3.connect(db_path)
         db.execute("PRAGMA journal_mode=WAL")  # crash safety, also for migrated dbs
@@ -383,21 +404,19 @@ def open_project(path: str | Path) -> Project:
         missing = _missing_tables(db)
         if missing:
             raise InvalidProjectError(f"{db_path} is missing tables {missing}")
+        project = Project(path=path, config=config, db=db)
+        if config["schema_version"] != schema.SCHEMA_VERSION:
+            # the db was migrated (or a previous open crashed between the db
+            # migration and this mirror write): bump the project.json copy too
+            config["schema_version"] = schema.SCHEMA_VERSION
+            project.save_config()
+        opened = True
+        return project
     except sqlite3.DatabaseError as exc:
-        if db is not None:
-            db.close()
         raise InvalidProjectError(f"{db_path} is not a valid SQLite database: {exc}") from exc
-    except InvalidProjectError:
-        if db is not None:
-            db.close()
-        raise
-    project = Project(path=path, config=config, db=db)
-    if config["schema_version"] != schema.SCHEMA_VERSION:
-        # the db was migrated (or a previous open crashed between the db
-        # migration and this mirror write): bump the project.json copy too
-        config["schema_version"] = schema.SCHEMA_VERSION
-        project.save_config()
-    return project
+    finally:
+        if not opened and db is not None:
+            db.close()  # close the connection on ANY failure path
 
 
 def list_projects(root: str | Path | None = None) -> list[ProjectSummary]:
