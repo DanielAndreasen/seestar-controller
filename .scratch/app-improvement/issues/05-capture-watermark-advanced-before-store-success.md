@@ -6,12 +6,12 @@ Evidence: `src/seestar_controller/observing/capture.py:589` sets `self._since[ki
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in c10a758 (pending review)
 
-- [ ] A simulated `store_frame` failure leaves the frame eligible for re-download on the next poll; after the failure is fixed, the frame is stored
-- [ ] Watermark never advances past an unstored frame
-- [ ] `uv run pytest tests/test_observing_capture.py -q` (plus new regression test) passes; full suite green; ty + ruff clean
+- [x] A simulated `store_frame` failure leaves the frame eligible for re-download on the next poll; after the failure is fixed, the frame is stored
+- [x] Watermark never advances past an unstored frame
+- [x] `uv run pytest tests/test_observing_capture.py -q` (plus new regression test) passes; full suite green; ty + ruff clean
 
 ## Comments
 
-Audit finding (kind: bad-implementation, severity: medium; silent data loss). Fix direction: move the watermark update into `_apply` after `store_frame` succeeds, or roll it back on failure. Covered-by pre-audit: `.scratch/observing/issues/04-session-logging-frame-downloads.md`.
+Implemented in c10a758 on `wt/app-improvement-05`. The per-kind `since` watermark is no longer advanced in `_download_new_frames`; it moves in `_apply` via a new `_advance_watermark(kind, epoch)` only after a frame is stored (or found already stored via the id dedupe), and is capped by a per-kind `_unstored` epoch set so it never passes an unstored frame — the next `download_frames(since=...)` poll (inclusive filter) re-downloads a failed frame and retries the store. New regression test `test_store_failure_keeps_the_frame_eligible_for_redownload` (monkeypatched `store_frame` failing one frame): verified it fails on the pre-fix code (watermark advanced past the unstored frame) and passes after. Targeted tests: `uv run pytest tests/test_observing_capture.py -q` → 19 passed (plus neighboring `test_observing_{observe,executor,widgets,queue}.py` → 188 passed, 1 gi skip). `uv tool run ty check` → All checks passed; `uv tool run ruff check` → clean (after one isort autofix). Full suite not run here (coordinator runs it at merge time).
