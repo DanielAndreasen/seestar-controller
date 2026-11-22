@@ -19,14 +19,7 @@ and the Enhance view's :class:`~.viewer.ImageViewer` widget renders:
   entries via :func:`~.fits_io.list_project_frames` — ALL stored frames (subs,
   stacks, enhanced; sub-frames ticket 01) — PLUS the file-based stitched
   mosaics via :func:`~.fits_io.list_project_mosaics` (app-improvement ticket
-  08), each carrying its ``kind``. The list is sorted NEWEST-FIRST
-  (descending ``jd``) so the latest entry is on top, and it is FILTERED by
-  default (image-enhance issue 05): :attr:`stacks` shows the ``kind="stack"``
-  frames plus the file-based mosaics; :meth:`set_show_all` (the left panes'
-  "show all" toggle) also lists the subs and enhanced frames — with 100+ subs
-  the single stack would otherwise be buried among the sub rows. The full,
-  unfiltered listing stays available as :attr:`all_stacks` (and
-  :meth:`open_stack` opens any kind from it);
+  08), each carrying its ``kind``;
 - :meth:`open_stack` — open one frame by frame id (any kind — a sub opens
   exactly like a stack): the FITS is loaded through
   :func:`~.fits_io.load_fits` (cached by ``path`` + mtime, so re-opening an
@@ -60,7 +53,6 @@ from seestar_controller.store.project import Project
 from .fits_io import (
     KIND_FILE,
     KIND_MOSAIC,
-    KIND_STACK,
     EnhanceError,
     FitsImage,
     StackInfo,
@@ -84,10 +76,9 @@ class ViewerSnapshot:
 
     - ``project_name`` — the current project's display name (None when no
       project is set);
-    - ``stacks`` — the listed entries (tuple of :class:`StackInfo`) AS SHOWN
-      in the viewer lists: newest-first, filtered to the stacks + file-based
-      mosaics unless :attr:`show_all` is on (each entry carries its ``kind``);
-    - ``show_all`` — whether the list filter is off (subs/enhanced listed too);
+    - ``stacks`` — the listed entries (tuple of :class:`StackInfo` — all
+      stored frames, subs included, plus the file-based mosaics, each with
+      its ``kind``);
     - ``current`` — the currently open entry (None when none is open);
     - ``image`` — the loaded :class:`FitsImage` of the current frame;
     - ``preview`` — the tone-mapped preview (:class:`PIL.Image.Image`) of the
@@ -101,7 +92,6 @@ class ViewerSnapshot:
     image: FitsImage | None
     preview: Image.Image | None
     error: str | None
-    show_all: bool = False
 
 
 #: A viewer listener: called with a :class:`ViewerSnapshot` on any change.
@@ -110,19 +100,13 @@ ViewerListener = Callable[[ViewerSnapshot], None]
 
 class ViewerController:
     """The app-level Enhance-viewer controller: the current project, its
-    listed entries (the stacks + file-based mosaics by default; subs and
-    enhanced frames too when :attr:`show_all` is on), the open entry +
-    preview, and observer notification.
+    listed entries (all stored frames — subs, stacks, enhanced — plus the
+    file-based mosaics), the open entry + preview, and observer notification.
 
     - ``project`` — the store project (None = no project yet; the view shows
       a placeholder then);
     - ``preview_max_size`` — the preview downscale bound (see
-      :func:`~.render.render_preview`);
-    - ``show_all`` — the initial list filter: False (the default) lists the
-      ``kind="stack"`` frames plus the file-based mosaics only (image-enhance
-      issue 05 — with 100+ subs the stack row would be buried otherwise);
-      True lists every stored frame (subs, stacks, enhanced) plus the
-      mosaics. Change it later with :meth:`set_show_all`.
+      :func:`~.render.render_preview`).
     """
 
     def __init__(
@@ -130,17 +114,10 @@ class ViewerController:
         project: Project | None = None,
         *,
         preview_max_size: int = DEFAULT_MAX_PREVIEW_SIZE,
-        show_all: bool = False,
     ) -> None:
         self._project = project
         self._preview_max_size = preview_max_size
         self._listeners: list[ViewerListener] = []
-        self._show_all = show_all
-        #: the FULL listing (all stored frames + mosaics, newest-first) —
-        #: what open_stack/open_path look entries up in (any kind opens)
-        self._all_stacks: tuple[StackInfo, ...] = ()
-        #: the VISIBLE list (the filtered view of _all_stacks) — what
-        #: :attr:`stacks` / the snapshot expose to the viewer lists
         self._stacks: tuple[StackInfo, ...] = ()
         self._current: StackInfo | None = None
         self._image: FitsImage | None = None
