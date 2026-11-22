@@ -25,14 +25,31 @@ Dated 2026-11-21. Spec `dependency-upgrade` (issues 01–04) completed 2026-11-2
 
 - **Python 3.12 → 3.14 (issue 01, `3c07d0f`)**: nothing broke beyond the interpreter bump. No removed-stdlib usage, no changed defaults, no 3.14 API incompatibilities were found in `src/` or `tests/` — zero code changes were needed; only `pyproject.toml` (`requires-python`), `.python-version`, `uv.lock` (regenerated with CPython 3.14.7 wheels), README + assumptions stack line changed.
 - **Library upgrades (issue 02, `9a3fa47`)**: only pyyaml moved (6.0.3 → 6.0.4, a patch release with no API changes; the repo does not import yaml directly — it is transitive via astropy). No src/tests breakage fixes were required. No `pyproject.toml` constraint change was needed (all latest versions satisfy the existing `>=` lower bounds).
-- **Known pre-existing headless failures, unchanged by the upgrade** (identical on main before/after, verified 2026-11-21): `test_report_sections.py::test_movers_section_omitted_when_no_moving_objects_package`, `test_visibility_planner.py::test_every_visibility_module_is_pure_or_widget_and_the_public_api_is_exported`. gi-gated widget suites skip in this sandbox (system gi is cpython-312-only — see assumptions.md 2026-11-21 entry).
+- **Known pre-existing headless failures, unchanged by the upgrade** (identical on main before/after, verified 2026-11-21): `test_report_sections.py::test_movers_section_omitted_when_no_moving_objects_package`, `test_visibility_planner.py::test_every_visibility_module_is_pure_or_widget_and_the_public_api_is_exported`. gi-gated widget suites skip in this sandbox (system gi is cpython-312-only — see assumptions.md 2026-11-21 entry). This is the **no-gi** failure set — see "Known pre-existing test failures" below for both environments.
+
+## Known pre-existing test failures — the set depends on whether `gi` is importable (updated 2026-11-21, app-improvement issue 21)
+
+The "known pre-existing failures" are **not one fixed list**; they depend on the environment the suite runs in:
+
+- **Headless sandbox without gi** (plain `uv sync`): the gi-gated widget suites skip via `pytest.importorskip("gi")`, and the only failures are the two pure tests `tests/test_report_sections.py::test_movers_section_omitted_when_no_moving_objects_package` (order-dependent `sys.modules` premise — app-improvement issue 11) and `tests/test_visibility_planner.py::test_every_visibility_module_is_pure_or_widget_and_the_public_api_is_exported` (its purity scan imports a widget module, which needs gi).
+- **gi-present venv** (working gi, e.g. after issue 06 option A/B — pygobject 3.58.1 built into the venv, DISPLAY present): the widget suites **run** instead of skipping, and their failures are known app/test bugs whose root causes are tracked in `.scratch/app-improvement/issues/`:
+  - issue 01 → `test_report_widgets.py` ×3 — report-panel worker thread reuses the main-thread sqlite connection
+  - issue 02 → `test_offline_analysis_widgets.py` ×1 — results panel never re-lists sessions after a project is opened
+  - issues 03 + 09 → `test_moving_objects_widgets.py` ×5 — re-entrant `_render` clobbers the frame label; tests use GTK3-only APIs
+  - issue 04 → `test_observing_widgets.py` ×2 — stale-session dialog cleared only via Adw.Dialog's "closed" signal
+  - display-dependent extra, **not an app bug and not counted in the ×2 above**: on a bare X display with no window manager, `test_observing_widgets.py::test_observe_view_night_buttons_fit_a_laptop_screen` also fails — the window never gets an allocation — and it fails identically on unmodified main
+  - issue 10 → `test_sub_frames_analysis_widgets.py` ×1 — test calls `@property`s as methods
+  - issue 11 → `test_report_sections.py::test_movers_section_omitted_when_no_moving_objects_package` — fails in both environments (in-worker `sys.modules` pollution under `-n auto`)
+  - `test_visibility_planner.py::test_every_visibility_module_is_pure_or_widget_and_the_public_api_is_exported` **passes** in this environment.
+
+  Verified 2026-11-21 in a gi-present venv (gi 3.58.1) by running the six affected widget files: the tests mapped above fail — 13 failed / 79 passed with a window manager, 14 failed / 78 passed on a bare X display without one (the extra failure is the display-dependent allocation test noted above). Do not treat the counts as stable — the `.scratch/app-improvement/issues/` files above are the authoritative root-cause list, and this failure set shrinks as issues 01–04/09–11 land. Re-derive it with `uv run pytest tests/test_observing_widgets.py tests/test_report_widgets.py tests/test_report_sections.py tests/test_moving_objects_widgets.py tests/test_sub_frames_analysis_widgets.py tests/test_offline_analysis_widgets.py -q`.
 
 ## Final end-to-end verification (2026-11-21, commit `390f885`)
 
 Done in a **scratch copy** (`git archive 390f885` → `/tmp`, never in a checkout), fresh clean venv:
 
 - `rm -rf .venv && uv sync` from the committed lockfile: **green**, CPython 3.14.7, `uv pip list` shows the versions in the table above.
-- `uv run pytest -q` (full suite): **2573 passed, 18 skipped, 2 failed in 460.92s** — the 2 failures are the known pre-existing ones above; the 18 skips are gi/reproject-gated widget suites (no gi under the 3.14 venv in this sandbox).
+- `uv run pytest -q` (full suite): **2573 passed, 18 skipped, 2 failed in 460.92s** — the 2 failures are the known pre-existing **no-gi** ones above (see "Known pre-existing test failures"); the 18 skips are gi/reproject-gated widget suites (no gi under the 3.14 venv in this sandbox).
 - `uv tool run ty check`: **All checks passed!**
 - `uv tool run ruff check`: **All checks passed!**
 - `uv run seestar-controller --help`: works (CLI entrypoint).
@@ -57,7 +74,7 @@ Evaluated every headline CPython 3.14 language/runtime feature against this code
 | Security hardening (3.14 stdlib defaults: tarfile `data` filter, ssl defaults, etc.) | **nothing to adopt — no call sites** | `src/` has no `tarfile`, `pickle`, `marshal`, `eval`/`exec` usage. Auth/crypto is `cryptography` (RSA) + `secrets.token_hex` + `hashlib.sha256` for cache keys (`link/auth.py`, `link/keys.py`, `link/mock_scope.py`, `catalog/cache.py`, `hr_diagram/isochrone.py`) — all already current primitives; 3.14's hardening needs no code change. |
 | `pathlib.Path.copy/move/copy_into` (3.14 stdlib addition, checked as a bonus) | **rejected — no call site** | No `shutil.copy*/move` anywhere in `src/` (only `shutil.which` in `astrometry/solve.py`, which has no 3.14 equivalent). The atomic-write helpers (`link/frames.py::atomic_write_bytes`, the temp+fsync+`os.replace` patterns in `astrometry/`, `analysis/export.py`) already use the right primitive; `Path.move` would not add the fsync. |
 
-Verification on this branch (main @ `e205aef` + this entry): `uv tool run ty check` and `uv tool run ruff check` clean; full suite `uv run pytest -q` green except the known pre-existing failures identical on main (gi-gated widget suites skip under the 3.14 venv — system gi is cpython-312-only, see assumptions.md 2026-11-21 entry). No `pyproject.toml`/`uv.lock` change was needed (nothing adopted), so none was made.
+Verification on this branch (main @ `e205aef` + this entry): `uv tool run ty check` and `uv tool run ruff check` clean; full suite `uv run pytest -q` green except the known pre-existing **no-gi** failures identical on main (see "Known pre-existing test failures"; gi-gated widget suites skip under the 3.14 venv — system gi is cpython-312-only, see assumptions.md 2026-11-21 entry). No `pyproject.toml`/`uv.lock` change was needed (nothing adopted), so none was made.
 ## Issue 05 — test-suite performance (2026-11-21, branch `wt/dependency-upgrade-05`)
 
 Goal: reduce wall-clock of `uv run pytest -q` without weakening tests. Reference tree: main @ `95813e0`, headless sandbox venv (CPython 3.14, no gi → 19 gi-gated skips; the 2 known pre-existing failures listed above are present on main too and were left untouched).
@@ -119,5 +136,5 @@ Option (b) (cp314 wheel) is ruled out — none exists on PyPI as of 2026-11-21.
 
 ### Demo / verification
 
-- Headless (this sandbox, no gi): `uv run seestar-controller gui` → rc 1, clean multi-line error naming fixes A and B (no traceback); full suite green except the known pre-existing failures; ty + ruff clean.
-- Source-build path verified live 2026-11-21 in a throwaway 3.14 venv (see Investigation): `import gi` + Gtk 4.0 + Adw 1 + cairo OK. On the desktop, after A or B, `uv run seestar-controller gui` opens the window under Python 3.14 and the gi-gated widget tests run instead of skipping.
+- Headless (this sandbox, no gi): `uv run seestar-controller gui` → rc 1, clean multi-line error naming fixes A and B (no traceback); full suite green except the known pre-existing **no-gi** failures (see "Known pre-existing test failures" above); ty + ruff clean.
+- Source-build path verified live 2026-11-21 in a throwaway 3.14 venv (see Investigation): `import gi` + Gtk 4.0 + Adw 1 + cairo OK. On the desktop, after A or B, `uv run seestar-controller gui` opens the window under Python 3.14 and the gi-gated widget tests run instead of skipping — and then fail on the known app-improvement bugs (issues 01–04/09–11), not on the upgrade.

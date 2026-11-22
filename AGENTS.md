@@ -22,7 +22,7 @@ Before committing a ticket's code, run `uv tool run ty check` and `uv tool run r
 - Serial full suite (same tests, ~2.5 min): `uv run pytest -q`
 - Fast loop (deselects only the 7 `@pytest.mark.slow` integration-style tests; the full suite always runs them): `uv run pytest -q -n auto -m "not slow"`
 - Slowest-test report: `uv run pytest -q -n auto --durations=20`
-- In headless sandboxes without gi, the widget suites skip via `pytest.importorskip("gi")` and two known pre-existing failures remain (see `docs/wiki/dependency-upgrade.md`); do not "fix" them by weakening tests. Test-only I/O shims (fsync no-op + `PRAGMA synchronous=OFF`) live in `tests/conftest.py` — see the issue-05 section of `docs/wiki/dependency-upgrade.md` for why they are safe.
+- Known pre-existing failures are environment-dependent (see the "Known pre-existing test failures" section of `docs/wiki/dependency-upgrade.md`): without gi, the widget suites skip via `pytest.importorskip("gi")` and two pure tests fail; with a working gi the widget suites run and their failures are the known app/test bugs tracked as root causes in `.scratch/app-improvement/issues/` 01-04/09-11. Do not "fix" any of them by weakening tests. Test-only I/O shims (fsync no-op + `PRAGMA synchronous=OFF`) live in `tests/conftest.py` — see the issue-05 section of `docs/wiki/dependency-upgrade.md` for why they are safe.
 
 ## Agent skills
 
