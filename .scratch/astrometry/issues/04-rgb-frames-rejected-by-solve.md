@@ -6,7 +6,7 @@
 
 **Blocked by:** None (astrometry 01-03 done)
 
-**Status:** implemented in ae099c6 (pending review)
+**Status:** completed — reviewed (APPROVE), merged to main in e642b74
 
 - [x] RGB -> 2-D luminance conversion in the solve input path (shared with annotate)
 - [x] Channel-first and channel-last layouts handled

@@ -6,7 +6,7 @@
 
 **Blocked by:** None (observing 01-05 done)
 
-**Status:** implemented-in-5e3c230 (pending review)
+**Status:** completed — reviewed (APPROVE), merged to main in b9fc15c
 
 - [ ] Frame-stored event plumbed from capture/store to the UI (main-loop safe)
 - [ ] ProjectsView re-renders stored data on that event (or appends the row)

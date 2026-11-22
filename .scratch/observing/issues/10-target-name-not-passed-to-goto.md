@@ -6,7 +6,7 @@
 
 **Blocked by:** None (observing 01-05 done)
 
-**Status:** implemented in 0380ef8 (pending review)
+**Status:** completed — reviewed (APPROVE), merged to main in d265bd7
 
 - [x] Executor passes the queue entry name to `Device.goto(name=...)`
 - [x] Frame meta/filenames carry the target name

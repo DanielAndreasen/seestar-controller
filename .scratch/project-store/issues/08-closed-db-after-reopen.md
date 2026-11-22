@@ -6,7 +6,7 @@
 
 **Blocked by:** None
 
-**Status:** implemented in 01cdd74 (pending review)
+**Status:** completed — reviewed (APPROVE), merged to main in e0552f7
 
 - [x] Re-open of the same project path returns the existing open handle (no new Project object)
 - [x] Controllers resolve/ensure the live project handle before store calls (or reopen closed db)

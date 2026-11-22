@@ -6,7 +6,7 @@
 
 **Blocked by:** None (observing 01-05 done)
 
-**Status:** implemented in 942e9a0 (pending review)
+**Status:** completed — reviewed (APPROVE), merged to main in 0983a18
 
 - [x] `_on_resolve_clicked` clears `_resolved` (and status) at click time, before the lookup
 - [x] Add insensitive / "resolving…" state while a resolve is in flight; name-mismatch or missing `_resolved` -> inline error, nothing queued

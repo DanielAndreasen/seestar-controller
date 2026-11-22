@@ -6,7 +6,7 @@
 
 **Blocked by:** None (observing 01-05 done; relates to 07 live refresh)
 
-**Status:** implemented in 2aa35b3 (pending review)
+**Status:** completed — reviewed (APPROVE), merged to main in bf0f0e9
 
 - [x] Observe view can render a stored FITS (downscaled) as preview fallback / first-exposure thumbnail
 - [x] Wired to the first stored frame of the running session
