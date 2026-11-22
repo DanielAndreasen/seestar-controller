@@ -650,6 +650,7 @@ dependencies = [
     { name = "photutils" },
     { name = "pillow" },
     { name = "reportlab" },
+    { name = "scipy" },
 ]
 
 [package.optional-dependencies]
@@ -675,6 +676,7 @@ requires-dist = [
     { name = "pycairo", marker = "extra == 'gui'", specifier = ">=1.27" },
     { name = "pygobject", marker = "extra == 'gui'", specifier = ">=3.50" },
     { name = "reportlab", specifier = ">=5.1.0" },
+    { name = "scipy", specifier = ">=1.18.1" },
 ]
 provides-extras = ["gui"]
 
