@@ -103,10 +103,15 @@ ARCSEC_PER_ARCMIN = 60.0
 
 
 def _gray(data: Any) -> np.ndarray:
-    """A 2-D float32 view of image data (RGB ``(H, W, 3)`` -> luminance)."""
+    """A 2-D float32 view of image data (RGB/RGBA -> luminance, the channel
+    mean — channel-first ``(3|4, H, W)`` as well as channel-last
+    ``(H, W, 3|4)``)."""
     arr = np.asarray(data, dtype=np.float32)
     if arr.ndim == 3:
-        arr = arr.mean(axis=2)
+        if arr.shape[0] in (3, 4):
+            arr = arr.mean(axis=0)  # channel-first (FITS NAXIS3 = plane)
+        elif arr.shape[-1] in (3, 4):
+            arr = arr.mean(axis=2)  # channel-last
     if arr.ndim != 2:
         raise ExportError(f"stack image must be 2-D (or RGB), got shape {arr.shape}")
     return arr
@@ -234,7 +239,8 @@ def render_annotated_stack(
     """Render the stack as an RGB PIL image with the annotations drawn on.
 
     - ``image_data`` — the stack's pixel array (2-D float, NaN allowed; an
-      RGB ``(H, W, 3)`` array is converted to luminance);
+      RGB/RGBA array — channel-first ``(3|4, H, W)`` or channel-last
+      ``(H, W, 3|4)`` — is converted to luminance);
     - ``rows`` — the cross-match rows (duck-typed, see :func:`_row_fields`):
       every MATCHED row is drawn as a filled point + ring and labelled with
       its Gaia G magnitude (``G 12.34``); every UNMATCHED row is drawn as a

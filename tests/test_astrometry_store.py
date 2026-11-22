@@ -35,6 +35,7 @@ from seestar_controller.astrometry import (
 from seestar_controller.gaia.query import GaiaStar
 from seestar_controller.store import (
     DB_FILE,
+    KIND_STACK,
     KIND_SUB,
     PROJECT_FILE,
     SCHEMA_VERSION,
@@ -534,6 +535,35 @@ def test_solve_session_frame_persists_wcs_header_and_matches(project):
 
     # 4. list_solved_frames sees it
     assert [w.frame_id for w in list_solved_frames(project, session_id=sid)] == [frame.id]
+
+
+def test_solve_project_frame_rgb_stack_both_layouts(project):
+    # issue 04: a Seestar stack is an RGB FITS — (3, H, W) channel-first and
+    # (H, W, 3) channel-last — and must solve through the project path
+    # (prepare_project_frame -> read_fits_bytes -> 2-D luminance): WCS
+    # written into the stored FITS + db record with the matched-star count
+    sid = start_session(project, clock=frozen(T0))
+    base = make_image()
+    rgb_cf = np.stack([base, base * 0.8, base * 0.6], axis=0)  # (3, SIZE, SIZE)
+    instant = (T0 + timedelta(seconds=5)).isoformat(timespec="milliseconds")
+    for rgb in (rgb_cf, np.moveaxis(rgb_cf, 0, -1)):  # channel-first and channel-last
+        frame = store_frame(project, sid, KIND_STACK, fits_bytes(rgb, instant))
+        result = solve_project_frame(
+            project,
+            frame.id,
+            solver=SOLVER_GAIA,
+            gaia_query=fake_query(gaia_stars_at_stars()),
+            pixel_scale_hint=SCALE_ARCSEC,
+        )
+        assert result.solver == SOLVER_GAIA
+        assert result.n_stars == len(STARS)
+        record = load_frame_wcs(project, frame.id)
+        assert record is not None
+        assert record.n_stars == len(STARS)
+        assert record.center_ra_deg == pytest.approx(CRVAL[0], abs=0.01)
+        wcs_disk = cards_to_wcs(pyfits.getheader(str(get_frame_path(project, frame))))
+        for cy, cx, _peak in STARS:
+            assert residual_arcsec(wcs_disk, cx, cy) < 0.5
 
 
 def test_solve_project_frame_accepts_frame_and_id_and_flags(project):
