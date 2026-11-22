@@ -1,6 +1,6 @@
 # Issue 11: `iscope_start_stack` fails with code 259 when the scope was left stacking — no recovery, no clear message
 
-**Status:** implemented in 5a156e465fe9038341cea8809e69d52a8e45427f (pending review)
+**Status:** completed — reviewed (APPROVE), merged to main in 4f3b8a5
 
 ## Found while
 Live observing 2026-11-22, project `vw-cep` (`~/SeestarProjects/vw-cep/subs/20261122T175849980496Z/` and `.../20261122T182137664766Z/`). Both sessions: goto OK, then
