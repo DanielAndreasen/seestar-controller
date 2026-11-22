@@ -1118,7 +1118,10 @@ class ProjectsView(_PlaceholderView):
       project (:func:`~seestar_controller.mosaic.stitch_session` →
       ``mosaics/<session>.fits``,
       :func:`~seestar_controller.stacking.stack_session_subs` → a new
-      ``kind='stack'`` frame in ``stacks/<session>/``,
+      ``kind='stack'`` frame in ``stacks/<session>/`` (derotating the subs
+      first when their WCS shows field rotation beyond ~1 FWHM — stacking
+      issue 01; the data status line reports the rotation and any blur
+      warning),
       :func:`~seestar_controller.report.generate_report` →
       ``reports/<session>.html``), reporting the outcome (or the error) in
       the data status label. Sub-frames ticket 01: each **frame row is a
@@ -1772,11 +1775,23 @@ class ProjectsView(_PlaceholderView):
                 )
             elif kind == "stack_subs":
                 result = stack_session_subs(project, session_id)
-                self._set_data_status(
+                message = (
                     f"stacked {result.n_subs} subs of {session_id} → "
-                    f"stack #{result.frame.id} ({result.frame.path})",
-                    error=False,
+                    f"stack #{result.frame.id} ({result.frame.path})"
                 )
+                if result.field_rotation_deg is not None:
+                    message += (
+                        f" · field rotation {result.field_rotation_deg:.1f}° over the "
+                        "session"
+                    )
+                    if result.derotated:
+                        message += (
+                            f" — subs derotated before combining "
+                            f"(max {result.max_derotation_deg:.1f}°)"
+                        )
+                if result.rotation_warning is not None:
+                    message += f" · WARNING: {result.rotation_warning}"
+                self._set_data_status(message, error=False)
             else:
                 path = generate_report(project, session_id)
                 self._set_data_status(
