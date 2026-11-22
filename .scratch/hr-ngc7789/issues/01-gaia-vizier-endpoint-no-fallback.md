@@ -6,7 +6,7 @@ Evidence: driving `CrossmatchController.run_crossmatch()` headlessly on solved s
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 8572e8a (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 81af987
 
 - [x] A cone search with the primary endpoint blocked/unreachable falls back to the ESA mirror (or an explicit `url=`) and returns rows
 - [x] Cache hit still returns without any network call

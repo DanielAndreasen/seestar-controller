@@ -6,7 +6,7 @@ Evidence: after a successful solve via the Solve panel path, the toast reads "so
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 85d9830e43a3a08553e90fae7bb17418c18b1e06 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in 81f1f89
 
 - [x] Successful solve-field run yields `n_stars > 0` and a finite `rms_arcsec` where derivable
 - [x] Failure paths unchanged (still SolveError, nothing persisted)

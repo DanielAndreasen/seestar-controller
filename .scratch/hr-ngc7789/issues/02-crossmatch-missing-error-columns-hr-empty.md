@@ -6,7 +6,7 @@ Evidence: headless GUI-path run on `/home/daniel/SeestarProjects/ngc7789` stack 
 
 **Blocked by:** None (can start immediately)
 
-**Status:** implemented in 3fa2966 (pending review)
+**Status:** completed — reviewed (approved) and merged to main in d82cda6
 
 - [x] `query_gaia` returns rows with parallax/pm error fields populated
 - [x] `save_crossmatch`/`load_crossmatch` round-trip the error columns (schema migration if needed) — **no migration needed**: the v6 `crossmatch` DDL (`_CROSSMATCH_DDL` in `store/schema.py`) already created `parallax_error`/`pmra_error`/`pmdec_error` since the table was introduced (commit 221cbed), and `store/crossmatch.py` already selected/validated/inserted them; only the gaia-package values were missing
