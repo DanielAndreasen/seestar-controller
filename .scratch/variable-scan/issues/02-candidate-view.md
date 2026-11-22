@@ -6,11 +6,11 @@
 
 **Status:** implemented in 3124427 (merged)
 
-- [ ] Widget `VariableScanView`: ranked list (Gtk.ListBox) with scatter-ratio column, threshold control, per-candidate lightcurve (reuse LightcurveView) and blink (animated GIF of cutouts rendered via PIL, shown in the image viewer path)
-- [ ] CSV export of candidates (reuse analysis/export.py)
-- [ ] Wired into the app next to the photometry results view
-- [ ] Widget tests via the ui harness; full suite green
+- [x] Widget `VariableScanView`: ranked list (Gtk.ListBox) with scatter-ratio column, threshold control, per-candidate lightcurve (reuse LightcurveView) and blink (animated GIF of cutouts rendered via PIL, shown in the image viewer path)
+- [x] CSV export of candidates (reuse analysis/export.py)
+- [x] Wired into the app next to the photometry results view
+- [x] Widget tests via the ui harness; full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `3124427`; test list: `tests/test_variable_scan_view.py` and `tests/test_variable_scan_view_widgets.py` (added there).

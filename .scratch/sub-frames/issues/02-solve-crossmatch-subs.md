@@ -6,11 +6,11 @@
 
 **Status:** implemented in fbc19ec (merged)
 
-- [ ] SolveController accepts any open frame; store.wcs persists/loads WCS for sub ids (schema check — bump + migrate only if needed)
-- [ ] Crossmatch overlay + H-R view frame selector include solved subs (WCS + crossmatch present)
-- [ ] Photometry picker accepts solved sub
-- [ ] Tests: pure (solve sub -> WCS round-trip, crossmatch on sub, H-R from sub crossmatch; solver + Gaia HTTP monkeypatched, no network) + gi-gated widget tests; full suite green; ty + ruff clean
+- [x] SolveController accepts any open frame; store.wcs persists/loads WCS for sub ids (schema check — bump + migrate only if needed)
+- [x] Crossmatch overlay + H-R view frame selector include solved subs (WCS + crossmatch present)
+- [x] Photometry picker accepts solved sub
+- [x] Tests: pure (solve sub -> WCS round-trip, crossmatch on sub, H-R from sub crossmatch; solver + Gaia HTTP monkeypatched, no network) + gi-gated widget tests; full suite green; ty + ruff clean
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `fbc19ec`; test list: `tests/test_sub_frames_analysis.py` and `tests/test_sub_frames_analysis_widgets.py` (added there).
