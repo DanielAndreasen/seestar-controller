@@ -25,7 +25,8 @@ Implement the Projects view: list existing projects under the configured project
 - Widget layer: replace the `ProjectsView` placeholder in `ui/views.py` with a real widget: a list of projects (name, path, last-modified/session count from `ProjectSummary`), a "New project" name entry + button, and an "Open" action per row (or select + Open button). Inline status label for errors, same pattern as `QueueEditor`.
 - Wiring: `SeestarApplication` owns one shared `ProjectController`; `SeestarWindow` passes it to `build_view(...)` for every view that needs the current project (Observe, Enhance, Photometry, Lightcurve) and calls `set_project(...)` on the existing shared controllers (`ObserveController.set_project`, `ViewerController.set_project`, etc.) whenever the current project changes. On startup, if settings has a `last_project` that still exists, open it automatically.
 - Project root comes from settings (`project_root`, default `DEFAULT_PROJECT_ROOT`); if unset, fall back to the default root and show a hint pointing to Settings.
-- Store API is used as-is (`create_project(name, root)`, `open_project(path)`, `list_projects(root)`); no store schema changes.
+- Store API is used as-is (`create_project(name, root)`, `open_project(path)`, `list_projects(root)`, `delete_project(path)`); no store schema changes.
+- Deleting projects (app-improvement ticket 16, resolving the spec conflict with project-store story 9): each project row carries a destructive **Delete** button that calls `ProjectController.delete_project(path)` → store `delete_project(path)`, which refuses with `ProjectOpenError` while the project is open; when the deleted project is the current one the controller closes it first, sets current to `None`, clears `last_project`, and notifies the attached controllers with `None`. Inline status label shows errors (open/missing/invalid) and the success message.
 
 ## Testing Decisions
 
@@ -36,7 +37,7 @@ Implement the Projects view: list existing projects under the configured project
 
 ## Out of Scope
 
-- Deleting/renaming projects, project settings editing beyond name, multi-root support, cloud sync.
+- Renaming projects, project settings editing beyond name, multi-root support, cloud sync.
 
 ## Further Notes
 

@@ -32,6 +32,7 @@ A project store: each project is a directory under `~/SeestarProjects/<name>/` (
 - Writes: SQLite transactions; FITS written to temp then renamed (atomic).
 - Module boundary: pure Python, no GTK; async-friendly API for the UI.
 - CSV export columns: `jd, utc, mag, mag_err, session, target`.
+- Story 9 (list + delete old projects): **implemented** (app-improvement ticket 16) — `store.delete_project(path)` removes the whole project directory via `shutil.rmtree`, but only after validating the directory really is a project (parseable `project.json` with the required keys, else `ProjectNotFoundError`/`InvalidProjectError` and nothing is touched) and only when it is not open (every `open_project` handle registers in a weak set until `close()`; while any live handle has the path, `ProjectOpenError` is raised). The Projects view offers a per-row Delete button; `ProjectController.delete_project` closes the current project first when it is the one being deleted and clears `last_project`.
 
 ## Testing Decisions
 

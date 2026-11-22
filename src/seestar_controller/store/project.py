@@ -54,6 +54,15 @@ out of scope — so temp files are never deleted, only never read).
 :func:`create_project` is all-or-nothing on top of that: any failure after the
 collision check removes the partially created project directory again, so a
 failed create never blocks the project name.
+
+Deletion (project-store spec user story 9, implemented by the
+app-improvement ticket 16): :func:`delete_project` removes a whole project
+directory, but only when the path really is a project (parseable
+``project.json`` with the required keys) and only when it is not open — every
+:class:`Project` returned by :func:`open_project` registers itself in the
+module-level :data:`_OPEN_PROJECTS` weak set and unregisters on
+:meth:`Project.close`, and :func:`delete_project` refuses with
+:class:`~.errors.ProjectOpenError` while any live handle has the same path.
 """
 
 from __future__ import annotations
@@ -64,6 +73,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -75,6 +85,7 @@ from .errors import (
     InvalidProjectError,
     ProjectExistsError,
     ProjectNotFoundError,
+    ProjectOpenError,
 )
 
 #: File name of the project settings inside a project directory.
@@ -111,6 +122,11 @@ _CONFIG_PLACEHOLDERS = ("target", "star_picks", "period")
 
 #: Runs of characters that are not [a-z0-9] become one dash in a slug.
 _NON_ALNUM_RUN = re.compile(r"[^a-z0-9]+")
+
+#: The live open-project handles (weak refs): :func:`open_project` registers
+#: every :class:`Project` it returns, :meth:`Project.close` discards it. Used
+#: by :func:`delete_project` to refuse deleting a project that is still open.
+_OPEN_PROJECTS: weakref.WeakSet[Project] = weakref.WeakSet()
 
 
 def default_project_root(env: Mapping[str, str] | None = None) -> Path:
@@ -250,7 +266,10 @@ class Project:
         return _atomic_write_json(self.config_path, self.config)
 
     def close(self) -> None:
-        """Close the db connection. Idempotent."""
+        """Close the db connection and unregister this handle as open
+        (so :func:`delete_project` may delete the project again).
+        Idempotent."""
+        _OPEN_PROJECTS.discard(self)
         self.db.close()
 
     def __enter__(self) -> Self:
@@ -410,6 +429,7 @@ def open_project(path: str | Path) -> Project:
             # migration and this mirror write): bump the project.json copy too
             config["schema_version"] = schema.SCHEMA_VERSION
             project.save_config()
+        _OPEN_PROJECTS.add(project)
         opened = True
         return project
     except sqlite3.DatabaseError as exc:
@@ -459,3 +479,52 @@ def list_projects(root: str | Path | None = None) -> list[ProjectSummary]:
         )
     summaries.sort(key=lambda s: (s.created_at, s.slug))
     return summaries
+
+
+def delete_project(path: str | Path) -> Path:
+    """Delete the project at ``path`` — the whole directory tree (db, FITS
+    files, lightcurve, everything) — and return the deleted path.
+
+    Safety rules (a directory is only ever deleted when it really is a
+    project, and never while it is in use):
+
+    - ``path`` must be an existing directory whose ``project.json`` is
+      parseable and has all :data:`_REQUIRED_CONFIG_KEYS` — anything else
+      raises :class:`ProjectNotFoundError` (missing / not a directory) or
+      :class:`InvalidProjectError` (not a project directory) and is left
+      completely untouched;
+    - the project must not be open: while any live :class:`Project` handle
+      from :func:`open_project` (not yet :meth:`Project.close` d) has this
+      path, :class:`ProjectOpenError` is raised and nothing is deleted —
+      close the project first.
+
+    Uses :func:`shutil.rmtree` on the validated project directory. The store
+    has no locking (spec out of scope), so the caller must ensure no other
+    process is writing the project.
+    """
+    path = Path(path)
+    if not path.is_dir():
+        raise ProjectNotFoundError(f"no project at {path} (not a directory)")
+    config_path = path / PROJECT_FILE
+    if not config_path.is_file():
+        raise InvalidProjectError(f"{path} is not a project: missing {PROJECT_FILE}")
+    try:
+        config = json.loads(config_path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InvalidProjectError(f"{config_path} is not parseable JSON: {exc}") from exc
+    if not isinstance(config, dict) or any(
+        key not in config for key in _REQUIRED_CONFIG_KEYS
+    ):
+        raise InvalidProjectError(
+            f"{config_path} is missing required keys {_REQUIRED_CONFIG_KEYS} "
+            f"— {path} is not a project directory"
+        )
+    resolved = path.resolve()
+    for open_handle in _OPEN_PROJECTS:
+        if Path(open_handle.path).resolve() == resolved:
+            raise ProjectOpenError(
+                f"project at {path} is open (as {open_handle.name!r}) — "
+                "close it before deleting"
+            )
+    shutil.rmtree(path)
+    return path

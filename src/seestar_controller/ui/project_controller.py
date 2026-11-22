@@ -20,7 +20,8 @@ What lives here:
 - :class:`ProjectController` — wraps the store's
   :func:`~seestar_controller.store.create_project` /
   :func:`~seestar_controller.store.open_project` /
-  :func:`~seestar_controller.store.list_projects` against the **settings
+  :func:`~seestar_controller.store.list_projects` /
+  :func:`~seestar_controller.store.delete_project` against the **settings
   project root** (``project_root`` setting; empty -> the store's
   :func:`~seestar_controller.store.default_project_root`, i.e.
   ``SEESTAR_PROJECT_ROOT`` > ``~/SeestarProjects/``; an explicit ``root=``
@@ -60,6 +61,7 @@ from seestar_controller.store import (
     ProjectSummary,
     create_project,
     default_project_root,
+    delete_project,
     list_projects,
     open_project,
 )
@@ -116,6 +118,11 @@ class ProjectController:
       and make it current (persisting ``last_project``); store errors
       (including :class:`ProjectRootError` for an unusable root) propagate
       and change nothing;
+    - :meth:`delete_project` — delete a project (store
+      :func:`~seestar_controller.store.delete_project`; when the deleted
+      project is the current one it is closed first, ``current`` becomes
+      ``None`` and ``last_project`` is cleared); store errors propagate and
+      change nothing;
     - :meth:`restore` — startup: open the persisted ``last_project`` when it
       still exists, else clear the stale setting;
     - :meth:`attach_controllers` — push the current project to the app's
@@ -258,6 +265,49 @@ class ProjectController:
         project = open_project(path)
         self._set_current(project)
         return project
+
+    def delete_project(self, path: str | Path) -> Path:
+        """Delete the project at ``path`` via the store's
+        :func:`~seestar_controller.store.delete_project`, re-list the
+        projects, and fire an event; returns the deleted path.
+
+        When the deleted project is the current one, it is closed first (a
+        project being deleted has no in-flight use — the store refuses to
+        delete an open project), :attr:`current` becomes ``None``, the
+        persisted ``last_project`` is cleared, and the attached controllers
+        are notified with the ``None`` current.
+
+        Raises :class:`~seestar_controller.store.errors.ProjectOpenError`
+        when the project is still open through another handle,
+        :class:`~seestar_controller.store.errors.ProjectNotFoundError` /
+        :class:`~seestar_controller.store.errors.InvalidProjectError` for a
+        missing / non-project path, or ``OSError`` from the filesystem — in
+        all cases the controller state is left unchanged (a current project
+        closed for the attempt is reopened) and no event is fired.
+        """
+        path = Path(path)
+        current = self._current
+        was_current = current is not None and Path(current.path).resolve() == path.resolve()
+        previous = str(current.path) if was_current else ""
+        if current is not None and was_current:
+            current.close()  # unregisters the handle, so the store allows the delete
+            self._current = None
+        try:
+            delete_project(path)
+        except (ProjectError, OSError):
+            if was_current:
+                # roll back: the delete was refused — reopen and restore the
+                # current project exactly as it was (no event was fired yet)
+                self._current = open_project(path)
+                self._state.set_setting("last_project", previous)
+                self._state.save()
+            raise
+        if was_current:
+            self._state.set_setting("last_project", "")
+            self._state.save()
+        self._projects = tuple(list_projects(self.root))
+        self._emit()
+        return path
 
     def restore(self) -> Project | None:
         """Startup: open the persisted ``last_project`` when it still exists.

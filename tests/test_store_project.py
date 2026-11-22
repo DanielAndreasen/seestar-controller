@@ -30,9 +30,11 @@ from seestar_controller.store import (
     ProjectError,
     ProjectExistsError,
     ProjectNotFoundError,
+    ProjectOpenError,
     ProjectSummary,
     create_project,
     default_project_root,
+    delete_project,
     list_projects,
     open_project,
     schema,
@@ -716,10 +718,103 @@ def test_public_api_is_exported_from_package():
     assert issubclass(store.ProjectExistsError, store.ProjectError)
     assert issubclass(store.ProjectNotFoundError, store.ProjectError)
     assert issubclass(store.InvalidProjectError, store.ProjectError)
+    assert issubclass(store.ProjectOpenError, store.ProjectError)
     assert callable(store.create_project)
     assert callable(store.open_project)
     assert callable(store.list_projects)
+    assert callable(store.delete_project)
     assert callable(store.slugify)
     assert isinstance(store.Project, type)
     assert isinstance(store.ProjectSummary, type)
     assert store.SCHEMA_VERSION == 9
+
+
+# --- delete_project (app-improvement ticket 16: project-store spec story 9) ---------------
+
+
+def test_delete_removes_the_whole_project_tree(root):
+    p = create_project("M 42", root=root)
+    # some stored data, so the tree is non-trivial
+    (p.path / SUBS_DIR / "session-1").mkdir()
+    (p.path / SUBS_DIR / "session-1" / "frame-1.fits").write_bytes(b"FITS")
+    (p.path / "lightcurve.csv").write_text("jd,mag\n", encoding="utf-8")
+    p.close()
+    deleted = delete_project(p.path)
+    assert deleted == p.path
+    assert not p.path.exists()
+    assert list_projects(root) == []
+    with pytest.raises(ProjectNotFoundError):
+        open_project(p.path)
+
+
+def test_delete_refuses_while_the_project_is_open(root):
+    p = create_project("M 42", root=root)
+    with pytest.raises(ProjectOpenError, match="open"):
+        delete_project(p.path)
+    assert p.path.is_dir()  # nothing was deleted
+    assert (p.path / PROJECT_FILE).is_file()
+    p.close()
+    # after close the delete goes through
+    delete_project(root / "m-42")
+    assert not p.path.exists()
+
+
+def test_delete_refuses_while_any_open_handle_exists(root):
+    p = create_project("M 42", root=root)
+    q = open_project(p.path)  # a second open handle on the same project
+    with pytest.raises(ProjectOpenError):
+        delete_project(p.path)
+    q.close()
+    with pytest.raises(ProjectOpenError):  # p is still open
+        delete_project(p.path)
+    p.close()
+    delete_project(p.path)
+    assert not p.path.exists()
+
+
+def test_delete_missing_path_raises_not_found(tmp_path):
+    with pytest.raises(ProjectNotFoundError):
+        delete_project(tmp_path / "nope")
+    with pytest.raises(ProjectNotFoundError):
+        delete_project(tmp_path / "nope" / "nested")
+
+
+def test_delete_never_touches_a_non_project_directory(root):
+    root.mkdir(parents=True)  # the fixture root only appears with the first project
+    stray = root / "stray"
+    stray.mkdir()
+    (stray / "notes.txt").write_text("hello", encoding="utf-8")
+    with pytest.raises(InvalidProjectError):
+        delete_project(stray)
+    assert (stray / "notes.txt").read_text(encoding="utf-8") == "hello"
+    # an unparseable project.json is not a project either
+    broken = root / "broken"
+    broken.mkdir()
+    (broken / PROJECT_FILE).write_text("{not json", encoding="utf-8")
+    with pytest.raises(InvalidProjectError):
+        delete_project(broken)
+    assert broken.is_dir()
+    # ... and neither is a project.json missing the required keys
+    partial = root / "partial"
+    partial.mkdir()
+    (partial / PROJECT_FILE).write_text('{"name": "x"}', encoding="utf-8")
+    with pytest.raises(InvalidProjectError):
+        delete_project(partial)
+    assert partial.is_dir()
+    # the project root itself is never a project
+    with pytest.raises(InvalidProjectError):
+        delete_project(root)
+    assert root.is_dir()
+
+
+def test_delete_leaves_other_projects_alone(root):
+    a = create_project("M 42", root=root)
+    b = create_project("M 31", root=root)
+    a.close()
+    b.close()
+    delete_project(a.path)
+    assert not a.path.exists()
+    assert [s.slug for s in list_projects(root)] == ["m-31"]
+    reopened = open_project(b.path)
+    assert reopened.name == "M 31"
+    reopened.close()

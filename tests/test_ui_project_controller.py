@@ -33,6 +33,7 @@ from seestar_controller.store.errors import (
     InvalidProjectError,
     ProjectExistsError,
     ProjectNotFoundError,
+    ProjectOpenError,
 )
 from seestar_controller.ui.project_controller import (
     ProjectController,
@@ -514,3 +515,99 @@ def test_create_persists_last_project_and_a_restart_restores_it_on_all_controlle
     other = restarted.create_project("M 31")
     assert all(f.seen[-1] is other for f in followers)
     assert load_state(settings_file).get_setting("last_project") == str(other.path)
+
+
+# --- delete_project (app-improvement ticket 16: project-store spec story 9) -------------
+
+
+def test_delete_project_removes_it_relists_and_fires_event(controller, state, root):
+    project = controller.create_project("M 42")
+    events: list[ProjectEvent] = []
+    controller.add_listener(events.append)
+    deleted = controller.delete_project(project.path)
+    assert deleted == project.path
+    assert not project.path.exists()
+    assert controller.projects == ()
+    # the deleted project was the current one: current is None, last_project cleared
+    assert controller.current is None
+    assert state.get_setting("last_project") == ""
+    assert len(events) == 1
+    assert events[0].current is None
+    assert events[0].projects == ()
+
+
+def test_delete_current_project_pushes_none_to_attached_controllers(controller):
+    project = controller.create_project("M 42")
+    follower = _Follower()
+    controller.attach_controllers(observe=follower)
+    assert follower.seen[-1] is project
+    controller.delete_project(project.path)
+    assert follower.seen[-1] is None
+    assert controller.current is None
+
+
+def test_delete_non_current_closed_project(controller, state, root):
+    current = controller.create_project("Current")
+    other = create_project("Other", root=root)
+    other.close()  # not open anymore -> deletable
+    controller.refresh()
+    assert [s.slug for s in controller.projects] == ["current", "other"]
+    events: list[ProjectEvent] = []
+    controller.add_listener(events.append)
+    controller.delete_project(other.path)
+    assert not other.path.exists()
+    assert [s.slug for s in controller.projects] == ["current"]
+    assert controller.current is current
+    assert state.get_setting("last_project") == str(current.path)
+    assert len(events) == 1
+    assert events[0].current is current
+
+
+def test_delete_refuses_a_project_open_through_another_handle(controller, state, root):
+    current = controller.create_project("Current")
+    other = create_project("Other", root=root)  # kept open by this test
+    controller.refresh()
+    events: list[ProjectEvent] = []
+    controller.add_listener(events.append)
+    with pytest.raises(ProjectOpenError):
+        controller.delete_project(other.path)
+    assert other.path.is_dir()  # nothing deleted
+    assert controller.current is current
+    assert [s.slug for s in controller.projects] == ["current", "other"]
+    assert state.get_setting("last_project") == str(current.path)
+    assert events == []  # no event fired on failure
+    other.close()
+
+
+def test_delete_missing_path_raises_and_changes_nothing(controller, root):
+    current = controller.create_project("Current")
+    events: list[ProjectEvent] = []
+    controller.add_listener(events.append)
+    with pytest.raises(ProjectNotFoundError):
+        controller.delete_project(root / "nope")
+    assert controller.current is current
+    assert [s.slug for s in controller.projects] == ["current"]
+    assert events == []
+
+
+def test_delete_current_project_rolls_back_when_the_delete_is_refused(controller, state, root):
+    """The current project is closed for the delete attempt, but another open
+    handle refuses it — the controller state is restored unchanged, and the
+    delete goes through once that handle is closed."""
+    project = controller.create_project("M 42")
+    second = open_project(project.path)  # another open handle on the current project
+    events: list[ProjectEvent] = []
+    controller.add_listener(events.append)
+    with pytest.raises(ProjectOpenError):
+        controller.delete_project(project.path)
+    assert controller.current is not None
+    assert controller.current.path == project.path
+    assert state.get_setting("last_project") == str(project.path)
+    assert project.path.is_dir()
+    assert events == []
+    second.close()
+    # now the delete goes through
+    controller.delete_project(project.path)
+    assert not project.path.exists()
+    assert controller.current is None
+    assert state.get_setting("last_project") == ""
