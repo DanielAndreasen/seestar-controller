@@ -18,11 +18,13 @@ the table into the project is issue 02):
    WCS read from the stack FITS header; a header without a celestial WCS
    raises :class:`~.errors.WcsMissingError` ("plate-solve the stack first");
 2. :func:`~.query.query_gaia_cached` — a Gaia DR3 cone search around the
-   field center (radius = field diagonal + margin) via direct VizieR TAP
-   HTTP, selecting G/BP/RP/parallax/pmRA/pmDE with ``G < 20``, cached on
-   disk under ``<config>/cache/gaia/`` keyed by the rounded center + radius
-   with a TTL (the catalog module's cache pattern); a query failure with no
-   cache raises :class:`~.errors.GaiaUnavailableError`;
+   field center (radius = field diagonal + margin) via Gaia TAP HTTP —
+   VizieR first, falling back to the ESA Gaia mirror
+   (:data:`~.query.GAIA_TAP_SYNC_URLS`; an explicit ``url=`` pins one
+   endpoint) — selecting G/BP/RP/parallax/pmRA/pmDE with ``G < 20``, cached
+   on disk under ``<config>/cache/gaia/`` keyed by the rounded center +
+   radius with a TTL (the catalog module's cache pattern); a query failure
+   with no cache raises :class:`~.errors.GaiaUnavailableError`;
 3. :func:`~.matching.crossmatch` — pair every detection with its nearest
    Gaia row within a configurable radius (default 1.5 arcsec); unmatched
    detections are flagged.
@@ -131,8 +133,12 @@ from .query import (
     DEFAULT_MAXREC,
     DEFAULT_TIMEOUT_S,
     DEFAULT_TTL_S,
+    ESA_GAIA_COLUMNS,
+    ESA_GAIA_DR3_TABLE,
+    ESA_GAIA_TAP_SYNC_URL,
     GAIA_COLUMNS,
     GAIA_DR3_TABLE,
+    GAIA_TAP_SYNC_URLS,
     KEY_ROUND_DIGITS,
     MAX_RADIUS_DEG,
     VIZIER_TAP_SYNC_URL,
@@ -180,8 +186,12 @@ __all__ = [
     "DEFAULT_THRESHOLD_SIGMA",
     "DEFAULT_TIMEOUT_S",
     "DEFAULT_TTL_S",
+    "ESA_GAIA_COLUMNS",
+    "ESA_GAIA_DR3_TABLE",
+    "ESA_GAIA_TAP_SYNC_URL",
     "GAIA_COLUMNS",
     "GAIA_DR3_TABLE",
+    "GAIA_TAP_SYNC_URLS",
     "KEY_ROUND_DIGITS",
     "LINE_WIDTH",
     "MATCHED_COLOR",
