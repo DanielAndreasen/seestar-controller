@@ -1,6 +1,6 @@
 # Issue 05: the Enhance/Photometry viewer list shows ALL frames — the stack is buried among dozens of subs
 
-**Status:** needs-triage
+**Status:** implemented in bfee3c4 (pending review)
 
 ## Found while
 Live session 2026-11-22, project `vw-cep` (78 subs + 1 stack). In the Enhance view's left stack list the single stack (`stacks/<session>/2461367.314371.fits`) is nearly impossible to find among the sub rows.
