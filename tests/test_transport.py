@@ -288,6 +288,85 @@ def test_request_timeout_raises_request_timeout_error(mock_scope, keypair):
         t.disconnect()
 
 
+def test_request_timeout_zero_raises_immediately(mock_scope, keypair):
+    """An explicit ``timeout=0`` is honored as "no wait" — not replaced by
+    the default: with the reply still in flight the request raises
+    RequestTimeoutError at once instead of waiting out ``request_timeout``."""
+    private_pem, _ = keypair
+    t = LinkTransport(
+        "127.0.0.1",
+        mock_scope.command_port,
+        pem=private_pem,
+        heartbeat_interval=0.1,
+        heartbeat_timeout=5.0,  # >> reply delay: heartbeat must not interfere
+        request_timeout=2.0,
+    )
+    t.connect()
+    try:
+        mock_scope.reply_delay["slow"] = 0.6  # reply cannot be in already
+        start = time.monotonic()
+        with pytest.raises(RequestTimeoutError) as excinfo:
+            t.request("slow", timeout=0)
+        elapsed = time.monotonic() - start
+        assert isinstance(excinfo.value, TimeoutError)
+        assert elapsed < 0.3, f"timeout=0 waited {elapsed:.2f}s — default applied?"
+        assert "within 0s" in str(excinfo.value)
+        # the link itself stays healthy (the slow reply lands behind it)
+        assert t.request("get_device_state")["fw_version"] == "9.75"
+        assert t.connected
+    finally:
+        t.disconnect()
+
+
+def test_request_timeout_none_uses_request_timeout_default(mock_scope, keypair):
+    """``timeout=None`` falls back to ``request_timeout`` (0.4 s here) —
+    neither zero nor the 10 s constructor default."""
+    private_pem, _ = keypair
+    t = LinkTransport(
+        "127.0.0.1",
+        mock_scope.command_port,
+        pem=private_pem,
+        heartbeat_interval=0.1,
+        heartbeat_timeout=5.0,  # >> reply delay: heartbeat must not interfere
+        request_timeout=0.4,
+    )
+    t.connect()
+    try:
+        mock_scope.reply_delay["slow"] = 1.0  # slower than the default timeout
+        start = time.monotonic()
+        with pytest.raises(RequestTimeoutError) as excinfo:
+            t.request("slow", timeout=None)
+        elapsed = time.monotonic() - start
+        assert 0.3 < elapsed < 1.5, f"timeout=None waited {elapsed:.2f}s"
+        assert "within 0.4s" in str(excinfo.value)
+    finally:
+        t.disconnect()
+
+
+def test_request_positive_timeout_overrides_default(mock_scope, keypair):
+    """A positive explicit timeout is used as given: here longer than the
+    0.3 s default, so a 0.6 s-slow reply still succeeds."""
+    private_pem, _ = keypair
+    t = LinkTransport(
+        "127.0.0.1",
+        mock_scope.command_port,
+        pem=private_pem,
+        heartbeat_interval=0.1,
+        heartbeat_timeout=5.0,  # >> reply delay: heartbeat must not interfere
+        request_timeout=0.3,
+    )
+    t.connect()
+    try:
+        mock_scope.reply_delay["slow"] = 0.6  # slower than the default timeout
+        start = time.monotonic()
+        result = t.request("slow", timeout=2.0)
+        elapsed = time.monotonic() - start
+        assert result["echo_method"] == "slow"
+        assert elapsed >= 0.5, f"reply arrived before its delay: {elapsed:.2f}s"
+    finally:
+        t.disconnect()
+
+
 def test_lost_handler_can_call_disconnect_from_heartbeat_thread(mock_scope, keypair):
     """A connection-lost handler running on the heartbeat thread may call
     disconnect() without crashing (disconnect never joins the current thread,
