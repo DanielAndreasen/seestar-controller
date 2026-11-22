@@ -120,9 +120,9 @@ class FakeDevice:
         self.stack_errors: list[Exception] = []
         self._lock = threading.Lock()
 
-    def goto(self, ra, dec, *, timeout=None):
+    def goto(self, ra, dec, *, name=None, timeout=None):
         with self._lock:
-            self.calls.append(("goto", ra, dec))
+            self.calls.append(("goto", ra, dec, name))
             error = self.goto_error
         if error is not None:
             raise error
@@ -248,6 +248,43 @@ def test_unresolved_name_entry_is_resolved_via_injected_resolver(device, project
     assert q[0].coord == J2000Coord.from_hours(3.25, -15.5)
     # both targets visited: the resolved one and the coord one
     assert sorted(g["ra"] for g in gotos) == [3.25, 7.0]
+
+
+def test_goto_passes_the_entry_name_to_the_scope(device, mock_scope, project):
+    """Issue 10: the slew carries the queue entry's name as ``name=``, so the
+    Scope names the target (and the frames stacked on it) after it — the
+    mock records the raw ``scope_goto_target`` wire params."""
+    q = PlanQueue([QueueEntry(name="NGC 869")])
+
+    def resolver(name: str):
+        return J2000Coord.from_hours(3.5872, 58.2167)
+
+    ex = NightExecutor(device, q, project, resolver=resolver, frames_per_target=1)
+    snap = ex.run(timeout=15)
+    assert snap.state == ExecutorState.DONE
+    # the legacy goto's wire params include the name (mock test hook)
+    params = mock_scope.last_wire_params["scope_goto_target"]
+    assert params["name"] == "NGC 869"
+    assert params["ra"] == pytest.approx(3.5872)
+    assert params["dec"] == pytest.approx(58.2167)
+    # the mock Scope named the target, and the facade reports the name too
+    assert mock_scope.scope_state()["target"]["name"] == "NGC 869"
+    assert device.state().target_name == "NGC 869"
+
+
+def test_goto_falls_back_to_the_ra_dec_string_for_coord_added_entries(project):
+    """Issue 10: an entry added by coords has no name — the goto name falls
+    back to its RA-Dec string."""
+    dev = FakeDevice()
+    coord = J2000Coord.from_hours(5.5, -5.0)
+    ex = NightExecutor(
+        dev, PlanQueue([QueueEntry(coord=coord)]), project, duration_per_target_s=0.05
+    )
+    snap = ex.run(timeout=5)
+    assert snap.state == ExecutorState.DONE
+    goto = dev.calls_of("goto")[0]
+    assert goto[1:3] == (5.5, -5.0)
+    assert goto[3] == str(coord)  # e.g. "RA 5.500000h Dec -5.000000deg"
 
 
 def test_resolution_failure_skips_entry_under_default_policy(device, project):
@@ -450,9 +487,9 @@ def test_facade_call_order_per_entry(project):
         "goto", "start_stack", "stop_stack",
         "park",
     ]
-    # goto got RA in hours, Dec in degrees
-    assert dev.calls_of("goto")[0][1:] == (5.5, -5.0)
-    assert dev.calls_of("goto")[1][1:] == (10.0, 20.0)
+    # goto got RA in hours, Dec in degrees (and the target name, issue 10)
+    assert dev.calls_of("goto")[0][1:3] == (5.5, -5.0)
+    assert dev.calls_of("goto")[1][1:3] == (10.0, 20.0)
 
 
 # --- error policy with the FakeDevice ----------------------------------------------

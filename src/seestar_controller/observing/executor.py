@@ -19,8 +19,10 @@ by entry through an explicit state machine::
   :func:`~.queue.default_name_resolver`) fills the coord; the entry is
   replaced in the wrapped :class:`~.queue.PlanQueue` in place (a ``resolved``
   queue event fires, so the editor shows the coord too);
-- **SLEWING** — ``device.goto(ra_hours, dec_deg)`` on the link Device facade
-  (blocking until the slew arrives);
+- **SLEWING** — ``device.goto(ra_hours, dec_deg, name=...)`` on the link
+  Device facade (blocking until the slew arrives); the queue entry's name
+  rides along so the Scope names the target — and the frames stacked on
+  it — after it (a coord-added entry falls back to its RA-Dec string);
 - **STACKING** — ``device.start_stack(exposure_s, gain, mosaic)``, then frames
   are counted from the facade's ``Stack`` progress events
   (:meth:`~seestar_controller.link.device.Device.add_stacking_progress_handler`);
@@ -835,8 +837,12 @@ class NightExecutor:
                 f"goto RA {entry.coord.ra_hours:.4f}h Dec {entry.coord.dec_deg:+.4f}°"
             ),
         )
+        # the entry's name rides along on the slew so the Scope names the
+        # target (and its frames) after it; a coord-added entry has no name
+        # and falls back to its RA-Dec string (issue 10)
+        goto_name = entry.name if entry.name is not None else str(entry.coord)
         try:
-            self._device.goto(entry.coord.ra_hours, entry.coord.dec_deg)
+            self._device.goto(entry.coord.ra_hours, entry.coord.dec_deg, name=goto_name)
         except Exception as exc:  # noqa: BLE001
             return self._handle_error(index, entry, exc)
         cmd = self._drain_command()

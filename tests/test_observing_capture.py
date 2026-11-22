@@ -176,9 +176,9 @@ class FakeDevice:
 
     # -- executor facade ------------------------------------------------------
 
-    def goto(self, ra, dec, *, timeout=None):
+    def goto(self, ra, dec, *, name=None, timeout=None):
         with self._lock:
-            self.calls.append(("goto", ra, dec))
+            self.calls.append(("goto", ra, dec, name))
         return SimpleNamespace(mode="idle", target=(ra, dec))
 
     def park(self):
@@ -485,6 +485,46 @@ def test_mock_run_frames_land_in_session_and_logged(device, project):
     # dedupe: re-polling stores nothing new
     assert capture.poll_once() == 0
     assert len(list_frames(project, session)) == len(subs) + len(stacks)
+
+
+def test_stored_frames_carry_the_queue_entry_target_name(device, mock_scope, project):
+    """Issue 10 acceptance: queue "NGC 869" -> start night -> the stored
+    subs/stacks carry target "NGC 869" in their meta (the frame rows in
+    Stored data), and the Scope's own frame placement uses the name
+    (``NGC 869_sub`` / ``Light_NGC 869_…``), not "Unknown"."""
+    q = PlanQueue([QueueEntry(name="NGC 869")])
+
+    def resolver(name: str):
+        return J2000Coord.from_hours(3.5872, 58.2167)
+
+    executor = NightExecutor(device, q, project, resolver=resolver, frames_per_target=2)
+    worker = executor.start()
+    assert worker is not None
+    session = executor.session
+    assert session is not None
+    capture = SessionCapture(device, project, session, executor=executor, poll_interval_s=0.05)
+    # poll on the test thread (it owns the project db) while the night runs
+    deadline = time.monotonic() + 15.0
+    while (
+        executor.state not in (ExecutorState.DONE, ExecutorState.ABORTED)
+        and time.monotonic() < deadline
+    ):
+        capture.poll_once()
+        time.sleep(0.02)
+    assert executor.wait(timeout=15.0)
+    assert capture.poll_once() >= 0  # final cycle catches the last Stack
+
+    subs = list_frames(project, session, kind="sub")
+    stacks = list_frames(project, session, kind="stack")
+    assert subs and stacks
+    # the stored frame rows show the entry's name as the target
+    assert all(f.target == "NGC 869" for f in subs + stacks)
+    # the mock Scope named the target: sub folder + Light_<target>_ filenames
+    albums = mock_scope.albums()["list"][0]["files"]
+    assert "NGC 869_sub" in [f["name"] for f in albums]
+    assert any("Light_NGC 869_" in f["thn"] for f in albums)
+    # and its frame records carry the target name in their meta
+    assert all(r["target"]["name"] == "NGC 869" for r in mock_scope.list_frames())
 
 
 # --- worker loop + dedupe + failure handling (FakeDevice) -------------------------------
