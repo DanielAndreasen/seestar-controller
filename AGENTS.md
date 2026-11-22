@@ -24,6 +24,10 @@ Before committing a ticket's code, run `uv tool run ty check` and `uv tool run r
 - Slowest-test report: `uv run pytest -q -n auto --durations=20`
 - Known pre-existing failures are environment-dependent (see the "Known pre-existing test failures" section of `docs/wiki/dependency-upgrade.md`): without gi, the widget suites skip via `pytest.importorskip("gi")` and two pure tests fail; with a working gi the widget suites run and their failures are the known app/test bugs tracked as root causes in `.scratch/app-improvement/issues/` 01-04/09-11. Do not "fix" any of them by weakening tests. Test-only I/O shims (fsync no-op + `PRAGMA synchronous=OFF`) live in `tests/conftest.py` — see the issue-05 section of `docs/wiki/dependency-upgrade.md` for why they are safe.
 
+## Subagent parallelism
+
+At most 4 subagents may run in parallel; queue the rest and spawn them as running ones finish.
+
 ## Agent skills
 
 ### Issue tracker
