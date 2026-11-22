@@ -71,11 +71,18 @@ shared
 :class:`~seestar_controller.enhance.editor_controller.EditorController`
 (both passed in via :func:`build_view`; with no project set yet the view
 shows a "no project" placeholder — the Projects view is a later ticket). The
-**Photometry** view (photometry tickets 01 + 02) carries the
+**Photometry** view (photometry tickets 01 + 02, issue 06) is an
+:class:`Adw.ViewStack` with an :class:`Adw.ViewSwitcher` — one workflow per
+tab: **Pick stars** carries the
 :class:`~seestar_controller.photometry.star_picker.StarPickerView` widget —
-the project's stack list + role/aperture controls + picks list + Save picks +
+the project's stack list + role selector + "go to RA/Dec or name" entry (issue
+06: places the pick via
+:meth:`~seestar_controller.photometry.picking.PickController.add_at_sky` on
+the solved frame) + aperture controls + picks list + Save picks +
 catalog-comps panel on the left, the clickable preview with the aperture
-overlay on the right —
+overlay and the hover sky-coord readout on the right; **Run photometry**
+carries the results panel (ticket 04), **Variables** the variable-scan
+widget, **Movers** the moving-objects overlay —
 driven by the app's shared
 :class:`~seestar_controller.photometry.picking.PickController` (which follows
 the shared viewer controller's open stack), the shared
@@ -654,21 +661,35 @@ class EnhanceView(_PlaceholderView):
         return self._editor.export_jpeg_button
 
 
+#: The Photometry view's workflow tabs (issue 06 — the view used to stack all
+#: four workflows into one vertical paned; now one workflow is visible at a
+#: time): ``(tab id, title)`` pairs, in switcher order.
+PHOTOMETRY_TABS: tuple[tuple[str, str], ...] = (
+    ("pick", "Pick stars"),
+    ("run", "Run photometry"),
+    ("variables", "Variables"),
+    ("movers", "Movers"),
+)
+
+
 class PhotometryView(_PlaceholderView):
-    """Photometry view (photometry tickets 01 + 02 + 04): a vertical
-    :class:`Gtk.Paned` with the star-picker widget on top and the results
-    panel (ticket 04) below. Wraps the
-    :class:`~seestar_controller.photometry.star_picker.StarPickerView` widget —
-    the project's stack list + role selector + aperture spins + picks list +
-    Save picks + catalog-comps panel on the left, the clickable preview with
-    the aperture overlay on the right. Below the paned it also carries the
-    moving-objects ticket-02
-    :class:`~seestar_controller.moving_objects.overlay_view.MoverOverlayView`
-    widget — the annotated overlay/blink view of the session's movers — and
-    the variable-scan ticket-02
+    """Photometry view (photometry tickets 01 + 02 + 04, issue 06): an
+    :class:`Adw.ViewStack` with one page per workflow — **Pick stars** (the
+    :class:`~seestar_controller.photometry.star_picker.StarPickerView` widget:
+    the project's stack list + role selector + go-to entry + aperture spins +
+    picks list + Save picks + catalog-comps panel on the left, the clickable
+    preview with the aperture overlay + hover sky-coord readout on the
+    right), **Run photometry** (the results panel, ticket 04:
+    :class:`~seestar_controller.photometry.results_view.ResultsPanel` —
+    session chooser + Run + measurements + plots), **Variables** (the
+    variable-scan ticket-02
     :class:`~seestar_controller.variable_scan.view.VariableScanView` widget —
     the ranked variable-candidate list with the selected candidate's
-    lightcurve + blink.
+    lightcurve + blink) and **Movers** (the moving-objects ticket-02
+    :class:`~seestar_controller.moving_objects.overlay_view.MoverOverlayView`
+    widget — the annotated overlay/blink view of the session's movers) — with
+    an :class:`Adw.ViewSwitcher` on top (:data:`PHOTOMETRY_TABS`), so each
+    workflow gets the full page instead of sharing one crowded paned.
 
     ``picker_controller`` is the app's shared
     :class:`~seestar_controller.photometry.picking.PickController` (it follows
@@ -739,23 +760,40 @@ class PhotometryView(_PlaceholderView):
             suggest_controller=self._suggest_controller,
         )
         self._results_panel = ResultsPanelWidget(self._run_controller)
-        paned = Gtk.Paned(
-            orientation=Gtk.Orientation.VERTICAL,
-            start_child=self._picker_widget,
-            end_child=self._results_panel,
-            shrink_start_child=False,
-            shrink_end_child=False,
-            wide_handle=True,
-        )
-        self._content.append(paned)
         # moving-objects ticket 02: the annotated overlay/blink view of the
-        # session's movers below the photometry results panel
+        # session's movers — its own "Movers" tab (issue 06)
         self._mover_overlay = MoverOverlayWidget(mover_controller=self._mover_controller)
-        self._content.append(self._mover_overlay)
         # variable-scan ticket 02: the ranked variable-candidate list with the
-        # selected candidate's lightcurve + blink, next to the mover overlay
+        # selected candidate's lightcurve + blink — its own "Variables" tab
         self._variable_scan = VariableScanWidget(scan_controller=self._scan_controller)
-        self._content.append(self._variable_scan)
+        # issue 06: one workflow at a time — an Adw.ViewStack with an
+        # Adw.ViewSwitcher instead of one crowded vertical paned
+        pages = {
+            "pick": self._picker_widget,
+            "run": self._results_panel,
+            "variables": self._variable_scan,
+            "movers": self._mover_overlay,
+        }
+        self._view_stack = Adw.ViewStack()
+        for tab_id, title in PHOTOMETRY_TABS:
+            child = pages[tab_id]
+            child.set_hexpand(True)
+            child.set_vexpand(True)
+            self._view_stack.add_titled(child, tab_id, title)
+        self._view_switcher = Adw.ViewSwitcher()
+        self._view_switcher.set_stack(self._view_stack)
+        try:
+            # wide policy: show the tab titles ("Pick stars", …); on older
+            # libadwaita without the policy property the titles show anyway
+            self._view_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
+        except AttributeError:  # pragma: no cover - older libadwaita
+            pass
+        tabs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, vexpand=True)
+        tabs_box.append(self._view_switcher)
+        self._view_stack.set_hexpand(True)
+        self._view_stack.set_vexpand(True)
+        tabs_box.append(self._view_stack)
+        self._content.append(tabs_box)
 
     @property
     def picker_controller(self) -> PickController:
@@ -808,13 +846,44 @@ class PhotometryView(_PlaceholderView):
 
     @property
     def picker_widget(self) -> StarPickerWidget:
-        """The star-picker widget (stack list + controls | preview + overlay)."""
+        """The star-picker widget (stack list + controls | preview + overlay),
+        on the "Pick stars" tab."""
         return self._picker_widget
 
     @property
     def save_button(self) -> Gtk.Button:
         """The widget's Save picks button (photometry ticket 01)."""
         return self._picker_widget.save_button
+
+    @property
+    def tabs(self) -> tuple[tuple[str, str], ...]:
+        """The workflow tabs as ``(tab id, title)`` pairs (issue 06) — see
+        :data:`PHOTOMETRY_TABS`."""
+        return PHOTOMETRY_TABS
+
+    @property
+    def view_stack(self) -> Adw.ViewStack:
+        """The inner workflow-tab stack (issue 06): one page per tab id in
+        :data:`PHOTOMETRY_TABS`."""
+        return self._view_stack
+
+    @property
+    def view_switcher(self) -> Adw.ViewSwitcher:
+        """The switcher bound to :attr:`view_stack` (issue 06)."""
+        return self._view_switcher
+
+    @property
+    def visible_tab(self) -> str:
+        """The id of the currently visible workflow tab (issue 06)."""
+        return self._view_stack.get_visible_child_name()
+
+    def tab_child(self, tab_id: str) -> Gtk.Widget | None:
+        """The widget of the workflow tab ``tab_id`` (issue 06)."""
+        return self._view_stack.get_child_by_name(tab_id)
+
+    def select_tab(self, tab_id: str) -> None:
+        """Switch to the workflow tab ``tab_id`` (issue 06)."""
+        self._view_stack.set_visible_child_name(tab_id)
 
 
 class LightcurveView(_PlaceholderView):

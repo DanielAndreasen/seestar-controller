@@ -25,7 +25,15 @@ window passes both down via
   opened image automatically), a **Refresh** button, the **role selector**
   (Target / Comp / Check :class:`Gtk.DropDown` — the check star is designated
   here and persisted via store.stars on Save, check-star-plot ticket 02),
-  the **aperture** spin buttons
+  the **go-to entry** (issue 06: "RA/Dec or name" + **Go** button — a sky
+  coordinate is parsed by
+  :func:`~seestar_controller.photometry.picking.parse_goto_target` and placed
+  via
+  :meth:`~seestar_controller.photometry.picking.PickController.add_at_sky`
+  with the selected role; an object name is resolved through the injectable
+  ``name_resolver`` — default: SIMBAD via the catalog facade, cached and
+  offline-graceful — on a worker thread, since the lookup blocks on the
+  network), the **aperture** spin buttons
   (radius + sky-annulus inner/outer, bound to
   :meth:`~seestar_controller.photometry.picking.PickController.set_aperture_params`),
   the **picks list** with a **Remove selected** button, the
@@ -43,9 +51,13 @@ window passes both down via
   :class:`Gtk.GestureClick` translates the click's widget coordinates back to
   0-based image pixels (accounting for the CONTAIN scale/offset AND the
   preview-vs-FITS downscale) and calls
-  :meth:`~seestar_controller.photometry.picking.PickController.pick_at`; the
-  overlay's draw function paints each pick's aperture circle + dashed sky
-  annulus + label (target green, comp blue, check amber).
+  :meth:`~seestar_controller.photometry.picking.PickController.pick_at`; a
+  :class:`Gtk.EventControllerMotion` (issue 06) drives the **hover sky-coord
+  readout** — a caption label under the preview showing the RA/Dec (via
+  :func:`~seestar_controller.photometry.picking.try_pixel_to_sky`) and pixel
+  of the hovered position; the overlay's draw function paints each pick's
+  aperture circle + dashed sky annulus + label (target green, comp blue, check
+  amber).
 
 The widget re-renders on every frozen
 :class:`~seestar_controller.photometry.picking.PickSession` and
@@ -55,6 +67,8 @@ The widget re-renders on every frozen
 from __future__ import annotations
 
 import math
+import threading
+from collections.abc import Callable
 from typing import Any
 
 import gi
@@ -62,8 +76,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, GLib, Gtk
 
+from ..catalog.coords import J2000Coord
 from ..enhance.fits_io import EnhanceError, StackInfo
 from ..enhance.render import render_preview
 from ..enhance.viewer import texture_from_pil
@@ -72,11 +87,14 @@ from .picking import (
     ROLE_CHECK,
     ROLE_COMP,
     ROLE_TARGET,
+    GotoTarget,
     PickController,
     PickingError,
     PickSession,
     StarPickSpec,
     has_celestial_wcs,
+    parse_goto_target,
+    try_pixel_to_sky,
 )
 from .suggest import SuggestionController
 from .suggestions_panel import SuggestionsPanel
@@ -112,6 +130,22 @@ CHECK_COLOR = (0.98, 0.72, 0.20, 1.0)
 #: role, label)`` — all radii in widget pixels.
 Mark = tuple[float, float, float, float, float, str, str]
 
+#: The name resolver used when none is injected: SIMBAD via the catalog facade
+#: (cached, offline-graceful). Returns the first candidate's
+#: :class:`~seestar_controller.catalog.coords.J2000Coord`; raises on failure
+#: (the widget wraps it into a clean status / :class:`PickingError`).
+NameResolver = Callable[[str], Any]
+
+
+def default_name_resolver(name: str) -> J2000Coord:
+    """Resolve an object ``name`` to a J2000 coord via SIMBAD (the catalog
+    facade's :func:`~seestar_controller.catalog.facade.lookup_name` — cached,
+    offline-graceful). Blocks on the network on a cache miss, so the widget
+    runs it on a worker thread."""
+    from seestar_controller.catalog.facade import lookup_name
+
+    return lookup_name(name)[0].coord
+
 
 class StarPickerView(Gtk.Box):
     """The Photometry view's star picker: stack list + role/aperture controls
@@ -122,7 +156,10 @@ class StarPickerView(Gtk.Box):
     are created when omitted, so the widget also works standalone):
     ``picker_controller`` / ``viewer_controller`` (ticket 01) and
     ``suggest_controller`` (ticket 02 — defaults to one bound to this view's
-    pick controller).
+    pick controller). ``name_resolver`` (issue 06) resolves the object names
+    of the go-to entry; it defaults to :func:`default_name_resolver` (SIMBAD
+    via the catalog facade) and is injectable so tests never touch the
+    network.
     """
 
     def __init__(
@@ -130,6 +167,7 @@ class StarPickerView(Gtk.Box):
         picker_controller: PickController | None = None,
         viewer_controller: ViewerController | None = None,
         suggest_controller: SuggestionController | None = None,
+        name_resolver: NameResolver | None = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("orientation", Gtk.Orientation.VERTICAL)
@@ -150,6 +188,10 @@ class StarPickerView(Gtk.Box):
             # passes the shared one, configured with the settings radius
             suggest_controller = SuggestionController(picker_controller=picker_controller)
         self._suggest_controller = suggest_controller
+        self._name_resolver: NameResolver = (
+            name_resolver if name_resolver is not None else default_name_resolver
+        )
+        self._goto_thread: threading.Thread | None = None
         self._stack_ids: tuple[int, ...] = ()
         self._rows: dict[int, Gtk.ListBoxRow] = {}
         self._updating = False  # guard against programmatic signal loops
@@ -220,6 +262,39 @@ class StarPickerView(Gtk.Box):
         role_row.add_suffix(self._role_dropdown)
         picking_group.add(role_row)
         left.append(picking_group)
+
+        # issue 06: "go to RA/Dec or name" — places the pick via
+        # PickController.add_at_sky on the solved frame (no need to recognize
+        # the target star visually)
+        goto_group = Adw.PreferencesGroup(title="Go to target")
+        goto_row = Adw.ActionRow(
+            title="RA/Dec or name",
+            subtitle=(
+                "Place the next pick at a sky position (RA in hours, Dec in "
+                "degrees — sexagesimal ok) or a resolved object name"
+            ),
+        )
+        self._goto_entry = Gtk.Entry(
+            placeholder_text="e.g. 5h32m00s +22d00m00s, or M 42",
+            tooltip_text=(
+                "Go to a sky coordinate (RA/Dec, comma or space separated) or an "
+                "object name (resolved via SIMBAD); the pick is placed at the "
+                "WCS pixel of the solved frame with the selected role"
+            ),
+            hexpand=True,
+        )
+        self._goto_entry.set_valign(Gtk.Align.CENTER)
+        self._goto_entry.connect("activate", self._on_goto_activated)
+        self._goto_button = Gtk.Button(
+            label="Go",
+            tooltip_text="Resolve the entry and place the pick at that sky position",
+            valign=Gtk.Align.CENTER,
+        )
+        self._goto_button.connect("clicked", self._on_goto_clicked)
+        goto_row.add_suffix(self._goto_entry)
+        goto_row.add_suffix(self._goto_button)
+        goto_group.add(goto_row)
+        left.append(goto_group)
 
         aperture_group = Adw.PreferencesGroup(title="Aperture (px)")
         self._radius_spin = self._make_spin(RADIUS_RANGE, "Aperture radius")
@@ -315,6 +390,13 @@ class StarPickerView(Gtk.Box):
         self._click_gesture = Gtk.GestureClick(button=1)
         self._click_gesture.connect("pressed", self._on_pressed)
         self._overlay_area.add_controller(self._click_gesture)
+        # issue 06: hover sky-coord readout (EventControllerMotion on the same
+        # overlay — the motion position is mapped through the same CONTAIN
+        # transform as the clicks)
+        self._motion_controller = Gtk.EventControllerMotion()
+        self._motion_controller.connect("motion", self._on_motion)
+        self._motion_controller.connect("leave", self._on_motion_leave)
+        self._overlay_area.add_controller(self._motion_controller)
         self._placeholder = Gtk.Label(
             label="no stack open",
             halign=Gtk.Align.CENTER,
@@ -328,6 +410,11 @@ class StarPickerView(Gtk.Box):
         frame.set_vexpand(True)
         right.append(frame)
 
+        # issue 06: the hover sky-coord readout (caption under the preview)
+        self._hover_label = Gtk.Label(
+            label="", halign=Gtk.Align.CENTER, css_classes=["dim-label", "caption"]
+        )
+        right.append(self._hover_label)
         self._info_label = Gtk.Label(
             label="", halign=Gtk.Align.CENTER, css_classes=["dim-label", "caption"]
         )
@@ -402,6 +489,31 @@ class StarPickerView(Gtk.Box):
         return self._save_button
 
     @property
+    def goto_entry(self) -> Gtk.Entry:
+        """The "go to RA/Dec or name" entry (issue 06)."""
+        return self._goto_entry
+
+    @property
+    def goto_button(self) -> Gtk.Button:
+        """The go-to button next to the entry (issue 06)."""
+        return self._goto_button
+
+    @property
+    def hover_label(self) -> Gtk.Label:
+        """The hover sky-coord readout under the preview (issue 06)."""
+        return self._hover_label
+
+    @property
+    def motion_controller(self) -> Gtk.EventControllerMotion:
+        """The hover motion controller on the overlay (issue 06)."""
+        return self._motion_controller
+
+    @property
+    def name_resolver(self) -> NameResolver:
+        """The object-name resolver of the go-to entry (issue 06)."""
+        return self._name_resolver
+
+    @property
     def picture(self) -> Gtk.Picture:
         """The preview picture."""
         return self._picture
@@ -471,6 +583,164 @@ class StarPickerView(Gtk.Box):
         px = x / image.width * pw
         py = y / image.height * ph
         return ox + px * scale, oy + py * scale
+
+    # -- go to RA/Dec or name (issue 06) ----------------------------------------------
+
+    def _selected_role(self) -> str:
+        """The role currently selected in the role dropdown."""
+        selected = self._role_dropdown.get_selected()
+        return ROLE_CHOICES[selected][1] if 0 <= selected < len(ROLE_CHOICES) else ROLE_COMP
+
+    def _resolve_name(self, name: str) -> J2000Coord:
+        """Resolve ``name`` through :attr:`name_resolver` into a
+        :class:`J2000Coord`; any resolver failure becomes a clean
+        :class:`PickingError`."""
+        try:
+            resolved = self._name_resolver(name)
+        except Exception as exc:  # any resolver failure becomes a clean error
+            raise PickingError(f"cannot resolve {name!r}: {exc}") from exc
+        ra = getattr(resolved, "ra_deg", None)
+        dec = getattr(resolved, "dec_deg", None)
+        if (ra is None or dec is None) and isinstance(resolved, (tuple, list)) and len(resolved) == 2:
+            ra, dec = resolved[0], resolved[1]
+        if ra is None or dec is None:
+            raise PickingError(
+                f"name resolver returned {resolved!r} for {name!r} — not a sky coord"
+            )
+        try:
+            return J2000Coord(ra_deg=float(ra), dec_deg=float(dec))
+        except (TypeError, ValueError) as exc:
+            raise PickingError(
+                f"name resolver returned {resolved!r} for {name!r} — not a sky coord: {exc}"
+            ) from exc
+
+    def go_to(self, text: str) -> StarPickSpec:
+        """Synchronously go to a sky coordinate or object name (issue 06):
+        parse ``text`` (see
+        :func:`~seestar_controller.photometry.picking.parse_goto_target`),
+        resolve a name through :attr:`name_resolver`, and place the pick with
+        the selected role via
+        :meth:`~seestar_controller.photometry.picking.PickController.add_at_sky`
+        on the current (solved) frame.
+
+        Returns the new :class:`StarPickSpec` (a name entry is used as the
+        pick's label). Raises :class:`PickingError` with a clean message on a
+        malformed entry, an unresolvable name, no image, no WCS, or a position
+        mapping outside the frame.
+        """
+        target: GotoTarget = parse_goto_target(text)
+        if target.kind == "coords":
+            coord = target.coord
+            assert coord is not None
+            label: str | None = None
+        else:
+            coord = self._resolve_name(target.name)
+            label = target.name
+        role = self._selected_role()
+        return self._picker_controller.add_at_sky(
+            coord, role, label=label or self._next_label(role)
+        )
+
+    def _on_goto_activated(self, *_args) -> None:
+        self._on_goto_clicked()
+
+    def _on_goto_clicked(self, *_args) -> None:
+        """Go button / Enter in the go-to entry: a coordinate is placed
+        directly; a name is resolved on a worker thread (the SIMBAD lookup
+        blocks on the network) and placed on the main loop when done."""
+        text = self._goto_entry.get_text()
+        try:
+            target = parse_goto_target(text)
+        except PickingError as exc:
+            self._set_status(str(exc), error=True)
+            return
+        if target.kind == "coords":
+            self._apply_goto(target.coord, label=None)
+            return
+        if self._goto_thread is not None and self._goto_thread.is_alive():
+            return  # a resolve is already running
+        self._set_status(f"resolving {target.name!r}…", error=False)
+        thread = threading.Thread(
+            target=self._resolve_worker,
+            args=(target.name,),
+            name="photometry-goto-resolve",
+            daemon=True,
+        )
+        self._goto_thread = thread
+        thread.start()
+
+    def _resolve_worker(self, name: str) -> None:
+        """Worker thread: resolve ``name`` (blocks on the network on a cache
+        miss), then marshal the result back to the GLib main loop (the pick
+        controller's listeners touch GTK widgets)."""
+        try:
+            coord = self._resolve_name(name)
+        except PickingError as exc:
+            GLib.idle_add(self._on_goto_resolved, name, None, str(exc))
+            return
+        GLib.idle_add(self._on_goto_resolved, name, coord, None)
+
+    def _on_goto_resolved(
+        self, name: str, coord: J2000Coord | None, error: str | None
+    ) -> bool:
+        """Main-loop callback of the name resolve; returns
+        ``GLib.SOURCE_REMOVE`` (one-shot idle callback)."""
+        if error is not None or coord is None:
+            self._set_status(f"cannot resolve {name!r}: {error}", error=True)
+        else:
+            self._apply_goto(coord, label=name)
+        return GLib.SOURCE_REMOVE
+
+    def _apply_goto(self, coord: J2000Coord | None, *, label: str | None) -> StarPickSpec | None:
+        """Place the pick at ``coord`` with the selected role via
+        ``add_at_sky``; a failure is a clean error status. Returns the spec
+        (None on failure)."""
+        if coord is None:
+            return None
+        role = self._selected_role()
+        try:
+            spec = self._picker_controller.add_at_sky(
+                coord, role, label=label or self._next_label(role)
+            )
+        except PickingError as exc:
+            self._set_status(str(exc), error=True)
+            return None
+        self._set_status(f"went to {spec.describe()}", error=False)
+        return spec
+
+    # -- hover sky-coord readout (issue 06) --------------------------------------------
+
+    def sky_at_widget(self, wx: float, wy: float) -> J2000Coord | None:
+        """The sky coord of the hovered widget position ``(wx, wy)`` (mapped
+        through the same CONTAIN transform as the clicks); None when no image
+        is open or the frame has no usable WCS."""
+        image = self._picker_controller.image
+        if image is None:
+            return None
+        x, y = self.widget_to_image(wx, wy)
+        return try_pixel_to_sky(image.header, x, y)
+
+    def hover_text(self, wx: float, wy: float) -> str:
+        """The hover readout text for the widget position ``(wx, wy)``:
+        RA/Dec + pixel when the frame has a WCS, pixel-only otherwise."""
+        image = self._picker_controller.image
+        if image is None:
+            return ""
+        x, y = self.widget_to_image(wx, wy)
+        coord = try_pixel_to_sky(image.header, x, y)
+        if coord is None:
+            return f"px {x:.1f}, {y:.1f} — no WCS on this frame"
+        return (
+            f"RA {coord.ra_hours:.5f}h  Dec {coord.dec_deg:+.5f}°"
+            f"  —  px {x:.1f}, {y:.1f}"
+        )
+
+    def _on_motion(self, _controller: Gtk.EventControllerMotion, wx: float, wy: float) -> None:
+        self._hover_label.set_label(self.hover_text(wx, wy))
+
+    def _on_motion_leave(self, *_args) -> None:
+        self._hover_label.set_label("")
+
 
     # -- aperture marks + overlay drawing ----------------------------------------------
 
@@ -605,8 +875,7 @@ class StarPickerView(Gtk.Box):
         pick with the selected role."""
         if self._updating:
             return
-        selected = self._role_dropdown.get_selected()
-        role = ROLE_CHOICES[selected][1] if 0 <= selected < len(ROLE_CHOICES) else ROLE_COMP
+        role = self._selected_role()
         x, y = self.widget_to_image(wx, wy)
         try:
             spec = self._picker_controller.pick_at(x, y, role, label=self._next_label(role))
