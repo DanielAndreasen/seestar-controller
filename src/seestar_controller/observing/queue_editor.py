@@ -22,16 +22,20 @@ instance; the Observe view gets it from the app/window):
   testable);
 - an **Add** area: a name :class:`Adw.EntryRow` + a **Resolve** button (calls
   the controller's ``resolve_name`` — the catalog via the resolver — and shows
-  the result or the error inline in the status label), RA/Dec
+  the result or the error inline in the status label). Clicking Resolve
+  **immediately invalidates the previous resolution** (``_resolved = None``,
+  a "resolving <name>…" status, Add insensitive while the slow lookup is in
+  flight), so Add can never enqueue the stale target; RA/Dec
   :class:`Adw.EntryRow`\\ s (validated live through the catalog's
   ``parse_ra``/``parse_dec`` when Add is clicked), a mosaic switch with pan/tilt
   spin buttons, and exposure/gain spin buttons — all with the validated ranges
   (exposure 1-60 s, gain 0-100, mosaic 0-10 deg, mirroring the link's stacking
   contract);
-- the **Add** button: name XOR RA/Dec (both given -> inline error); a name
-  adds an unresolved entry (or a resolved one when Resolve succeeded for that
-  name), RA/Dec adds a coord entry. Validation failures show inline in the
-  status label and add nothing.
+- the **Add** button: name XOR RA/Dec (both given -> inline error); a name is
+  added ONLY when Resolve succeeded for that exact name (a name mismatch or a
+  failed/missing resolution -> inline "resolve first" error, nothing queued —
+  the stale coord is never used), RA/Dec adds a coord entry. Validation
+  failures show inline in the status label and add nothing.
 
 The editor re-renders the list on every queue-changed event (it registers as a
 controller listener), so all edits — from this widget or anywhere else — show
@@ -92,8 +96,12 @@ class QueueEditor(Gtk.Box):
         self._controller = (
             controller if controller is not None else PlanQueueController()
         )
-        #: the last successful Resolve of the name field: (name, coord)
+        #: the last successful Resolve of the name field: (name, coord);
+        #: cleared at the START of every Resolve click (ticket 06) so Add can
+        #: never enqueue the stale target
         self._resolved: tuple[str, J2000Coord] | None = None
+        #: True while a Resolve lookup is in flight (Add is gated meanwhile)
+        self._resolving: bool = False
         #: per-row buttons, rebuilt with the list: list of {key: Gtk.Button}
         self._row_buttons: list[dict[str, Gtk.Button]] = []
 
@@ -321,31 +329,42 @@ class QueueEditor(Gtk.Box):
             return False
         return (self._pan_spin.get_value(), self._tilt_spin.get_value())
 
-    def _set_status(self, text: str, *, error: bool) -> None:
+    def _set_status(self, text: str, *, error: bool, dim: bool = False) -> None:
         self._status_label.set_label(text)
         for css_class in ("error", "success", "dim-label"):
             self._status_label.remove_css_class(css_class)
         if error:
             self._status_label.add_css_class("error")
-        elif text:
-            self._status_label.add_css_class("success")
-        else:
+        elif dim or not text:
             self._status_label.add_css_class("dim-label")
+        else:
+            self._status_label.add_css_class("success")
 
     def _on_resolve_clicked(self, *_args) -> None:
-        """Resolve button: look the name up via the controller (catalog) and
-        show the result — or the error — inline."""
+        """Resolve button: invalidate the previous resolution FIRST (ticket
+        06), then look the name up via the controller (catalog) and show the
+        result — or the error — inline. While the (slow) lookup is in flight
+        ``_resolved`` is None and the Add button is insensitive, so a quick
+        Add can never enqueue the stale target."""
         name = self._name_entry.get_text().strip()
         if not name:
             self._resolved = None
             self._set_status("enter a name to resolve first", error=True)
             return
+        # invalidate the previous resolution immediately: the lookup below is
+        # slow (catalog) and Add must not reuse the old coord meanwhile
+        self._resolved = None
+        self._resolving = True
+        self._add_button.set_sensitive(False)
+        self._set_status(f"resolving {name}…", error=False, dim=True)
         try:
             coord = self._controller.resolve_name(name)
         except QueueError as exc:
-            self._resolved = None
             self._set_status(str(exc), error=True)
             return
+        finally:
+            self._resolving = False
+            self._add_button.set_sensitive(True)
         self._resolved = (name, coord)
         self._set_status(
             f"{name} → RA {coord.ra_hours:.4f}h Dec {coord.dec_deg:+.4f}°", error=False
@@ -353,7 +372,10 @@ class QueueEditor(Gtk.Box):
 
     def _on_add_clicked(self, *_args) -> None:
         """Add button: name XOR RA/Dec -> add through the controller; inline
-        errors on validation failure (nothing is added then)."""
+        errors on validation failure (nothing is added then). A name is added
+        only when Resolve succeeded for that exact name (ticket 06) — a
+        mismatch or missing/failed resolution errors with "resolve first" and
+        queues nothing, so a stale ``_resolved`` can never be added."""
         name = self._name_entry.get_text().strip()
         ra = self._ra_entry.get_text().strip()
         dec = self._dec_entry.get_text().strip()
@@ -375,23 +397,18 @@ class QueueEditor(Gtk.Box):
                     error=False,
                 )
             elif name:
-                if self._resolved is not None and self._resolved[0] == name:
-                    entry = self._controller.add_resolved(
-                        name,
-                        self._resolved[1],
-                        mosaic=mosaic,
-                        exposure_s=exposure_s,
-                        gain=gain,
-                    )
-                    self._set_status(f"added {entry.describe()}", error=False)
-                else:
-                    entry = self._controller.add_by_name(
-                        name, mosaic=mosaic, exposure_s=exposure_s, gain=gain
-                    )
-                    self._set_status(
-                        f"added {name} (unresolved — Resolve looks it up in the catalog)",
-                        error=False,
-                    )
+                if self._resolving:
+                    raise QueueError(f"still resolving {name!r} — wait for the catalog answer")
+                if self._resolved is None or self._resolved[0] != name:
+                    raise QueueError(f"resolve {name!r} first — no resolved coordinates for it")
+                entry = self._controller.add_resolved(
+                    name,
+                    self._resolved[1],
+                    mosaic=mosaic,
+                    exposure_s=exposure_s,
+                    gain=gain,
+                )
+                self._set_status(f"added {entry.describe()}", error=False)
             else:
                 raise QueueError("enter a target name or RA/Dec first")
         except QueueError as exc:
