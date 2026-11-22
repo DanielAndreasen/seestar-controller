@@ -1,6 +1,6 @@
 # Issue 09: photometry run uses fixed pixel picks — no per-frame WCS reprojection, so drifted/rotated frames are silently skipped (33 of 512 measured)
 
-**Status:** needs-triage
+**Status:** completed (fixed in 14ce236 on main: per-frame WCS reprojection of sky picks in measure/run, fixed-pixel fallback, aggregated skip reasons + WCS coverage on RunReport and in the results view; reviewed APPROVE)
 
 ## Found while
 Live session 2026-11-22, project `vw-cep`, session `20261122T192149035964Z` (512 subs over ~2 h on the alt-az S50). Picks were saved with BOTH pixel and sky positions (`StarPick.x/y` + `ra_deg/dec_deg`, target VW Cep + 2 comps). Run photometry produced only 33 measurements; the rest were skipped.
