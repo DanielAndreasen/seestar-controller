@@ -12,8 +12,12 @@ Covered:
 - a session WITHOUT scored frames -> ``collect_report_data(...).quality`` is
   None and the section is gracefully OMITTED from both documents (and no
   quality PNG is embedded);
-- the **movers** section: ``seestar_controller.moving_objects`` does not exist
-  on main, so by default ``data.movers`` is None and the section is omitted;
+- the **movers** section: with the import of
+  ``seestar_controller.moving_objects`` blocked (a ``None`` ``sys.modules``
+  entry — the same state as the package being absent, enforced via
+  monkeypatch so the test is order-independent under ``pytest -n auto``,
+  where a same-worker test may already have imported the real package) by
+  default ``data.movers`` is None and the section is omitted;
   with a fake ``moving_objects`` module injected into ``sys.modules`` the
   section appears (HTML + PDF) with the coerced kind/label/position/frames;
   a fake whose ``session_movers`` raises (or returns nothing) -> omitted;
@@ -33,6 +37,7 @@ Headless: no ``gi`` anywhere; the package boundary lives in
 from __future__ import annotations
 
 import base64
+import importlib
 import io
 import re
 import socket
@@ -202,6 +207,18 @@ def _fake_moving_objects(monkeypatch, session_movers: Any) -> types.ModuleType:
     return fake
 
 
+def _block_moving_objects_import(monkeypatch) -> None:
+    """Make ``import seestar_controller.moving_objects`` raise ImportError, as
+    when the package is absent: a ``None`` ``sys.modules`` entry (the same
+    trick as ``test_cli_gui_gi_error._block_app_import``). This keeps the
+    "no package" premise deterministic under ``pytest -n auto``, where another
+    test in the same worker may already have imported the real package."""
+    import seestar_controller
+
+    monkeypatch.setitem(sys.modules, "seestar_controller.moving_objects", None)
+    monkeypatch.delattr(seestar_controller, "moving_objects", raising=False)
+
+
 # --- the quality section (HTML + PDF) ----------------------------------------------
 
 
@@ -266,9 +283,14 @@ def test_quality_section_omitted_without_scored_frames(project, plain_session):
 # --- the movers section (gracefully omitted by default) -----------------------------
 
 
-def test_movers_section_omitted_when_no_moving_objects_package(project, plain_session):
-    # seestar_controller.moving_objects does not exist on main -> no data
-    assert "seestar_controller.moving_objects" not in sys.modules
+def test_movers_section_omitted_when_no_moving_objects_package(
+    project, plain_session, monkeypatch
+):
+    # no moving-objects package importable -> no data (the import is blocked
+    # via sys.modules, so this does not depend on the worker's import history)
+    _block_moving_objects_import(monkeypatch)
+    with pytest.raises(ImportError):
+        importlib.import_module("seestar_controller.moving_objects")
     data = collect_report_data(project, plain_session)
     assert data.movers is None
 
