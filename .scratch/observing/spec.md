@@ -1,6 +1,6 @@
 # Spec: observing
 
-Status: completed 2026-11-20 — issues 01-04 implemented and reviewed; 05 ready-for-agent
+Status: completed 2026-11-21 — all 5 issues implemented and reviewed (05: 9533c092+d4beeb9)
 
 ## Problem Statement
 

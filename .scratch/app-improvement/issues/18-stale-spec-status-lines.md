@@ -9,11 +9,13 @@ Evidence:
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in b9801dd (pending review)
 
-- [ ] The three spec lines above are updated to match the merged reality
-- [ ] No code changes; docs-only ticket
+- [x] The three spec lines above are updated to match the merged reality
+- [x] No code changes; docs-only ticket
 
 ## Comments
 
 Audit finding (kind: incorrect-spec-claim, severity: low).
+
+Implemented in b9801dd: `.scratch/observing/spec.md:3` and `.scratch/photometry/spec.md:3` now record issue 05 as implemented/merged with commit hashes (9533c092+d4beeb9 and 8f00932+a2e094b; the stale "picking fails on real Seestar frames" parenthetical is gone), and `.scratch/ui-shell/spec.md:26` now says Python 3.14, matching `requires-python = ">=3.14,<3.15"`. Docs-only, no code changes. Targeted tests: none named in this ticket (docs-only). `uv run ty check`: all checks passed; `uv tool run ruff check`: all checks passed. (`uv tool run ty check` outside the project venv reports 335 pre-existing import-not-found diagnostics, identical on the base commit — not introduced here.)
