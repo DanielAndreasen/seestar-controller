@@ -6,11 +6,13 @@ Evidence: `src/seestar_controller/hr_diagram/core.py:200-203` (`float(g)` with n
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** implemented in b5ade66 (pending review)
 
-- [ ] `absolute_g` / `abs_g_error` (and the plot.py twin) return None for NaN/inf parallax (`math.isfinite(p) and p > 0`), with NaN test cases added
-- [ ] `uv run pytest tests/test_hr_diagram.py -q` passes; full suite green; ty + ruff clean
+- [x] `absolute_g` / `abs_g_error` (and the plot.py twin) return None for NaN/inf parallax (`math.isfinite(p) and p > 0`), with NaN test cases added
+- [x] `uv run pytest tests/test_hr_diagram.py -q` passes; full suite green; ty + ruff clean
 
 ## Comments
 
 Audit finding (kind: bad-implementation, severity: low).
+
+Implemented in b5ade66 on wt/app-improvement-15: `absolute_g` (core.py) and `abs_g_error` (plot.py) now return None unless `math.isfinite(parallax) and parallax > 0`; NaN/±inf parallax test cases added in tests/test_hr_diagram.py (absolute_g) and tests/test_hr_diagram_view.py (abs_g_error). Results: `uv run pytest tests/test_hr_diagram.py -q` 13 passed; `uv run pytest tests/test_hr_diagram_view.py tests/test_hr_diagram_view_widgets.py -q` 19 passed, 1 skipped (no gi in this worktree's venv — the gi-gated widget file was additionally run with the gi-capable main-checkout interpreter: 10 passed); `uv tool run ty check` clean; `uv tool run ruff check` clean. Full suite not run here (coordinator runs it at merge time).
