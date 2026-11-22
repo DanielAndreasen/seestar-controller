@@ -360,6 +360,7 @@ def test_gaia_cache_key_rounds_center_and_radius():
     assert key_a != key_c
     payload = json.loads(key_a)
     assert payload == {
+        "v": gq.CACHE_FORMAT_VERSION,
         "ra": 83.6331,
         "dec": 22.014,
         "radius_deg": 0.5,
@@ -369,6 +370,66 @@ def test_gaia_cache_key_rounds_center_and_radius():
     # g_limit / maxrec change the key
     assert gq.gaia_cache_key(83.633, 22.014, 0.5, g_limit=19.0) != key_a
     assert gq.gaia_cache_key(83.633, 22.014, 0.5, maxrec=10) != key_a
+
+
+def _legacy_v1_cache_key(ra, dec, radius, *, g_limit=gq.DEFAULT_G_LIMIT, maxrec=gq.DEFAULT_MAXREC):
+    """The cache key as built before :data:`gq.CACHE_FORMAT_VERSION` was
+    part of it (v1 — the format written before the error columns)."""
+    return json.dumps(
+        {
+            "ra": round(ra, gq.KEY_ROUND_DIGITS),
+            "dec": round(dec, gq.KEY_ROUND_DIGITS),
+            "radius_deg": round(radius, gq.KEY_ROUND_DIGITS),
+            "g_limit": float(g_limit),
+            "maxrec": int(maxrec),
+        },
+        sort_keys=True,
+    )
+
+
+def test_gaia_cache_key_carries_the_format_version():
+    """The v2 key embeds CACHE_FORMAT_VERSION, so a v1 key — same rounded
+    values, no version — hashes differently and pre-v2 entries are never
+    even looked up."""
+    key = gq.gaia_cache_key(CENTER_RA, CENTER_DEC, RADIUS_DEG)
+    assert json.loads(key)["v"] == gq.CACHE_FORMAT_VERSION == 2
+    assert _legacy_v1_cache_key(CENTER_RA, CENTER_DEC, RADIUS_DEG) != key
+
+
+def test_query_gaia_cached_entry_under_a_v1_key_is_not_served(cache_dir, fetch_calls):
+    """A cache file written under the pre-version (v1) key is not served as
+    fresh: the lookup misses and the field is refetched."""
+    cache = QueryCache(cache_dir=cache_dir, ttl=3600.0)
+    cache.set(_legacy_v1_cache_key(CENTER_RA, CENTER_DEC, RADIUS_DEG), [_FULL_ROW])
+    stars = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
+    assert len(fetch_calls) == 1  # refetched: the v1-key entry was not served
+    assert len(stars) == 2
+
+
+def test_query_gaia_cached_entry_under_a_v1_key_is_not_a_stale_fallback(
+    cache_dir, monkeypatch
+):
+    """A v1-key entry is not served via the stale/offline path either: when
+    the fetch fails and only the legacy entry exists, the query raises."""
+    cache = QueryCache(cache_dir=cache_dir, ttl=3600.0)
+    cache.set(_legacy_v1_cache_key(CENTER_RA, CENTER_DEC, RADIUS_DEG), [_FULL_ROW])
+
+    def fail(query, **kwargs):
+        raise GaiaUnavailableError("offline")
+
+    monkeypatch.setattr(gq, "fetch_gaia_tap_json", fail)
+    with pytest.raises(GaiaUnavailableError):
+        gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
+
+
+def test_is_gaia_rows_requires_the_full_12_fields():
+    assert gq._is_gaia_rows([_FULL_ROW])
+    assert gq._is_gaia_rows([])  # an empty field is a valid payload
+    assert not gq._is_gaia_rows([_PRE_ERROR_COLUMNS_ROW])  # v1 row: no error keys
+    assert not gq._is_gaia_rows([{**_FULL_ROW, "extra": 1}])  # unknown key
+    assert not gq._is_gaia_rows([{"bogus": 1}])
+    assert not gq._is_gaia_rows([None])
+    assert not gq._is_gaia_rows("not a list")
 
 
 def test_default_cache_dir_env_override(monkeypatch, tmp_path):
@@ -470,6 +531,12 @@ def test_query_gaia_cached_stale_entry_serves_as_offline_fallback(cache_dir, mon
     monkeypatch.setattr(gq, "fetch_gaia_tap_json", fail)
     stale = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
     assert [s.source_id for s in stale] == [s.source_id for s in stars]
+    # the stale fallback serves the current-format entry whole — the error
+    # columns survive the offline path
+    faint = next(s for s in stale if s.source_id == 3403768831985762944)
+    assert faint.parallax_error == pytest.approx(0.03)
+    assert faint.pmra_error == pytest.approx(0.04)
+    assert faint.pmdec_error == pytest.approx(0.05)
 
 
 def test_query_gaia_cached_corrupted_cache_file_is_refetched(cache_dir, fetch_calls):
@@ -510,7 +577,7 @@ def test_query_gaia_cached_round_trips_the_error_columns(cache_dir, fetch_calls)
     assert faint2.pmdec_error == pytest.approx(0.05)
 
 
-_PRE_ERROR_COLUMNS_ROW = {
+_FULL_ROW = {
     "source_id": 42,
     "ra_deg": 83.70,
     "dec_deg": 22.05,
@@ -518,32 +585,52 @@ _PRE_ERROR_COLUMNS_ROW = {
     "bp": 13.0,
     "rp": 12.0,
     "parallax": 1.0,
+    "parallax_error": 0.1,
     "pmra": 2.0,
+    "pmra_error": 0.2,
     "pmdec": -2.0,
+    "pmdec_error": 0.3,
+}  # all 12 cache-row fields (cache format v2)
+
+#: A v1 cache row: the same star without the error columns.
+_PRE_ERROR_COLUMNS_ROW = {
+    key: value for key, value in _FULL_ROW.items() if not key.endswith("_error")
 }  # no parallax_error / pmra_error / pmdec_error keys
 
 
-def test_query_gaia_cached_pre_error_columns_entry_is_served_with_none_errors(
+def test_query_gaia_cached_pre_error_columns_entry_is_refetched_not_served(
     cache_dir, fetch_calls
 ):
-    """A cache entry written before the error columns were selected is a
-    valid entry: served as-is (the errors read None), never refetched just
-    because its rows predate the error columns."""
+    """A v1 entry (rows without the error columns) under the current key is
+    invalid: it is refetched — never served fresh with None errors — and the
+    refetched v2 rows overwrite the entry on disk."""
     cache = QueryCache(cache_dir=cache_dir, ttl=3600.0)
     key = gq.gaia_cache_key(CENTER_RA, CENTER_DEC, RADIUS_DEG)
     cache.set(key, [_PRE_ERROR_COLUMNS_ROW])
     stars = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
-    assert len(fetch_calls) == 0  # served from the cache, no HTTP at all
-    (star,) = stars
-    assert star.parallax == pytest.approx(1.0)
-    assert star.parallax_error is None and star.pmra_error is None and star.pmdec_error is None
+    assert len(fetch_calls) == 1  # the 9-field entry was NOT served from cache
+    faint = next(s for s in stars if s.source_id == 3403768831985762944)
+    assert faint.parallax_error == pytest.approx(0.03)  # real error columns
+    # the refetch overwrote the entry with 12-field rows: the repeat lookup is
+    # served from disk, no HTTP, errors intact
+    again = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
+    assert len(fetch_calls) == 1
+    faint2 = next(s for s in again if s.source_id == 3403768831985762944)
+    assert faint2.parallax_error == pytest.approx(0.03)
+    assert faint2.pmra_error == pytest.approx(0.04)
+    assert faint2.pmdec_error == pytest.approx(0.05)
+    found = cache.get_any(key)
+    assert found is not None
+    payload, _fresh = found
+    assert {"parallax_error", "pmra_error", "pmdec_error"} <= set(payload[0])
 
 
-def test_query_gaia_cached_stale_pre_error_columns_entry_is_the_offline_fallback(
+def test_query_gaia_cached_stale_pre_error_columns_entry_is_not_a_fallback(
     cache_dir, monkeypatch
 ):
-    """An expired pre-error-columns entry still serves as the stale offline
-    fallback when the fetch fails (errors None)."""
+    """An expired v1 entry (no error columns) is not a valid stale fallback:
+    when the fetch fails, the query raises instead of serving None-error
+    rows."""
     now = [1000.0]
     cache = QueryCache(cache_dir=cache_dir, ttl=10.0, now=lambda: now[0])
     key = gq.gaia_cache_key(CENTER_RA, CENTER_DEC, RADIUS_DEG)
@@ -554,10 +641,8 @@ def test_query_gaia_cached_stale_pre_error_columns_entry_is_the_offline_fallback
         raise GaiaUnavailableError("offline")
 
     monkeypatch.setattr(gq, "fetch_gaia_tap_json", fail)
-    (star,) = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
-    assert star.source_id == 42
-    assert star.parallax == pytest.approx(1.0)
-    assert star.parallax_error is None and star.pmra_error is None and star.pmdec_error is None
+    with pytest.raises(GaiaUnavailableError):
+        gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
 
 
 def test_query_gaia_cached_empty_result_is_cached(cache_dir, monkeypatch):
@@ -610,14 +695,21 @@ ESA_METADATA = [
         "phot_bp_mean_mag",
         "phot_rp_mean_mag",
         "parallax",
+        "parallax_error",
         "pmra",
+        "pmra_error",
         "pmdec",
+        "pmdec_error",
     )
 ]
 
 
 def esa_payload(rows: list[dict]) -> dict:
-    """A TAP-JSON payload in the ESA Gaia archive (gea.esac.esa.int) shape."""
+    """A TAP-JSON payload in the ESA Gaia archive (gea.esac.esa.int) shape.
+
+    The row dicts are the ``sample_rows()`` shape: the error cells come from
+    the optional plx_err / pmra_err / pmde_err keys (absent -> NULL on wire).
+    """
     data = [
         [
             row["ra"],
@@ -627,8 +719,11 @@ def esa_payload(rows: list[dict]) -> dict:
             row["bp"],
             row["rp"],
             row["plx"],
+            row.get("plx_err"),
             row["pmra"],
+            row.get("pmra_err"),
             row["pmde"],
+            row.get("pmde_err"),
         ]
         for row in rows
     ]
@@ -637,9 +732,14 @@ def esa_payload(rows: list[dict]) -> dict:
 
 def test_build_cone_query_esa_mirror_uses_the_gaia_archive_dialect():
     adql = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0, url=gq.ESA_GAIA_TAP_SYNC_URL)
-    assert '"gaiadr3.gaia_source"' in adql
+    assert 'FROM "gaiadr3"."gaia_source"' in adql
+    # the ESA dialect selects the same 12 fields as the VizieR dialect,
+    # including the three error columns (archive spellings)
+    assert len(gq.ESA_GAIA_COLUMNS) == len(gq.GAIA_COLUMNS) == 12
     for col in gq.ESA_GAIA_COLUMNS:
         assert f'"{col}"' in adql
+    for error_col in ("parallax_error", "pmra_error", "pmdec_error"):
+        assert f'"{error_col}"' in adql
     assert 'CONTAINS(POINT(\'ICRS\', "ra", "dec")' in adql
     assert f"CIRCLE('ICRS', {CENTER_RA!r}, {CENTER_DEC!r}, {RADIUS_DEG!r})" in adql
     assert '"phot_g_mean_mag" < 20.0' in adql
@@ -648,6 +748,18 @@ def test_build_cone_query_esa_mirror_uses_the_gaia_archive_dialect():
     adql_vizier = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0)
     assert '"I/355/gaiadr3"' in adql_vizier
     assert '"phot_g_mean_mag"' not in adql_vizier
+
+
+def test_build_cone_query_esa_table_reference_is_schema_quoted_for_the_archive():
+    # the Gaia archive answers HTTP 400 (Unknown table) for the single quoted
+    # dotted identifier FROM "gaiadr3.gaia_source" — the dotted table name
+    # must be schema-quoted (or unquoted) in the ESA-dialect query
+    adql = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0, url=gq.ESA_GAIA_TAP_SYNC_URL)
+    assert 'FROM "gaiadr3"."gaia_source" WHERE CONTAINS' in adql
+    assert '"gaiadr3.gaia_source"' not in adql
+    # the VizieR table name has no dot and stays one quoted identifier
+    adql_vizier = gq.build_cone_query(CENTER_RA, CENTER_DEC, RADIUS_DEG, g_limit=20.0)
+    assert 'FROM "I/355/gaiadr3" WHERE CONTAINS' in adql_vizier
 
 
 def test_query_gaia_falls_back_to_the_esa_mirror_when_vizier_is_unreachable(monkeypatch):
@@ -665,10 +777,18 @@ def test_query_gaia_falls_back_to_the_esa_mirror_when_vizier_is_unreachable(monk
     assert [c["url"] for c in calls] == [gq.VIZIER_TAP_SYNC_URL, gq.ESA_GAIA_TAP_SYNC_URL]
     # each endpoint got the ADQL of its own dialect
     assert '"I/355/gaiadr3"' in calls[0]["query"]
-    assert '"gaiadr3.gaia_source"' in calls[1]["query"]
+    assert 'FROM "gaiadr3"."gaia_source"' in calls[1]["query"]
     # the ESA-archive-spelled response parses into the same rows
     assert [s.source_id for s in stars] == [42, 3403768831985762944]
     assert stars[0].g == pytest.approx(12.5)
+    # ... including the error fields the ESA query now selects (issue 05)
+    bright = stars[0]
+    assert bright.parallax_error is None and bright.pmra_error is None and bright.pmdec_error is None
+    faint = stars[1]
+    assert faint.parallax == pytest.approx(0.47)
+    assert faint.parallax_error == pytest.approx(0.03)
+    assert faint.pmra_error == pytest.approx(0.04)
+    assert faint.pmdec_error == pytest.approx(0.05)
 
 
 def test_query_gaia_all_endpoints_unreachable_raises_aggregated_unavailable(monkeypatch):
@@ -740,10 +860,14 @@ def test_query_gaia_cached_falls_back_to_esa_and_the_result_is_cached(cache_dir,
     stars1 = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
     assert [c for c in calls] == [gq.VIZIER_TAP_SYNC_URL, gq.ESA_GAIA_TAP_SYNC_URL]
     assert [s.source_id for s in stars1] == [42, 3403768831985762944]
+    assert stars1[1].parallax_error == pytest.approx(0.03)
+    assert stars1[1].pmra_error == pytest.approx(0.04)
+    assert stars1[1].pmdec_error == pytest.approx(0.05)
     # the fallback result is cached: the repeat lookup makes no network call
     stars2 = gq.query_gaia_cached(CENTER_RA, CENTER_DEC, RADIUS_DEG, cache)
     assert len(calls) == 2
     assert [(s.source_id, s.g) for s in stars2] == [(s.source_id, s.g) for s in stars1]
+    assert [s.parallax_error for s in stars2] == [s.parallax_error for s in stars1]
 
 
 def test_query_gaia_cached_cache_hit_wins_without_any_network_call(cache_dir, monkeypatch):
