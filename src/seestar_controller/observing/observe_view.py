@@ -487,18 +487,29 @@ class ObserveView(Gtk.Box):
                 project, session
             ),
         )
+        # "closed" is only a backstop: with libadwaita 1.5 ``Adw.Dialog.close()``
+        # never emits it (animation-gated), so the button actions below clear
+        # the reference directly (app-improvement 04).
         self._stale_dialog.connect("closed", self._on_stale_dialog_closed)
         parent = self.get_root()
         self._stale_dialog.present(parent if parent is not None else self)
         return False  # GLib.SOURCE_REMOVE
 
     def _on_stale_dialog_closed(self, *_args) -> None:
-        """The stale-session dialog was closed: forget it."""
+        """The stale-session dialog was closed: forget it (backstop for the
+        environments where Adw.Dialog does emit "closed")."""
+        self._forget_stale_dialog()
+
+    def _forget_stale_dialog(self) -> None:
+        """Forget the stale-session dialog reference (idempotent)."""
         self._stale_dialog = None
 
     def _on_stale_session_resume(self, project: Any, session: Session) -> None:
         """Dialog **Resume** (ticket 05): reattach the executor to the open
-        session via the controller's ``resume_stale_session``."""
+        session via the controller's ``resume_stale_session``. The dialog
+        reference is cleared here, deterministically on the button action —
+        not only via the animation-gated "closed" signal (app-improvement 04)."""
+        self._forget_stale_dialog()
         try:
             self._controller.resume_stale_session(project, session.id)
         except Exception as exc:  # noqa: BLE001 - shown inline, never crash the view
@@ -509,7 +520,9 @@ class ObserveView(Gtk.Box):
     def _on_stale_session_close_and_start_new(self, project: Any, session: Session) -> None:
         """Dialog **Close and start new** (ticket 05): close the stale session
         (store ``close_session``) and start a fresh night via the controller's
-        ``close_and_start_new``."""
+        ``close_and_start_new``. The dialog reference is cleared here,
+        deterministically on the button action (app-improvement 04)."""
+        self._forget_stale_dialog()
         try:
             self._controller.close_and_start_new(project, session.id)
         except Exception as exc:  # noqa: BLE001 - shown inline, never crash the view
