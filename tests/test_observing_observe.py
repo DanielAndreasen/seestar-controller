@@ -43,6 +43,8 @@ from seestar_controller.catalog.coords import J2000Coord
 from seestar_controller.link.device import Device, StackingProgress
 from seestar_controller.link.image import Frame
 from seestar_controller.link.preview import PreviewFrame, PreviewStream, decode_payload
+from seestar_controller.link.protocol import Reply
+from seestar_controller.link.transport import RpcError
 from seestar_controller.observing import (
     ExecutorState,
     ObserveController,
@@ -520,6 +522,35 @@ def test_aborted_night_stops_preview_and_pushes_error(harness, project):
     assert any(
         n.severity == NotificationSeverity.ERROR and n.title == "Night aborted" for n in notes
     )
+
+
+def test_aborted_night_with_code_259_pushes_plain_language_error(harness, project):
+    """Issue 11: ``start_stack`` failing twice with code 259 (the stale
+    stacking state did not clear) aborts the night under the abort policy,
+    and the error surfaced to the view state and the notification is the
+    plain-language message, not a bare ``code=259``."""
+    err = RpcError(Reply(id=661, method="iscope_start_stack", code=259, result="already running"))
+    harness.device.stack_errors = [err, err]
+    harness.queue_controller.add_entry(coord_entry(5.5, -5.0))
+    states: list[ObserveViewState] = []
+    harness.controller.add_listener(states.append)
+    ex = harness.controller.start_night(project, error_policy="abort")
+    assert ex.wait(timeout=5)
+    assert ex.snapshot.state == ExecutorState.ABORTED
+    assert ex.snapshot.error is not None and "scope is busy (code 259)" in ex.snapshot.error
+    # the executor stopped the stale stack and retried once before giving up
+    assert len(harness.device.calls_of("start_stack")) == 2
+    assert harness.device.calls_of("stop_stack")
+    # the view state (what the Observe view's status label shows) carries it
+    assert states[-1].executor_state == ExecutorState.ABORTED
+    assert states[-1].error is not None and "scope is busy (code 259)" in states[-1].error
+    # and so does the pushed notification
+    aborted = [
+        n
+        for n in harness.bus.log()
+        if n.severity == NotificationSeverity.ERROR and n.title == "Night aborted"
+    ]
+    assert aborted and "scope is busy (code 259)" in aborted[0].message
 
 
 # --- ticket 05: stale open session on Start night ---------------------------------------

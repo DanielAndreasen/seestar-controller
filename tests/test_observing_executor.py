@@ -28,7 +28,8 @@ import pytest
 
 from seestar_controller import observing
 from seestar_controller.catalog.coords import J2000Coord
-from seestar_controller.link.device import Device, StackingProgress
+from seestar_controller.link.device import Device, StackingProgress, plain_rpc_message
+from seestar_controller.link.protocol import Reply
 from seestar_controller.link.transport import RpcError
 from seestar_controller.observing import (
     ERROR_POLICIES,
@@ -68,6 +69,11 @@ def coord_entry(ra_hours: float, dec_deg: float, **kwargs) -> QueueEntry:
 
 def two_target_queue() -> PlanQueue:
     return PlanQueue([coord_entry(5.5, -5.0), coord_entry(10.0, 20.0)])
+
+
+def rpc_error(method: str, code: int, result: str = "error", req_id: int = 1) -> RpcError:
+    """An RpcError as the transport raises it for a non-zero reply ``code``."""
+    return RpcError(Reply(id=req_id, method=method, code=code, result=result))
 
 
 @pytest.fixture()
@@ -118,6 +124,10 @@ class FakeDevice:
         self._progress_handlers: list = []
         self.goto_error: Exception | None = None
         self.stack_errors: list[Exception] = []
+        self.park_errors: list[Exception] = []
+        #: the mode ``state()`` reports (issue 11: "stacking" simulates a
+        #: scope left stacking by a run that died mid-stack)
+        self.mode = "idle"
         self._lock = threading.Lock()
 
     def goto(self, ra, dec, *, name=None, timeout=None):
@@ -131,6 +141,11 @@ class FakeDevice:
     def park(self):
         with self._lock:
             self.calls.append(("park",))
+            error = self.park_errors.pop(0) if self.park_errors else None
+        if error is not None:
+            raise error
+        with self._lock:
+            self.mode = "parked"
         return SimpleNamespace(mode="parked")
 
     def start_stack(self, exposure, gain, mosaic=False, *, timeout=None):
@@ -139,15 +154,25 @@ class FakeDevice:
             error = self.stack_errors.pop(0) if self.stack_errors else None
         if error is not None:
             raise error
+        with self._lock:
+            self.mode = "stacking"
         return SimpleNamespace(mode="stacking")
 
     def stop_stack(self, *, timeout=None):
         with self._lock:
             self.calls.append(("stop_stack",))
+            self.mode = "idle"
         return SimpleNamespace(mode="idle")
 
     def state(self):
-        return SimpleNamespace(mode="idle")
+        with self._lock:
+            mode = self.mode
+        return SimpleNamespace(
+            mode=mode,
+            stacking=SimpleNamespace(
+                state="working" if mode == "stacking" else "idle", lapse_ms=0, frames=0
+            ),
+        )
 
     def add_event_handler(self, name, handler):
         self._handlers.setdefault(name, []).append(handler)
@@ -757,3 +782,117 @@ def test_executor_module_imports_no_gi_and_package_stays_link_free():
     )
     assert result.returncode == 0, result.stderr
     assert "clean" in result.stdout
+
+
+# --- issue 11: the scope was left stacking — recovery + plain-language errors ---------
+
+
+def test_plain_rpc_message_maps_codes_259_and_203_and_ignores_others():
+    busy_259 = plain_rpc_message(rpc_error("iscope_start_stack", 259, "already running"))
+    busy_203 = plain_rpc_message(rpc_error("scope_park", 203, "busy"))
+    assert busy_259 is not None and "code 259" in busy_259 and "stop stacking" in busy_259
+    assert busy_203 is not None and "code 203" in busy_203 and "stop stacking" in busy_203
+    # any other code / error type is not a known state conflict
+    assert plain_rpc_message(rpc_error("scope_goto", 108, "wrong type")) is None
+    assert plain_rpc_message(rpc_error("get_albums", 204, "page out of range")) is None
+    assert plain_rpc_message(RuntimeError("boom")) is None
+
+
+def test_scope_already_stacking_stops_the_stale_stack_before_start_stack(project):
+    """Issue 11: ``device.state().mode`` reports stacking (a previous run died
+    mid-stack) — ``stop_stack`` is called BEFORE ``start_stack`` and the entry
+    proceeds normally."""
+    dev = FakeDevice()
+    dev.mode = "stacking"  # left stacking by a run that died with connection lost
+    ex = NightExecutor(dev, PlanQueue([coord_entry(1.0, 2.0)]), project, duration_per_target_s=0.05)
+    snap = ex.run(timeout=5)
+    assert snap.state == ExecutorState.DONE
+    assert snap.error is None
+    kinds = [c[0] for c in dev.calls]
+    assert kinds[:3] == ["goto", "stop_stack", "start_stack"]
+    assert kinds.count("start_stack") == 1  # no retry needed after the pre-stop
+    assert any("still stacking" in e.detail for e in ex.log)
+    assert dev.calls_of("park")  # the run completed and parked
+
+
+def test_start_stack_code_259_is_recovered_with_stop_and_single_retry(project):
+    """Issue 11: ``start_stack`` fails once with code 259 — the executor stops
+    the stale stack and retries ``start_stack`` once; the entry proceeds."""
+    dev = FakeDevice()
+    dev.stack_errors = [rpc_error("iscope_start_stack", 259, "already running", req_id=661)]
+    ex = NightExecutor(dev, PlanQueue([coord_entry(1.0, 2.0)]), project, duration_per_target_s=0.05)
+    snap = ex.run(timeout=5)
+    assert snap.state == ExecutorState.DONE
+    assert snap.error is None
+    kinds = [c[0] for c in dev.calls]
+    assert kinds[:4] == ["goto", "start_stack", "stop_stack", "start_stack"]
+    assert any("still stacking" in e.detail for e in ex.log)  # logged in plain words
+    assert dev.calls_of("park")
+
+
+def test_start_stack_code_259_twice_errors_the_entry_with_plain_language(project):
+    """Issue 11: ``start_stack`` fails with code 259 twice (the stop did not
+    clear the state) — the entry errors (skip policy) with the plain-language
+    message, not just ``code=259``."""
+    dev = FakeDevice()
+    err = rpc_error("iscope_start_stack", 259, "already running", req_id=661)
+    dev.stack_errors = [err, err]
+    snaps: list[ExecutorSnapshot] = []
+    ex = NightExecutor(dev, PlanQueue([coord_entry(1.0, 2.0)]), project, duration_per_target_s=0.05)
+    ex.add_listener(snaps.append)
+    snap = ex.run(timeout=5)
+    assert snap.state == ExecutorState.DONE  # skip policy: entry skipped, night ends
+    assert len(dev.calls_of("start_stack")) == 2  # the original call + the single retry
+    assert len(dev.calls_of("stop_stack")) == 1  # the recovery stop
+    assert any(
+        "error on entry 0" in e.detail
+        and "scope is busy (code 259)" in e.detail
+        and "stop stacking on the scope first" in e.detail
+        for e in ex.log
+    )
+    assert any(s.error is not None and "scope is busy (code 259)" in s.error for s in snaps)
+    assert dev.calls_of("park")
+
+
+def test_start_stack_other_error_code_is_not_recovered(project):
+    """Issue 11: only code 259 is recoverable — any other code keeps the
+    existing error policy (no stop/retry, the entry errors as before)."""
+    dev = FakeDevice()
+    dev.stack_errors = [rpc_error("iscope_start_stack", 108, "wrong type")]
+    ex = NightExecutor(dev, PlanQueue([coord_entry(1.0, 2.0)]), project, duration_per_target_s=0.05)
+    snap = ex.run(timeout=5)
+    assert snap.state == ExecutorState.DONE  # skip policy
+    assert len(dev.calls_of("start_stack")) == 1  # no retry
+    assert not dev.calls_of("stop_stack")  # no recovery stop
+    assert any("code=108" in e.detail and "scope is busy" not in e.detail for e in ex.log)
+
+    dev2 = FakeDevice()
+    dev2.stack_errors = [rpc_error("iscope_start_stack", 108, "wrong type")]
+    ex2 = NightExecutor(
+        dev2, PlanQueue([coord_entry(1.0, 2.0)]), project, duration_per_target_s=0.05,
+        error_policy="abort",
+    )
+    snap2 = ex2.run(timeout=5)
+    assert snap2.state == ExecutorState.ABORTED  # abort policy unchanged
+    assert snap2.error is not None and "code=108" in snap2.error
+    assert "scope is busy" not in snap2.error  # no plain-language mapping for 108
+    assert len(dev2.calls_of("start_stack")) == 1
+    assert not dev2.calls_of("park")
+
+
+def test_park_code_203_surfaces_plain_language_in_the_log(project):
+    """Issue 11: ``scope_park`` fails with code 203 while the scope is still
+    stacking — the park failure is logged in plain language (the run itself
+    still ends DONE)."""
+    dev = FakeDevice()
+    dev.park_errors = [rpc_error("scope_park", 203, "busy", req_id=663)]
+    ex = NightExecutor(dev, PlanQueue([coord_entry(1.0, 2.0)]), project, duration_per_target_s=0.05)
+    snap = ex.run(timeout=5)
+    assert snap.state == ExecutorState.DONE  # a failed park does not abort the run
+    assert len(dev.calls_of("park")) == 1
+    assert any(
+        "park failed" in e.detail
+        and "scope is busy (code 203)" in e.detail
+        and "stop stacking on the scope first" in e.detail
+        for e in ex.log
+    )

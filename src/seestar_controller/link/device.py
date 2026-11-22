@@ -94,7 +94,7 @@ from .stacking import (
     START_STACK_METHOD,  # noqa: F401 - re-exported (tests import it from here)
     STOP_STACK_METHOD,  # noqa: F401 - re-exported (tests import it from here)
 )
-from .transport import COMMAND_PORT, EventHandler, LinkTransport
+from .transport import COMMAND_PORT, EventHandler, LinkTransport, RpcError
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,34 @@ MODE_IDLE = "idle"
 MODE_SLEWING = "slewing"
 MODE_STACKING = "stacking"
 MODE_PARKED = "parked"
+
+#: RPC code 203 — the Scope is busy (e.g. ``scope_park`` while a Stack runs).
+BUSY_CODE = 203
+
+#: Known RPC state-conflict codes mapped to plain-language messages (issue
+#: 11): 259 — a Stack is already running (``iscope_start_stack`` with
+#: ``restart`` while stacking), 203 — the Scope is busy (e.g. ``scope_park``
+#: while a Stack runs). These are surfaced wherever link errors reach the
+#: user, instead of a bare ``code=259`` / ``code=203``.
+RPC_CODE_MESSAGES: dict[int, str] = {
+    compat.ALREADY_RUNNING_CODE: (
+        "scope is busy (code 259): a stack is already running — "
+        "stop stacking on the scope first"
+    ),
+    BUSY_CODE: (
+        "scope is busy (code 203): a stack is already running — "
+        "stop stacking on the scope first"
+    ),
+}
+
+
+def plain_rpc_message(error: BaseException) -> str | None:
+    """The plain-language message for a known state-conflict
+    :class:`~seestar_controller.link.transport.RpcError` (codes 259 / 203 —
+    see :data:`RPC_CODE_MESSAGES`), or ``None`` for any other error."""
+    if isinstance(error, RpcError):
+        return RPC_CODE_MESSAGES.get(error.reply.code)
+    return None
 
 
 class GotoTimeoutError(TimeoutError):
