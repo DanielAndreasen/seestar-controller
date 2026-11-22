@@ -528,6 +528,9 @@ import time
 
 args = sys.argv[1:]
 out = args[args.index("--out") + 1]
+# solve-field 0.93 resolves --out relative to the input file's directory
+# (it joins dirname(input) + out even for absolute out), so mimic that
+out = os.path.join(os.path.dirname(os.path.abspath(args[-1])), out)
 if os.environ.get("FAKE_SOLVE_FAIL"):
     print("fake solve-field: no solution found", file=sys.stderr)
     sys.exit(3)

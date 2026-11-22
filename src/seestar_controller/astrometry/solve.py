@@ -302,7 +302,10 @@ def _solve_with_solve_field(
             data=np.asarray(data, dtype=np.float64), header=pyfits.Header(dict(header))
         )
         hdu.writeto(fits_path)
-        cmd = [binary, "--overwrite", "--out", str(prefix), str(fits_path)]
+        # solve-field resolves --out relative to the input file's directory even
+        # when given an absolute path (0.93 joins dirname(input) + out), so pass
+        # only the basename — the outputs land next to input.fits in tdir
+        cmd = [binary, "--overwrite", "--out", prefix.name, str(fits_path)]
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout_s, check=False
