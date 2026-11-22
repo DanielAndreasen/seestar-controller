@@ -114,6 +114,20 @@ Conventions (documented choices):
   without sky coordinates — are measured on the fixed pixel picks. The
   report counts WCS-reprojected vs fixed-pixel frames (``wcs_frames`` /
   ``pixel_frames`` / ``wcs_summary``).
+- **Batch solve of a session's unsolved subs (issue 10)**:
+  :meth:`~RunController.solve_session_unsolved` plate-solves every sub-frame
+  of a session that has NO stored ``frame_wcs`` row yet, via
+  :func:`seestar_controller.astrometry.session.solve_session_unsolved`
+  (one ``solve_project_frame`` per unsolved sub, a per-frame
+  :class:`~seestar_controller.astrometry.SolveError` recorded as skipped —
+  never kills the batch — ``on_progress(done, total, frame)`` after each
+  frame, frozen
+  :class:`~seestar_controller.astrometry.SessionSolveReport` returned), so a
+  re-Run can reproject via WCS on ALL frames; store reads/writes are
+  marshalled through :meth:`_call_store` exactly like :meth:`run_session`.
+  :meth:`~RunController.wcs_coverage` returns the session's solved/total subs
+  (:class:`~seestar_controller.astrometry.SessionWcsCoverage`) for the
+  "508 of 512 subs solved" display.
 - **Excluded frames (frame-quality ticket 03)** are skipped BEFORE any
   measuring (no FITS read, no store write) and recorded as
   :class:`ExcludedFrame`\\ s on the report; they still advance the progress
@@ -145,11 +159,17 @@ from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from seestar_controller.astrometry import session as astrometry_session
 from seestar_controller.frame_quality.session import flagged_frame_reasons
 from seestar_controller.store.errors import (
     MeasurementError as StoreMeasurementError,
 )
-from seestar_controller.store.errors import ProjectError, StarPickError, WcsStoreError
+from seestar_controller.store.errors import (
+    ProjectError,
+    SessionNotFoundError,
+    StarPickError,
+    WcsStoreError,
+)
 from seestar_controller.store.frames import KIND_SUB, Frame, list_frames
 from seestar_controller.store.measurements import (
     Measurement,
@@ -480,6 +500,8 @@ class RunController:
 
     Operations: :meth:`run_session` (the run), :meth:`sessions`,
     :meth:`lightcurve_points`, :meth:`set_excluded` (outlier flagging),
+    :meth:`solve_session_unsolved` / :meth:`wcs_coverage` (issue 10: the batch
+    plate-solve of a session's unsolved subs and its WCS coverage),
     :meth:`set_project`, listeners with frozen :class:`RunSnapshot`\\ s.
     """
 
@@ -496,10 +518,13 @@ class RunController:
         self._lock = threading.Lock()
         self._listeners: list[RunListener] = []
         self._running = False
+        self._solving = False  # issue 10: a batch solve in progress
         self._session_id: str | None = None
         self._progress: RunProgress | None = None
         self._report: RunReport | None = None
         self._error: str | None = None
+        self._solve_report: astrometry_session.SessionSolveReport | None = None
+        self._solve_error: str | None = None
         self._lightcurve: tuple[Measurement, ...] | None = None
         self._db_thread_id: int | None = None
         if picker_controller is not None:
@@ -533,6 +558,24 @@ class RunController:
         """True while a run is in progress."""
         with self._lock:
             return self._running
+
+    @property
+    def solving(self) -> bool:
+        """True while a batch solve (issue 10) is in progress."""
+        with self._lock:
+            return self._solving
+
+    @property
+    def solve_report(self) -> astrometry_session.SessionSolveReport | None:
+        """The last batch-solve report (issue 10; None before the first)."""
+        with self._lock:
+            return self._solve_report
+
+    @property
+    def solve_error(self) -> str | None:
+        """The last batch-solve error message (issue 10), else None."""
+        with self._lock:
+            return self._solve_error
 
     @property
     def session_id(self) -> str | None:
@@ -1167,3 +1210,111 @@ class RunController:
                 self._running = False
                 self._progress = None
             self._emit()
+
+    # -- batch solve of a session's unsolved subs (issue 10) --------------------------------
+
+    def solve_session_unsolved(
+        self,
+        session_id: str,
+        on_progress: astrometry_session.SolveProgressCallback | None = None,
+        *,
+        stride: int = 1,
+        solver: str = "auto",
+        **solve_kwargs: Any,
+    ) -> astrometry_session.SessionSolveReport:
+        """Batch plate-solve every sub-frame of ``session_id`` that has NO
+        stored ``frame_wcs`` row yet (issue 10), via
+        :func:`seestar_controller.astrometry.session.solve_session_unsolved`:
+        one :func:`~seestar_controller.astrometry.session.solve_project_frame`
+        per unsolved sub, a per-frame :class:`~seestar_controller.astrometry.SolveError`
+        recorded as skipped (never kills the batch), and the frozen
+        :class:`~seestar_controller.astrometry.session.SessionSolveReport`
+        returned (``solved`` / ``skipped``).
+
+        - ``session_id`` — must be an existing session of the project (else
+          :class:`RunError` naming the known sessions);
+        - ``on_progress`` — optional ``on_progress(done, total, frame)``
+          callback, called after each attempted frame on the CALLING thread
+          (a full batch yields the ``done`` sequence ``1..N``);
+        - ``stride`` — solve every Nth unsolved sub (default 1 = all);
+        - ``solver`` / ``**solve_kwargs`` — forwarded to the per-frame solve.
+
+        Like :meth:`run_session` this method is synchronous and GTK-free —
+        safe to call from a worker thread: every store read/write is
+        marshalled to the db-owning thread through :meth:`_call_store` (passed
+        as the pure layer's ``call_store``), while the slow plate-solves stay
+        on the calling worker thread, so the GTK main loop never blocks. One
+        run-or-solve at a time: a concurrent call raises :class:`RunError`.
+        The error is also recorded in :attr:`solve_error`.
+        """
+        if isinstance(session_id, bool) or not isinstance(session_id, str) or not session_id:
+            raise RunError(f"session_id must be a non-empty string, got {session_id!r}")
+        if on_progress is not None and not callable(on_progress):
+            raise RunError(f"on_progress must be callable or None, got {on_progress!r}")
+        project = self._require_project()
+        with self._lock:
+            if self._running or self._solving:
+                raise RunError(
+                    "a photometry run or solve batch is already in progress — "
+                    "wait for it to finish"
+                )
+            self._solving = True
+            self._solve_error = None
+        try:
+            known = {s.id for s in self._call_store(lambda: list_sessions(project))}
+            if session_id not in known:
+                raise RunError(
+                    f"project {project.slug!r} has no session {session_id!r} "
+                    f"(known sessions: {', '.join(sorted(known)) or 'none'})"
+                )
+            report = astrometry_session.solve_session_unsolved(
+                project,
+                session_id,
+                on_progress,
+                stride=stride,
+                solver=solver,
+                call_store=self._call_store,
+                **solve_kwargs,
+            )
+            with self._lock:
+                self._solve_report = report
+                self._solve_error = None
+            return report
+        except PhotometryError as exc:
+            with self._lock:
+                self._solve_error = str(exc)
+            raise
+        except Exception as exc:
+            with self._lock:
+                self._solve_error = f"{type(exc).__name__}: {exc}"
+            raise RunError(
+                f"the batch solve of session {session_id!r} of project "
+                f"{project.slug!r} failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            with self._lock:
+                self._solving = False
+
+    def wcs_coverage(self, session_id: str) -> astrometry_session.SessionWcsCoverage:
+        """The WCS coverage of one session's sub-frames (issue 10): how many
+        subs have a stored ``frame_wcs`` row, as a frozen
+        :class:`~seestar_controller.astrometry.session.SessionWcsCoverage`
+        (``solved`` / ``total``, ``summary`` = ``"508 of 512 subs solved"``) —
+        via :func:`seestar_controller.astrometry.session.session_wcs_coverage`
+        with the store reads marshalled through :meth:`_call_store`.
+
+        Raises :class:`RunError` when no project is set, the session is
+        unknown, or the store read fails.
+        """
+        if isinstance(session_id, bool) or not isinstance(session_id, str) or not session_id:
+            raise RunError(f"session_id must be a non-empty string, got {session_id!r}")
+        project = self._require_project()
+        try:
+            return astrometry_session.session_wcs_coverage(
+                project, session_id, call_store=self._call_store
+            )
+        except (SessionNotFoundError, ProjectError, WcsStoreError) as exc:
+            raise RunError(
+                f"cannot read the WCS coverage of session {session_id!r} of "
+                f"project {project.slug!r}: {exc}"
+            ) from exc

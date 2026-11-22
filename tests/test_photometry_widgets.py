@@ -829,6 +829,119 @@ def test_results_panel_shows_clean_error_when_run_fails(gtk, project):
     assert panel.status_label.has_css_class("error")
 
 
+# --- issue 10: batch solve of the session's unsolved subs (Solve unsolved subs button) -------
+
+
+def _install_mock_solver(monkeypatch, fail_indices: frozenset[int] = frozenset()):
+    """Mock the plate solver (``astrometry.session.solve_frame``) — no
+    solve-field subprocess, no Gaia network. Records ``(index, solver,
+    thread_id)`` per call; raises :class:`SolveError` for the sub whose
+    DATE-OBS index is in ``fail_indices`` (a per-frame failure)."""
+    from seestar_controller.astrometry import SolveError
+    from seestar_controller.astrometry import session as astrometry_session
+    from seestar_controller.astrometry.solve import SolveResult
+
+    calls: list[tuple[int, str, int]] = []
+
+    def fake_solve_frame(*, data, header, solver="auto", **kwargs):
+        obs = header["DATE-OBS"]  # "2026-11-20T22:MM:SS.000"
+        dt = datetime.fromisoformat(obs).replace(tzinfo=UTC)
+        index = int((dt - datetime(2026, 11, 20, 22, 0, 0, tzinfo=UTC)).total_seconds() // 10)
+        calls.append((index, solver, threading.get_ident()))
+        if index in fail_indices:
+            raise SolveError(f"mock: frame {index} has only 0 sources detected")
+        return SolveResult(
+            wcs=None,
+            cards=wcs_header(),
+            solver="gaia",
+            solved_at="2026-11-22T00:00:00.000+00:00",
+            center_ra_deg=83.0,
+            center_dec_deg=22.0,
+            n_stars=10,
+            rms_arcsec=0.4,
+            matches=(),
+            rows=(),
+        )
+
+    monkeypatch.setattr(astrometry_session, "solve_frame", fake_solve_frame)
+    return calls
+
+
+def test_results_panel_solve_button_runs_on_a_worker_thread(gtk, project, monkeypatch):
+    from seestar_controller.photometry.results_view import ResultsPanel
+    from seestar_controller.store import list_solved_frames
+
+    session = _store_subs(project, n=4)
+    calls = _install_mock_solver(monkeypatch)
+    # like the app: marshal the pure-layer callbacks onto the GLib main loop
+    rc = RunController(project=project, invoke_on_main=lambda cb: GLib.idle_add(cb))
+    panel = ResultsPanel(run_controller=rc)
+    assert panel.selected_session_id() == session
+    # the WCS coverage of the chosen session is shown next to the Run button
+    assert panel.wcs_label.get_label() == "WCS: 0 of 4 subs solved"
+
+    thread = panel.solve_unsolved_subs()  # same as clicking the button
+    assert thread is not None and thread.name == "photometry-solve"
+    assert not panel.solve_button.get_sensitive()  # disabled while solving
+    assert not panel.run_button.get_sensitive()
+    _drain_run(thread)  # pumps the main loop — never blocks it
+
+    # every unsolved sub got solved + persisted (on the db-owning thread)
+    assert len(list_solved_frames(project, session)) == 4
+    assert [c[0] for c in calls] == [0, 1, 2, 3]
+    assert "4 of 4 unsolved subs solved" in panel.progress_label.get_label()
+    assert "4 of 4 unsolved subs solved" in panel.status_label.get_label()
+    assert panel.wcs_label.get_label() == "WCS: 4 of 4 subs solved"
+    assert panel.progress_bar.get_fraction() == 1.0
+    assert panel.solve_button.get_sensitive() is True
+    assert panel.run_button.get_sensitive() is True
+
+    # a second batch is an empty batch — nothing unsolved left
+    thread2 = panel.solve_unsolved_subs()
+    _drain_run(thread2)
+    assert "no unsolved subs" in panel.progress_label.get_label()
+    assert panel.wcs_label.get_label() == "WCS: 4 of 4 subs solved"
+
+
+def test_results_panel_solve_tolerates_a_failing_sub(gtk, project, monkeypatch):
+    from seestar_controller.photometry.results_view import ResultsPanel
+    from seestar_controller.store import list_solved_frames
+
+    session = _store_subs(project, n=4)
+    _install_mock_solver(monkeypatch, fail_indices=frozenset({2}))
+    rc = RunController(project=project, invoke_on_main=lambda cb: GLib.idle_add(cb))
+    panel = ResultsPanel(run_controller=rc)
+
+    thread = panel.solve_unsolved_subs()
+    _drain_run(thread)
+
+    # the failing sub is skipped (not fatal), the other 3 are solved
+    assert len(list_solved_frames(project, session)) == 3
+    assert "3 of 4 unsolved subs solved (1 skipped)" in panel.status_label.get_label()
+    assert "3 of 4 unsolved subs solved (1 skipped)" in panel.progress_label.get_label()
+    assert panel.wcs_label.get_label() == "WCS: 3 of 4 subs solved"
+    assert panel.solve_button.get_sensitive() is True
+    assert not panel.status_label.has_css_class("error")
+
+
+def test_results_panel_solve_without_a_session_shows_a_clean_error(gtk, tmp_path):
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    p = create_project("empty night", root=tmp_path / "projects2")  # no sessions
+    try:
+        rc = RunController(project=p, invoke_on_main=lambda cb: GLib.idle_add(cb))
+        panel = ResultsPanel(run_controller=rc)
+        assert panel.selected_session_id() is None
+        assert panel.wcs_label.get_label() == ""
+        thread = panel.solve_unsolved_subs()
+        assert thread is None  # nothing started
+        assert "no session to solve" in panel.status_label.get_label()
+        assert panel.status_label.has_css_class("error")
+        assert panel.solve_button.get_sensitive() is True
+    finally:
+        p.close()
+
+
 def test_search_button_runs_lookup_on_worker_thread(picker, viewer_controller, suggest_controller):
     panel = picker.suggestions_panel
     viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)

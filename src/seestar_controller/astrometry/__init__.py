@@ -30,7 +30,12 @@ inside the functions that need them, and the local astrometry.net
 - :mod:`.session` — the project glue: :func:`~.session.solve_project_frame`
   (solve a stored frame, write the WCS into its FITS header, persist the WCS
   record in the project db — ``frame_wcs`` table, schema v7 — and the
-  cross-match rows) and :func:`~.session.solve_session_frame`;
+  cross-match rows) and :func:`~.session.solve_session_frame`; issue 10 adds
+  the batch solve :func:`~.session.solve_session_unsolved` (every sub of a
+  session without a ``frame_wcs`` row, per-frame :class:`~.errors.SolveError`
+  tolerated as skipped, frozen :class:`~.session.SessionSolveReport` +
+  ``on_progress(done, total, frame)``) and :func:`~.session.session_wcs_coverage`
+  (the session's solved/total subs, :class:`~.session.SessionWcsCoverage`);
 - :mod:`.drift` — the pointing/drift statistics (issue 02, a read-only
   consumer of the ``frame_wcs`` store): :func:`~.drift.pointing_error`
   (requested queue-entry target vs. the solved WCS centers, arcsec) and
@@ -106,7 +111,18 @@ from .plot import (
     MAX_RENDER_PX,
     render_drift_png,
 )
-from .session import solve_project_frame, solve_session_frame
+from .session import (
+    SessionSolveReport,
+    SessionWcsCoverage,
+    SkippedSolve,
+    SolvedFrame,
+    SolveProgressCallback,
+    StoreCall,
+    session_wcs_coverage,
+    solve_project_frame,
+    solve_session_frame,
+    solve_session_unsolved,
+)
 from .solve import (
     ARCSEC_PER_DEG,
     DEFAULT_MATCH_RADIUS_ARCSEC,
@@ -184,12 +200,18 @@ __all__ = [
     "ExportError",
     "GaiaQuery",
     "PointingError",
+    "SessionSolveReport",
+    "SessionWcsCoverage",
+    "SkippedSolve",
     "SolveController",
     "SolveError",
     "SolvePanel",
+    "SolveProgressCallback",
     "SolveResult",
     "SolveSnapshot",
+    "SolvedFrame",
     "StarMatch",
+    "StoreCall",
     "annotated_png_bytes",
     "annotated_stack_png",
     "cards_to_wcs",
@@ -208,10 +230,12 @@ __all__ = [
     "render_drift_png",
     "scale_bar_arcsec",
     "separation_arcsec",
+    "session_wcs_coverage",
     "solve_fits_file",
     "solve_frame",
     "solve_project_frame",
     "solve_session_frame",
+    "solve_session_unsolved",
     "wcs_to_cards",
     "write_wcs_to_fits",
 ]
