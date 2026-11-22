@@ -27,12 +27,13 @@ What lives here:
   :data:`GAIA_TAP_SYNC_URLS` (or a single pinned ``url=``);
 - :func:`query_gaia_cached` — the cached variant: the response is stored on
   disk under the app config dir (``<config>/cache/gaia/``) keyed by the
-  **rounded** field center + radius (+ g_limit + maxrec) with a TTL, reusing
+  **rounded** field center + radius (+ g_limit + maxrec + the cache format
+  version :data:`CACHE_FORMAT_VERSION`) with a TTL, reusing
   the catalog module's :class:`~seestar_controller.catalog.cache.QueryCache`
   (read-only reuse — this package never modifies catalog). A fresh cache
   entry is served with no HTTP at all; a fetch failure falls back to a stale
-  entry when one exists, and raises :class:`~.errors.GaiaUnavailableError`
-  when no cache exists.
+  current-format entry when one exists, and raises
+  :class:`~.errors.GaiaUnavailableError` when no usable cache entry exists.
 
 ENDPOINTS (verified live 2026-11-20, see docs/wiki/progress.md): CDS
 Strasbourg — including ``tapvizier.cds.unistra.fr`` — has been down since
@@ -50,7 +51,10 @@ precision we need — the same convention as :mod:`seestar_controller.catalog`.
 Cache-key rounding: the center and radius are rounded to
 :data:`KEY_ROUND_DIGITS` decimals of a degree (~0.4 arcsec) before both the
 ADQL and the cache key are built, so two stacks of the same field (whose
-centers differ by sub-arcsecond WCS jitter) share one cache entry.
+centers differ by sub-arcsecond WCS jitter) share one cache entry. The key
+also carries :data:`CACHE_FORMAT_VERSION`, so entries written by an older
+cache format are never served — they miss the lookup entirely and are
+refetched.
 """
 
 from __future__ import annotations
@@ -112,6 +116,15 @@ DEFAULT_TTL_S = 7 * 24 * 60 * 60.0
 
 #: Decimals of a degree the cache key rounds the center and radius to.
 KEY_ROUND_DIGITS = 4
+
+#: Version of the on-disk Gaia cache format — part of every cache key built by
+#: :func:`gaia_cache_key`. v2 requires every star row to carry all 12
+#: :data:`_STAR_FIELDS` (the error columns included); entries written under a
+#: v1 key (rows without ``parallax_error`` / ``pmra_error`` / ``pmdec_error``)
+#: hash to different cache files and are never served, fresh or stale — they
+#: miss the lookup and are refetched once, overwriting nothing (the v1 file
+#: is simply orphaned). Bump this whenever the cached row shape changes.
+CACHE_FORMAT_VERSION = 2
 
 #: Default cache location: ``<config dir>/cache/gaia/`` (the config dir is
 #: the same as the catalog cache's, re-declared via the catalog module).
@@ -282,13 +295,16 @@ def gaia_cache_key(
 
     The center and radius are **rounded** to ``digits`` decimals of a degree
     before the key is built, so nearby fields share one cache entry; the
-    g_limit and maxrec are part of the key because they change the result.
+    g_limit and maxrec are part of the key because they change the result,
+    and so is the cache format version :data:`CACHE_FORMAT_VERSION` — bumping
+    it invalidates every entry written by an older format.
     """
     ra, dec, radius = _validate_center_radius(center_ra, center_dec, radius_deg)
     _validate_g_limit(g_limit)
     _validate_maxrec(maxrec)
     return json.dumps(
         {
+            "v": CACHE_FORMAT_VERSION,
             "ra": round(ra, digits),
             "dec": round(dec, digits),
             "radius_deg": round(radius, digits),
@@ -577,7 +593,10 @@ def parse_gaia_response(payload: Any) -> list[GaiaStar]:
 
 # --- serialization for the cache (flat rows, JSON-safe) ---------------------------------
 
-#: The fields of a serialized :class:`GaiaStar` cache row.
+#: The fields of a serialized :class:`GaiaStar` cache row. Every one of them
+#: is required in a cached row (:func:`_is_gaia_rows` checks the exact set):
+#: rows written before the error columns were selected (cache format v1, 9
+#: fields) are rejected on read and refetched — never served.
 _STAR_FIELDS = frozenset(
     {
         "source_id",
@@ -594,12 +613,6 @@ _STAR_FIELDS = frozenset(
         "pmdec_error",
     }
 )
-
-#: The cache-row fields every entry has carried since the cache format was
-#: introduced — cache entries written before the error columns were selected
-#: (``parallax_error`` / ``pmra_error`` / ``pmdec_error``) are still valid,
-#: the error fields just read back as ``None``.
-_REQUIRED_STAR_FIELDS = _STAR_FIELDS - {"parallax_error", "pmra_error", "pmdec_error"}
 
 
 def _star_to_row(star: GaiaStar) -> dict[str, Any]:
@@ -623,8 +636,8 @@ def _star_to_row(star: GaiaStar) -> dict[str, Any]:
 def _row_to_star(row: Mapping[str, Any]) -> GaiaStar:
     """Rebuild a :class:`GaiaStar` from a cache row (inverse of :func:`_star_to_row`).
 
-    The error fields are read with ``.get``: a cache row written before the
-    error columns were selected has no such keys and yields ``None``.
+    All 12 fields are read directly: :func:`_is_gaia_rows` guarantees a
+    validated row carries exactly the :data:`_STAR_FIELDS` keys.
     """
     return GaiaStar(
         source_id=int(row["source_id"]),
@@ -634,20 +647,24 @@ def _row_to_star(row: Mapping[str, Any]) -> GaiaStar:
         bp=row["bp"],
         rp=row["rp"],
         parallax=row["parallax"],
-        parallax_error=row.get("parallax_error"),
+        parallax_error=row["parallax_error"],
         pmra=row["pmra"],
-        pmra_error=row.get("pmra_error"),
+        pmra_error=row["pmra_error"],
         pmdec=row["pmdec"],
-        pmdec_error=row.get("pmdec_error"),
+        pmdec_error=row["pmdec_error"],
     )
 
 
 def _is_gaia_rows(payload: Any) -> bool:
-    """Validate a cached Gaia payload: a list of star-row dicts whose keys are
-    the required star fields plus at most the optional error fields."""
+    """Validate a cached Gaia payload: a list of star-row dicts with exactly
+    the :data:`_STAR_FIELDS` keys.
+
+    The exact-set check rejects rows in an older cache format (v1 rows lack
+    the error columns) and rows with unknown keys — such entries are
+    refetched, never served fresh or stale.
+    """
     return isinstance(payload, list) and all(
-        isinstance(row, dict) and _REQUIRED_STAR_FIELDS <= set(row) <= _STAR_FIELDS
-        for row in payload
+        isinstance(row, dict) and set(row) == _STAR_FIELDS for row in payload
     )
 
 
@@ -758,10 +775,10 @@ def query_gaia_cached(
     :class:`~seestar_controller.catalog.cache.QueryCache`; default: one in
     ``<config>/cache/gaia/`` with :data:`DEFAULT_TTL_S` TTL — the TTL is
     configured on the cache, pass your own ``QueryCache(ttl=...)`` to
-    change it). The cache key is the **rounded** center + radius (see
-    :func:`gaia_cache_key`), so repeat lookups of the same field are served
-    from disk with no HTTP at all and work offline — the cache always wins
-    before any endpoint is contacted.
+    change it). The cache key is the **rounded** center + radius + the cache
+    format version (see :func:`gaia_cache_key`), so repeat lookups of the
+    same field are served from disk with no HTTP at all and work offline —
+    the cache always wins before any endpoint is contacted.
 
     The fetch walks the same endpoint chain as :func:`query_gaia`
     (:data:`GAIA_TAP_SYNC_URLS`, or the single pinned ``url=``): an
@@ -770,10 +787,16 @@ def query_gaia_cached(
 
     Only validated results are cached (the TAP response is parsed before it
     is stored, and a cached payload is shape-checked on read), so a malformed
-    response or a corrupted cache file is refetched, never served. An empty
-    result is cached too. If the fetch fails, a valid — even expired —
-    cached entry is served as a stale fallback (Gaia DR3 is static, so stale
-    beats nothing); with no cache entry at all the failure becomes a clear
+    response or a corrupted cache file is refetched, never served. The
+    shape check requires the full current row format — all 12
+    :data:`_STAR_FIELDS` — and the key carries
+    :data:`CACHE_FORMAT_VERSION`, so entries written by an older cache
+    format (v1 rows without the error columns, stored under a v1 key) are
+    never served, fresh or stale: they miss the lookup and are refetched. An
+    empty result is cached too. If the fetch fails, a valid — even expired —
+    cached entry in the current format is served as a stale fallback (Gaia
+    DR3 is static, so stale beats nothing); with no usable cache entry at
+    all the failure becomes a clear
     :class:`~.errors.GaiaUnavailableError` (network/timeout) or passes
     through as :class:`~.errors.GaiaResponseError` (malformed response) —
     never a raw traceback.
