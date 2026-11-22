@@ -1,0 +1,193 @@
+[
+  {
+    "step": "open_project",
+    "t": 1795358447.586,
+    "path": "/home/daniel/SeestarProjects/ngc7789",
+    "name": "NGC7789",
+    "slug": "ngc7789"
+  },
+  {
+    "step": "controllers wired",
+    "t": 1795358447.587,
+    "viewer_project": "NGC7789",
+    "crossmatch_project": "NGC7789",
+    "hr_project": "NGC7789"
+  },
+  {
+    "step": "open_stack",
+    "t": 1795358447.795,
+    "frame_id": 3,
+    "label": "2026-11-20T21:33:38.685+00:00 \u2014 M 31",
+    "shape": [
+      1920,
+      1080
+    ],
+    "kind": "stack"
+  },
+  {
+    "step": "load_frame_wcs",
+    "t": 1795358447.795,
+    "frame_id": 3,
+    "solver": "solve-field",
+    "n_stars": 0,
+    "center": [
+      0.9651997535481643,
+      55.345416063739485
+    ]
+  },
+  {
+    "step": "solve.refresh_solved",
+    "t": 1795358447.796,
+    "status": "solved (solve-field, 0 stars)",
+    "error": null
+  },
+  {
+    "step": "solve_open_stack",
+    "t": 1795358452.239,
+    "status": "solved: 0 stars (solve-field)",
+    "error": null,
+    "solver": "solve-field",
+    "n_stars": 0,
+    "rms_arcsec": null,
+    "secs": 4.4
+  },
+  {
+    "step": "crossmatch before",
+    "t": 1795358452.239,
+    "crossmatched": []
+  },
+  {
+    "step": "run_crossmatch (attempt 1, default cache)",
+    "t": 1795358489.541,
+    "status": null,
+    "error": "GaiaUnavailableError: Gaia DR3 cone search around (ra=0.9653, dec=55.3454) radius=0.7765 deg failed and no cached result is available: could not reach VizieR Gaia TAP at https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync: <urlopen error timed out>. Retry when the network is back \u2014 previously queried fields are served from the offline cache at /home/daniel/.config/seestar-controller/cache/gaia",
+    "stack_frame_id": 3,
+    "n_rows": 0,
+    "radius_arcsec": 1.5,
+    "g_limit": 20.0,
+    "secs": 37.3
+  },
+  {
+    "step": "offline cache seeding: attempt",
+    "t": 1795358489.541,
+    "note": "repo offline path = gaia disk cache; seeding it from the ESA Gaia archive mirror"
+  },
+  {
+    "step": "seed query",
+    "t": 1795358489.563,
+    "center": [
+      0.9652500365386623,
+      55.345379719539864
+    ],
+    "radius_deg": 0.7765007685440583,
+    "key": "{\"dec\": 55.3454, \"g_limit\": 20.0, \"maxrec\": 100000, \"ra\": 0.9653, \"radius_deg\": 0.7765}",
+    "adql_esa": "SELECT \"ra\", \"dec\", \"source_id\", \"phot_g_mean_mag\", \"phot_bp_mean_mag\", \"phot_rp_mean_mag\", \"parallax\", \"pmra\", \"pmdec\" FROM gaiadr3.gaia_source WHERE CONTAINS(POINT('ICRS', \"ra\", \"dec\"), CIRCLE('ICRS', 0.9653, 55.3454, 0.7765)) = 1 AND \"phot_g_mean_mag\" < 20.0 ORDER BY \"phot_g_mean_mag\""
+  },
+  {
+    "step": "cache seeded",
+    "t": 1795358498.849,
+    "n_stars": 72776,
+    "cache_file": "/home/daniel/.config/seestar-controller/cache/gaia/73ffda0a36659992f78f681bda676545ee0da79d69faff69a6c412dfdd284f31.json",
+    "secs": 9.3
+  },
+  {
+    "step": "run_crossmatch (attempt 2, seeded cache)",
+    "t": 1795358499.365,
+    "status": "47/104 matched \u00b7 r=1.5\u2033 \u00b7 G<20",
+    "error": null,
+    "stack_frame_id": 3,
+    "n_rows": 104,
+    "matched": 47,
+    "secs": 0.5
+  },
+  {
+    "step": "crossmatch after",
+    "t": 1795358499.366,
+    "crossmatched": [
+      [
+        3,
+        47,
+        104
+      ]
+    ]
+  },
+  {
+    "step": "hr.refresh (1)",
+    "t": 1795358499.366,
+    "stacks": [
+      3
+    ],
+    "frame_id": null,
+    "status": null,
+    "error": null
+  },
+  {
+    "step": "hr.select_stack",
+    "t": 1795358499.422,
+    "frame_id": 3,
+    "stack_label": "2026-11-20T21:33:38.685+00:00 \u2014 M 31",
+    "status": "47/104 matched \u00b7 46 CMD / 0 H-R points \u00b7 overlay 0 pts",
+    "error": null
+  },
+  {
+    "step": "hr.refresh (2)",
+    "t": 1795358499.466,
+    "frame_id": 3,
+    "stack_label": "2026-11-20T21:33:38.685+00:00 \u2014 M 31",
+    "n_table": 104,
+    "n_cmd": 46,
+    "n_hr": 0,
+    "n_overlay": 0,
+    "params": null,
+    "image_size": [
+      1080,
+      1920
+    ],
+    "status": "47/104 matched \u00b7 46 CMD / 0 H-R points \u00b7 overlay 0 pts",
+    "error": null
+  },
+  {
+    "step": "export png",
+    "t": 1795358499.532,
+    "kind": "cmd",
+    "n_points": 46,
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/cmd.png"
+  },
+  {
+    "step": "export png (EMPTY page \u2014 GUI export_png would raise HrError)",
+    "t": 1795358499.573,
+    "kind": "hr",
+    "n_points": 0,
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/hr.png"
+  },
+  {
+    "step": "export png",
+    "t": 1795358499.605,
+    "kind": "stack-marked",
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/stack-marked.png"
+  },
+  {
+    "step": "export csv",
+    "t": 1795358499.612,
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-table.csv",
+    "n_rows": 104
+  },
+  {
+    "step": "export png",
+    "t": 1795358499.74,
+    "kind": "crossmatch-overlay",
+    "path": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-overlay.png"
+  },
+  {
+    "step": "done",
+    "t": 1795358499.74,
+    "exports": {
+      "cmd.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/cmd.png",
+      "hr.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/hr.png",
+      "stack-marked.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/stack-marked.png",
+      "crossmatch-table.csv": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-table.csv",
+      "crossmatch-overlay.png": "/home/daniel/SeestarProjects/ngc7789/reports/hr-ngc7789/crossmatch-overlay.png"
+    },
+    "attempt1_error": "GaiaUnavailableError: Gaia DR3 cone search around (ra=0.9653, dec=55.3454) radius=0.7765 deg failed and no cached result is available: could not reach VizieR Gaia TAP at https://tapvizier.cds.unistra.fr/TAPVizieR/TAP/sync: <urlopen error timed out>. Retry when the network is back \u2014 previously queried fields are served from the offline cache at /home/daniel/.config/seestar-controller/cache/gaia"
+  }
+]
