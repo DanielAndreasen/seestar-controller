@@ -31,7 +31,9 @@ settings (a settings change updates the radius live) — and the
 :class:`~seestar_controller.photometry.suggestions_panel.SuggestionsPanel`
 behavior with a MOCKED catalog lookup (no network): the panel lists the
 suggestions after a search, an Add button adds the star as a comp pick at
-its WCS pixel, the Search button runs the lookup on a worker thread, and a
+its WCS pixel, the Search button runs the lookup on a worker thread, the
+sort dropdown (issue 07) re-sorts the rows nearest-first / brightest-first /
+closest-in-magnitude-to-the-target client-side (no new lookup), and a
 catalog failure (``CatalogUnavailableError``) shows as a clean error status.
 
 Ticket 04 (run + results view): the wiring — ``build_view`` /
@@ -517,6 +519,80 @@ def test_suggestions_panel_shows_clean_error_on_catalog_failure(
     assert panel.suggestion_rows() == []
     status = panel.status_label
     assert "offline" in status.get_label()
+
+
+def test_suggestions_panel_sort_dropdown_resorts_the_rows(
+    picker, viewer_controller, suggest_controller
+):
+    """Issue 07: the sort dropdown next to Search re-sorts the comp list —
+    nearest-first (default), brightest-first, closest mag to the target pick —
+    client-side (no new catalog lookup)."""
+    from seestar_controller.photometry import (
+        SORT_CLOSEST_MAG,
+        SORT_DISTANCE,
+        SORT_MAGNITUDE,
+        SORT_MODES,
+    )
+    from seestar_controller.photometry.suggestions_panel import SORT_LABELS
+
+    panel = picker.suggestions_panel
+    # the dropdown offers the three sort modes and mirrors the controller's
+    # default (nearest-first)
+    model = panel.sort_dropdown.get_model()
+    assert [model.get_item(i).get_string() for i in range(model.get_n_items())] == list(SORT_LABELS)
+    assert len(SORT_LABELS) == len(SORT_MODES) == 3
+    assert SORT_MODES[panel.sort_dropdown.get_selected()] == suggest_controller.sort_mode == SORT_DISTANCE
+
+    viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
+    pump_main()
+    calls: list = []
+
+    def counting_lookup(coord, radius_deg):
+        calls.append((coord, radius_deg))
+        return [WIDGET_STAR_A, WIDGET_STAR_B]
+
+    suggest_controller._lookup = counting_lookup
+    picker.controller.pick_at(40, 30, "target", label="Target", snap=False)
+    panel.run_search()  # the synchronous search the worker thread runs
+    _join_search(panel)
+    pump_main()
+
+    def row_names():
+        return [
+            rows.get_child().get_first_child().get_label().split(" — ")[0]
+            for rows in panel.suggestion_rows()
+        ]
+
+    # default: nearest-first — B (~0.0046 deg) before A (~0.013 deg)
+    assert row_names() == ["APASS B", "APASS A"]
+    n_calls = len(calls)
+
+    # brightest first: A (V 11.2) before B (R 13.4) — a client-side re-sort,
+    # the catalog is NOT queried again
+    panel.sort_dropdown.set_selected(SORT_MODES.index(SORT_MAGNITUDE))
+    pump_main()
+    assert suggest_controller.sort_mode == SORT_MAGNITUDE
+    assert row_names() == ["APASS A", "APASS B"]
+    assert len(calls) == n_calls
+
+    # closest in magnitude to the target pick (target mag 11.0): A |0.2| first
+    suggest_controller.target_magnitude = 11.0
+    panel.sort_dropdown.set_selected(SORT_MODES.index(SORT_CLOSEST_MAG))
+    pump_main()
+    assert suggest_controller.sort_mode == SORT_CLOSEST_MAG
+    assert row_names() == ["APASS A", "APASS B"]
+    assert len(calls) == n_calls
+
+    # and back to nearest-first
+    panel.sort_dropdown.set_selected(SORT_MODES.index(SORT_DISTANCE))
+    pump_main()
+    assert suggest_controller.sort_mode == SORT_DISTANCE
+    assert row_names() == ["APASS B", "APASS A"]
+    assert len(calls) == n_calls
+    # the rows still carry their (re-sorted) indices + Add buttons
+    rows = panel.suggestion_rows()
+    assert [r.suggestion_index for r in rows] == [0, 1]
+    assert all(hasattr(r, "add_button") for r in rows)
 
 
 # --- ticket 04: run + results view ---------------------------------------------------------------

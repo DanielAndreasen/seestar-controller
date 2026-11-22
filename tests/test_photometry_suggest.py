@@ -14,7 +14,9 @@ round-trip with a catalog-added comp runs on a tmp project via
 tests/test_photometry_picking.py.
 
 Covered: radius validation + re-filtering (stars outside the configured
-radius are excluded, ``set_radius`` re-searches), nearest-first sorting,
+radius are excluded, ``set_radius`` re-searches), sorting — nearest-first by
+default plus the issue-07 sort modes (by magnitude, closest in magnitude to
+the target pick; client-side re-sort on change, no re-lookup),
 malformed catalog entries skipped, catalog failures (e.g.
 :class:`~seestar_controller.catalog.facade.CatalogUnavailableError`) surfaced
 as a clean snapshot ``error`` (never a traceback) with recovery, adding a
@@ -48,6 +50,10 @@ from seestar_controller.catalog.facade import CatalogUnavailableError
 from seestar_controller.catalog.standards import StandardStar
 from seestar_controller.photometry import (
     NO_WCS_HINT,
+    SORT_CLOSEST_MAG,
+    SORT_DISTANCE,
+    SORT_MAGNITUDE,
+    SORT_MODES,
     PhotometryError,
     PickController,
     PickingError,
@@ -226,6 +232,7 @@ STAR_A = star("APASS A", 83.01, 22.00, mag=11.2, band="V")  # 0.02 deg away, on-
 STAR_B = star("APASS B", 83.005, 21.98, mag=13.4, band="R")  # ~0.0046 deg, on-frame
 STAR_C = star("APASS C", 83.01, 24.0, mag=9.9, band="V")  # ~2 deg away
 STAR_D = star("APASS D", 83.01, 23.48, mag=None, band="B")  # ~1.5 deg away (edge)
+STAR_E = star("APASS E", 83.008, 22.005, mag=12.3, band="V")  # ~0.025 deg away, on-frame
 
 
 # --- error hierarchy + radius validation ----------------------------------------------------
@@ -407,6 +414,156 @@ def test_set_radius_researches_and_respects_new_radius(picker, target_coord):
     n = len(calls)
     ctrl.set_radius(2.5)
     assert len(calls) == n
+
+
+# --- issue 07: sort modes — distance (default) / magnitude / closest-to-target-mag --------------
+
+
+def test_sort_mode_default_is_distance_and_both_are_validated():
+    assert SORT_MODES == (SORT_DISTANCE, SORT_MAGNITUDE, SORT_CLOSEST_MAG) == (
+        "distance",
+        "magnitude",
+        "closest_mag",
+    )
+    ctrl = SuggestionController()
+    assert ctrl.sort_mode == SORT_DISTANCE  # default = the historical behavior
+    assert ctrl.snapshot.sort_mode == SORT_DISTANCE  # snapshot carries it too
+    for mode in SORT_MODES:
+        assert SuggestionController(sort_mode=mode).sort_mode == mode
+        ctrl.sort_mode = mode
+        assert ctrl.sort_mode == mode and ctrl.snapshot.sort_mode == mode
+    # bad modes are rejected by the constructor AND the setter, state unchanged
+    for bad in ("nearest", "", "DISTANCE", None, 0, True, ["distance"]):
+        with pytest.raises(SuggestionError, match="sort_mode"):
+            SuggestionController(sort_mode=bad)  # ty: ignore[invalid-argument-type]
+        with pytest.raises(SuggestionError, match="sort_mode"):
+            ctrl.sort_mode = bad  # ty: ignore[invalid-assignment]
+    assert ctrl.sort_mode == SORT_CLOSEST_MAG
+
+
+def test_target_magnitude_validation():
+    ctrl = SuggestionController()
+    assert ctrl.target_magnitude is None  # default: unknown
+    for bad in (float("nan"), float("inf"), -float("inf"), "12", True, [11.0]):
+        with pytest.raises(SuggestionError, match="target_magnitude"):
+            SuggestionController(target_magnitude=bad)  # ty: ignore[invalid-argument-type]
+        with pytest.raises(SuggestionError, match="target_magnitude"):
+            ctrl.target_magnitude = bad  # ty: ignore[invalid-assignment]
+    assert ctrl.target_magnitude is None  # unchanged
+    ctrl.target_magnitude = 12.3
+    assert ctrl.target_magnitude == 12.3
+    ctrl.target_magnitude = 0  # mag 0 is a valid number
+    assert ctrl.target_magnitude == 0.0
+    ctrl.target_magnitude = None
+    assert ctrl.target_magnitude is None
+
+
+def test_snapshot_sort_mode_field_is_backwards_compatible():
+    # positional construction without sort_mode keeps working (default distance)
+    snap = SuggestionSnapshot(target=None, radius_deg=1.5, suggestions=(), error=None)
+    assert snap.sort_mode == SORT_DISTANCE
+    assert SuggestionSnapshot(None, 1.5, (), None, SORT_MAGNITUDE).sort_mode == SORT_MAGNITUDE
+
+
+def test_refresh_sort_by_magnitude_is_brightest_first_unknown_last(picker):
+    ctrl = SuggestionController(
+        picker,
+        lookup=make_lookup([STAR_B, STAR_E, STAR_A, STAR_C, STAR_D]),
+        radius_deg=2.5,
+        sort_mode=SORT_MAGNITUDE,
+    )
+    snap = ctrl.refresh()
+    # brightest first: C 9.9, A 11.2, E 12.3, B 13.4; D (mag None) sorts last
+    assert [s.name for s in snap.suggestions] == [
+        "APASS C",
+        "APASS A",
+        "APASS E",
+        "APASS B",
+        "APASS D",
+    ]
+    assert snap.sort_mode == SORT_MAGNITUDE
+
+
+def test_sort_by_magnitude_ties_break_by_name(picker):
+    zed = star("ZED 1", 83.01, 22.00, mag=12.0)
+    alpha = star("ALPHA 2", 83.01, 22.01, mag=12.0)
+    ctrl = SuggestionController(
+        picker, lookup=make_lookup([zed, alpha]), radius_deg=1.5, sort_mode=SORT_MAGNITUDE
+    )
+    snap = ctrl.refresh()
+    assert [s.name for s in snap.suggestions] == ["ALPHA 2", "ZED 1"]  # name tie-break
+
+
+def test_refresh_sort_closest_mag_to_target_magnitude(picker):
+    ctrl = SuggestionController(
+        picker,
+        lookup=make_lookup([STAR_A, STAR_B, STAR_C, STAR_E]),
+        radius_deg=2.5,
+        sort_mode=SORT_CLOSEST_MAG,
+        target_magnitude=11.0,
+    )
+    snap = ctrl.refresh()
+    # |mag - 11.0|: A 0.2, C 1.1, E 1.3, B 2.4
+    assert [s.name for s in snap.suggestions] == ["APASS A", "APASS C", "APASS E", "APASS B"]
+
+
+def test_sort_closest_mag_unknown_magnitude_sorts_last(picker):
+    ctrl = SuggestionController(
+        picker,
+        lookup=make_lookup([STAR_D, STAR_B]),
+        radius_deg=2.5,
+        sort_mode=SORT_CLOSEST_MAG,
+        target_magnitude=13.0,
+    )
+    snap = ctrl.refresh()
+    # B |13.4-13| = 0.4 first; D has no magnitude -> always last
+    assert [s.name for s in snap.suggestions] == ["APASS B", "APASS D"]
+
+
+def test_sort_closest_mag_without_target_magnitude_falls_back_to_distance(picker):
+    ctrl = SuggestionController(
+        picker,
+        lookup=make_lookup([STAR_A, STAR_B, STAR_C, STAR_E]),
+        radius_deg=2.5,
+        sort_mode=SORT_CLOSEST_MAG,  # target_magnitude=None (the default)
+    )
+    snap = ctrl.refresh()
+    # graceful fallback: nearest-first (B 0.0046, A 0.02, E 0.025, C ~2 deg)
+    assert [s.name for s in snap.suggestions] == ["APASS B", "APASS A", "APASS E", "APASS C"]
+
+
+def test_changing_sort_mode_resorts_client_side_without_new_lookup_and_notifies(picker):
+    calls: list = []
+    seen: list[SuggestionSnapshot] = []
+    ctrl = SuggestionController(
+        picker, lookup=make_lookup([STAR_A, STAR_B, STAR_C], calls), radius_deg=2.5
+    )
+    ctrl.add_listener(seen.append)
+    ctrl.refresh()
+    assert [s.name for s in ctrl.suggestions] == ["APASS B", "APASS A", "APASS C"]  # distance
+    n_calls, n_seen = len(calls), len(seen)
+    # switching to magnitude re-sorts the SAME suggestions — no new catalog call
+    ctrl.sort_mode = SORT_MAGNITUDE
+    assert len(calls) == n_calls and len(seen) == n_seen + 1
+    assert seen[-1].sort_mode == SORT_MAGNITUDE
+    assert [s.name for s in ctrl.suggestions] == ["APASS C", "APASS A", "APASS B"]  # 9.9/11.2/13.4
+    # setting the same mode again is a no-op (no notify)
+    ctrl.sort_mode = SORT_MAGNITUDE
+    assert len(seen) == n_seen + 1
+    # setting a target magnitude re-sorts + notifies (order unchanged here)
+    ctrl.target_magnitude = 13.0
+    assert len(seen) == n_seen + 2 and ctrl.target_magnitude == 13.0
+    # closest-mag mode: B |13.4-13|=0.4, A |11.2-13|=1.8, C |9.9-13|=3.1
+    ctrl.sort_mode = SORT_CLOSEST_MAG
+    assert [s.name for s in ctrl.suggestions] == ["APASS B", "APASS A", "APASS C"]
+    # changing the target magnitude re-sorts in closest-mag mode (still no lookup)
+    ctrl.target_magnitude = 9.9
+    assert len(calls) == n_calls
+    assert [s.name for s in ctrl.suggestions] == ["APASS C", "APASS A", "APASS B"]  # 0/1.3/3.5
+    # a fresh search also honors the active sort mode
+    ctrl.refresh()
+    assert [s.name for s in ctrl.suggestions] == ["APASS C", "APASS A", "APASS B"]
+    assert ctrl.snapshot.sort_mode == SORT_CLOSEST_MAG
 
 
 # --- catalog failures -> clean error state ------------------------------------------------------
