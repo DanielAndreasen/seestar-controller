@@ -72,6 +72,7 @@ from seestar_controller.enhance import (
 from seestar_controller.mosaic import mosaic_path
 from seestar_controller.store import (
     KIND_STACK,
+    KIND_SUB,
     create_project,
     start_session,
     store_frame,
@@ -153,6 +154,37 @@ def viewer_controller(project):
 
 
 @pytest.fixture()
+def mixed_project(tmp_path):
+    """Issue 05 fixture: a project with TWO subs interleaved with TWO stacks
+    (jd order: sub1, stack1, sub2, stack2) — the subs would bury the stacks
+    in an unfiltered list."""
+    p = create_project("M 42 mixed", root=tmp_path / "projects")
+    session = start_session(p, clock=frozen(T0))
+    sub1 = store_frame(
+        p, session, KIND_SUB,
+        fits_bytes(synthetic_image(32, seed=21), date_obs=DATE1, obj="M 42"),
+        meta={"target": "M 42"},
+    )
+    stack1 = store_frame(
+        p, session, KIND_STACK,
+        fits_bytes(synthetic_image(64, seed=22), date_obs=DATE2, obj="M 42"),
+        meta={"target": "M 42"},
+    )
+    sub2 = store_frame(
+        p, session, KIND_SUB,
+        fits_bytes(synthetic_image(32, seed=23), date_obs="2026-11-20T22:00:20.000", obj="M 42"),
+        meta={"target": "M 42"},
+    )
+    stack2 = store_frame(
+        p, session, KIND_STACK,
+        fits_bytes(synthetic_image(64, seed=24), date_obs="2026-11-20T22:00:30.000", obj="M 31"),
+        meta={"target": "M 31"},
+    )
+    yield p, [sub1, stack1, sub2, stack2]
+    p.close()
+
+
+@pytest.fixture()
 def viewer(gtk, viewer_controller):
     from seestar_controller.enhance.viewer import ImageViewer
 
@@ -184,7 +216,17 @@ def test_viewer_lists_stacks(viewer, viewer_controller):
     assert viewer.row_count() == 2
     assert viewer.row_label(0) == viewer_controller.stacks[0].label()
     assert viewer.row_label(1) == viewer_controller.stacks[1].label()
-    assert "M 42" in viewer.row_label(0)
+    # issue 05: newest-first — the DATE2 stack (M 31) is on top
+    assert "M 31" in viewer.row_label(0)
+    assert "M 42" in viewer.row_label(1)
+    assert viewer_controller.stacks[0].utc.startswith("2026-11-20T22:00:10")
+    assert viewer_controller.stacks[1].utc.startswith("2026-11-20T22:00:00")
+    # the row subtitle starts with the kind label (bolded via markup)
+    assert viewer.row_subtitle(0).startswith("stack")
+    assert viewer.row_subtitle(1).startswith("stack")
+    # default: stacks only, show-all toggle off
+    assert not viewer.show_all_button.get_active()
+    assert not viewer_controller.show_all
     # nothing open yet: placeholder visible, no paintable
     assert viewer.picture.get_paintable() is None
     assert viewer.placeholder.get_visible()
@@ -196,7 +238,7 @@ def test_viewer_open_stack_shows_texture(viewer, viewer_controller):
     assert image.shape == (64, 64)
     assert viewer.picture.get_paintable() is not None
     assert not viewer.placeholder.get_visible()
-    assert "M 42" in viewer.info_label.get_label()
+    assert "M 31" in viewer.info_label.get_label()  # stacks[0] is the newest (DATE2)
     # the current stack's row is selected
     selected = viewer.list_box.get_selected_row()
     assert selected is not None and selected.frame_id == viewer_controller.stacks[0].frame_id
@@ -208,7 +250,7 @@ def test_viewer_row_selection_opens_stack(gtk, viewer, viewer_controller):
     assert viewer_controller.current_stack is not None
     assert viewer_controller.current_stack.frame_id == viewer_controller.stacks[1].frame_id
     assert viewer.picture.get_paintable() is not None
-    assert "M 31" in viewer.info_label.get_label()
+    assert "M 42" in viewer.info_label.get_label()  # row 1 = the older DATE1 stack
 
 
 def test_viewer_refresh_button_relists(gtk, viewer, viewer_controller, project):
@@ -235,6 +277,91 @@ def test_viewer_no_project_placeholder(gtk):
     assert viewer.picture.get_paintable() is None
     assert viewer.placeholder.get_visible()
     assert "no project" in viewer.placeholder.get_label()
+
+
+# --- image-enhance issue 05: default list is stacks only (newest first), "Show all" toggle lists subs ---
+
+
+def test_viewer_row_subtitle_markup_bolds_the_kind(viewer, viewer_controller):
+    """Reviewer follow-up: row_subtitle() reads get_text(), which would pass
+    even without the markup — assert the rendered subtitle label's Pango
+    markup really carries the bold kind, and that subtitle_markup() escapes
+    markup-special characters in the rest of the subtitle."""
+    from seestar_controller.enhance.viewer import subtitle_markup
+
+    stack = viewer_controller.stacks[0]  # newest stack is row 0
+    assert stack.kind == "stack"
+    # the shared helper: kind bolded at the front
+    assert subtitle_markup(stack).startswith("<b>stack</b>")
+    # the rendered row label exposes the same markup via get_label()
+    # (GTK4 has no get_markup(); get_label() returns the set markup string)
+    row = viewer.list_box.get_row_at_index(0)
+    label = row.get_child().get_last_child()
+    assert "<b>stack</b>" in label.get_label()
+    # ...while the plain-text helpers still see the unescaped subtitle
+    assert label.get_text() == viewer.row_subtitle(0) == stack.subtitle()
+    # escaping: markup-special characters in the rest are escaped
+    from pathlib import Path
+
+    from seestar_controller.enhance.fits_io import StackInfo
+
+    esc = StackInfo(
+        frame_id=1, session_id="A&B <x>", session_started_at=None,
+        path=Path("/tmp/x.fits"), jd=2461365.5, utc="2026-11-20T22:00:00.000+00:00",
+        target=None, exposure=None, gain=None, kind="sub",
+    )
+    assert esc.subtitle() == "sub · session A&B <x> · jd 2461365.500000"
+    assert subtitle_markup(esc) == "<b>sub</b> · session A&amp;B &lt;x&gt; · jd 2461365.500000"
+
+
+def test_viewer_default_lists_stacks_only_newest_first(gtk, mixed_project):
+    from seestar_controller.enhance.viewer import ImageViewer
+
+    _p, (_sub1, stack1, _sub2, stack2) = mixed_project
+    vc = ViewerController(_p)
+    viewer = ImageViewer(vc)
+    # default: ONLY the stacks, newest first -> [stack2 (M 31), stack1 (M 42)]
+    assert viewer.row_count() == 2
+    assert not viewer.show_all_button.get_active()
+    assert not vc.show_all
+    assert viewer.row_label(0) == vc.stacks[0].label()
+    assert "M 31" in viewer.row_label(0)
+    assert viewer.row_subtitle(0).startswith("stack")
+    assert "M 42" in viewer.row_label(1)
+    assert viewer.row_subtitle(1).startswith("stack")
+    assert [s.frame_id for s in vc.stacks] == [stack2.id, stack1.id]
+
+
+def test_viewer_show_all_button_lists_subs_and_sub_row_opens(gtk, mixed_project):
+    from seestar_controller.enhance.viewer import ImageViewer
+
+    _p, (sub1, stack1, sub2, stack2) = mixed_project
+    vc = ViewerController(_p)
+    viewer = ImageViewer(vc)
+    assert viewer.row_count() == 2
+    # flip the "Show all frames" check button next to Refresh
+    viewer.show_all_button.set_active(True)
+    assert vc.show_all
+    assert viewer.row_count() == 4
+    # everything listed, still newest first: stack2, sub2, stack1, sub1
+    assert [viewer.row_subtitle(i).split(" ")[0] for i in range(4)] == [
+        "stack", "sub", "stack", "sub",
+    ]
+    assert [s.frame_id for s in vc.stacks] == [stack2.id, sub2.id, stack1.id, sub1.id]
+    # selecting a sub row opens the sub (any kind openable with show-all on)
+    row = viewer.list_box.get_row_at_index(1)
+    assert row.frame_id == sub2.id
+    viewer.list_box.select_row(row)
+    assert vc.current_stack is not None and vc.current_stack.frame_id == sub2.id
+    assert vc.current_stack.kind == "sub"
+    assert viewer.picture.get_paintable() is not None
+    # toggling back hides the subs again; the sub stays openable by id
+    viewer.show_all_button.set_active(False)
+    assert not vc.show_all
+    assert viewer.row_count() == 2
+    image = vc.open_stack(sub1.id)
+    assert image.shape == (32, 32)
+    assert vc.current_stack is not None and vc.current_stack.frame_id == sub1.id
 
 
 def test_app_owns_shared_controllers_and_window_passes_them_down(gtk, app):
@@ -324,7 +451,7 @@ def test_editor_builds_sliders_per_op_param(editor, viewer_controller):
     assert editor.after_picture.get_paintable() is not None
     assert not editor.placeholder.get_visible()
     assert not editor.spinner.get_visible()
-    assert "M 42" in editor.info_label.get_label()
+    assert "M 31" in editor.info_label.get_label()  # stacks[0] = newest (DATE2)
 
 
 def test_editor_slider_move_calls_set_param(editor, viewer_controller):
@@ -393,7 +520,7 @@ def test_editor_row_selection_opens_stack(editor, viewer_controller):
     assert editor.controller.wait(5.0)
     pump_main()
     assert editor.after_picture.get_paintable() is not None
-    assert "M 31" in editor.info_label.get_label()
+    assert "M 42" in editor.info_label.get_label()  # row 1 = the older DATE1 stack
 
 
 # --- ticket 04: persistence buttons (Save enhanced / Save preset / Export PNG / Export JPEG) ----------

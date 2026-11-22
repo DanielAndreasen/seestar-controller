@@ -1,9 +1,10 @@
-"""Sub-frames issue 01: WIDGET tests — the Enhance-view frame list shows ALL
-stored frames of the current project (subs included, with the kind in the row
-subtitle), clicking a row opens the frame in the viewer, and the Projects
-view's Stored-data browser frame rows open the clicked frame in the shared
-image viewer (switching to the Enhance view when the app passes
-``show_view``).
+"""Sub-frames issue 01: WIDGET tests — the Enhance-view frame list shows the
+stored frames of the current project behind the "Show all frames" toggle
+(image-enhance issue 05: the default list is stacks only, newest first; the
+toggle adds the subs/enhanced frames, each row subtitled with its kind),
+clicking a row opens the frame in the viewer, and the Projects view's
+Stored-data browser frame rows open the clicked frame in the shared image
+viewer (switching to the Enhance view when the app passes ``show_view``).
 
 These SKIP in the headless sandbox (no ``gi`` module, no GTK system libs, no
 display; see docs/wiki/assumptions.md) and run on the desktop, where the
@@ -125,17 +126,27 @@ def viewer_controller(subs_only_project):
 # --- the Enhance-view frame list (ImageViewer / EnhanceEditor) ----------------------
 
 
-def test_viewer_lists_subs_with_kind_in_subtitle(gtk, viewer_controller):
-    """The viewer's frame list shows the subs of a subs-only project, each
-    row labelled with the frame and subtitled with its kind."""
+def test_viewer_lists_subs_with_kind_in_subtitle(gtk, viewer_controller, subs_only_project):
+    """The viewer's frame list defaults to stacks only (empty for this
+    subs-only project — issue 05); the "Show all frames" check button lists
+    the subs, NEWEST FIRST, each row subtitled with its kind."""
     from seestar_controller.enhance.viewer import ImageViewer
 
+    _project, subs = subs_only_project
     viewer = ImageViewer(viewer_controller)
+    assert viewer.row_count() == 0  # default: stacks only, none stored
+    assert not viewer.show_all_button.get_active()
+    assert not viewer_controller.show_all
+    viewer.show_all_button.set_active(True)
+    assert viewer_controller.show_all
     assert viewer.row_count() == 2
-    for index in range(2):
+    # newest first: subs[1] (DATE2) is row 0
+    for index, sub in enumerate([subs[1], subs[0]]):
         assert viewer.row_label(index) == viewer_controller.stacks[index].label()
         assert "NGC7789" in viewer.row_label(index)
         assert viewer.row_subtitle(index).startswith("sub")
+        row = viewer.list_box.get_row_at_index(index)
+        assert row is not None and row.frame_id == sub.id
     # nothing open yet: placeholder visible, no paintable
     assert viewer.picture.get_paintable() is None
     assert viewer.placeholder.get_visible()
@@ -149,31 +160,36 @@ def test_viewer_row_select_opens_sub(gtk, viewer_controller, subs_only_project):
 
     _project, subs = subs_only_project
     viewer = ImageViewer(viewer_controller)
-    row = viewer.list_box.get_row_at_index(0)
+    viewer.show_all_button.set_active(True)  # issue 05: list the subs
+    row = viewer.list_box.get_row_at_index(0)  # newest first -> subs[1]
     viewer.list_box.select_row(row)
     pump_main()
     assert viewer_controller.current_stack is not None
-    assert viewer_controller.current_stack.frame_id == subs[0].id
+    assert viewer_controller.current_stack.frame_id == subs[1].id
     assert viewer_controller.current_stack.kind == "sub"
     assert viewer.picture.get_paintable() is not None
     assert not viewer.placeholder.get_visible()
     assert "NGC7789" in viewer.info_label.get_label()
     selected = viewer.list_box.get_selected_row()
-    assert selected is not None and selected.frame_id == subs[0].id
+    assert selected is not None and selected.frame_id == subs[1].id
 
 
 def test_enhance_editor_lists_subs(gtk, viewer_controller, subs_only_project):
-    """The Enhance view's editor frame list shows the subs too (kind in the
-    subtitle), and selecting a row opens the sub through the controller."""
+    """The Enhance view's editor frame list shows the subs too once the
+    show-all toggle is on (kind in the subtitle), and selecting a row opens
+    the sub through the controller."""
     from seestar_controller.enhance.enhance_view import EnhanceEditor
 
     _project, subs = subs_only_project
     editor = EnhanceEditor(viewer_controller, EditorController(viewer_controller))
+    assert editor.row_count() == 0  # default: stacks only
+    editor.show_all_button.set_active(True)
     assert editor.row_count() == 2
+    # newest first: subs[1] row 0, subs[0] row 1
     assert editor.row_subtitle(0).startswith("sub")
     assert editor.row_subtitle(1).startswith("sub")
     assert "NGC7789" in editor.row_label(0)
-    row = editor.list_box.get_row_at_index(1)
+    row = editor.list_box.get_row_at_index(0)
     editor.list_box.select_row(row)
     pump_main()
     assert viewer_controller.current_stack is not None

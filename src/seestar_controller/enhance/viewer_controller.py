@@ -19,7 +19,14 @@ and the Enhance view's :class:`~.viewer.ImageViewer` widget renders:
   entries via :func:`~.fits_io.list_project_frames` — ALL stored frames (subs,
   stacks, enhanced; sub-frames ticket 01) — PLUS the file-based stitched
   mosaics via :func:`~.fits_io.list_project_mosaics` (app-improvement ticket
-  08), each carrying its ``kind``;
+  08), each carrying its ``kind``. The list is sorted NEWEST-FIRST
+  (descending ``jd``) so the latest entry is on top, and it is FILTERED by
+  default (image-enhance issue 05): :attr:`stacks` shows the ``kind="stack"``
+  frames plus the file-based mosaics; :meth:`set_show_all` (the left panes'
+  "show all" toggle) also lists the subs and enhanced frames — with 100+ subs
+  the single stack would otherwise be buried among the sub rows. The full,
+  unfiltered listing stays available as :attr:`all_stacks` (and
+  :meth:`open_stack` opens any kind from it);
 - :meth:`open_stack` — open one frame by frame id (any kind — a sub opens
   exactly like a stack): the FITS is loaded through
   :func:`~.fits_io.load_fits` (cached by ``path`` + mtime, so re-opening an
@@ -53,6 +60,7 @@ from seestar_controller.store.project import Project
 from .fits_io import (
     KIND_FILE,
     KIND_MOSAIC,
+    KIND_STACK,
     EnhanceError,
     FitsImage,
     StackInfo,
@@ -76,9 +84,9 @@ class ViewerSnapshot:
 
     - ``project_name`` — the current project's display name (None when no
       project is set);
-    - ``stacks`` — the listed entries (tuple of :class:`StackInfo` — all
-      stored frames, subs included, plus the file-based mosaics, each with
-      its ``kind``);
+    - ``stacks`` — the listed entries (tuple of :class:`StackInfo`) AS SHOWN
+      in the viewer lists: newest-first, filtered to the stacks + file-based
+      mosaics unless :attr:`show_all` is on (each entry carries its ``kind``);
     - ``current`` — the currently open entry (None when none is open);
     - ``image`` — the loaded :class:`FitsImage` of the current frame;
     - ``preview`` — the tone-mapped preview (:class:`PIL.Image.Image`) of the
@@ -92,6 +100,7 @@ class ViewerSnapshot:
     image: FitsImage | None
     preview: Image.Image | None
     error: str | None
+    show_all: bool = False
 
 
 #: A viewer listener: called with a :class:`ViewerSnapshot` on any change.
@@ -100,13 +109,19 @@ ViewerListener = Callable[[ViewerSnapshot], None]
 
 class ViewerController:
     """The app-level Enhance-viewer controller: the current project, its
-    listed entries (all stored frames — subs, stacks, enhanced — plus the
-    file-based mosaics), the open entry + preview, and observer notification.
+    listed entries (the stacks + file-based mosaics by default; subs and
+    enhanced frames too when :attr:`show_all` is on), the open entry +
+    preview, and observer notification.
 
     - ``project`` — the store project (None = no project yet; the view shows
       a placeholder then);
     - ``preview_max_size`` — the preview downscale bound (see
-      :func:`~.render.render_preview`).
+      :func:`~.render.render_preview`);
+    - ``show_all`` — the initial list filter: False (the default) lists the
+      ``kind="stack"`` frames plus the file-based mosaics only (image-enhance
+      issue 05 — with 100+ subs the stack row would be buried otherwise);
+      True lists every stored frame (subs, stacks, enhanced) plus the
+      mosaics. Change it later with :meth:`set_show_all`.
     """
 
     def __init__(
@@ -114,10 +129,17 @@ class ViewerController:
         project: Project | None = None,
         *,
         preview_max_size: int = DEFAULT_MAX_PREVIEW_SIZE,
+        show_all: bool = False,
     ) -> None:
         self._project = project
         self._preview_max_size = preview_max_size
         self._listeners: list[ViewerListener] = []
+        self._show_all = show_all
+        #: the FULL listing (all stored frames + mosaics, newest-first) —
+        #: what open_stack/open_path look entries up in (any kind opens)
+        self._all_stacks: tuple[StackInfo, ...] = ()
+        #: the VISIBLE list (the filtered view of _all_stacks) — what
+        #: :attr:`stacks` / the snapshot expose to the viewer lists
         self._stacks: tuple[StackInfo, ...] = ()
         self._current: StackInfo | None = None
         self._image: FitsImage | None = None
@@ -155,30 +177,82 @@ class ViewerController:
             except EnhanceError as exc:
                 self._error = str(exc)
         else:
+            self._all_stacks = ()
             self._stacks = ()
         self._notify()
 
     @property
     def stacks(self) -> tuple[StackInfo, ...]:
-        """The listed entries of the current project — ALL stored frames
-        (subs, stacks, enhanced) PLUS the file-based stitched mosaics
-        (``kind="mosaic"``, ``frame_id=None``; app-improvement ticket 08),
-        ordered by ``jd`` (empty when no project)."""
+        """The listed entries of the current project AS SHOWN in the viewer
+        lists, NEWEST-FIRST (descending ``jd`` — the latest stack is on top).
+
+        Filtered by default (image-enhance issue 05): only the
+        ``kind="stack"`` frames PLUS the file-based stitched mosaics
+        (``kind="mosaic"``, ``frame_id=None``; app-improvement ticket 08) —
+        with 100+ subs the single stack would be buried among the sub rows.
+        With :attr:`show_all` on, ALL stored frames (subs, stacks, enhanced)
+        plus the mosaics are listed. Empty when no project. The unfiltered
+        listing is :attr:`all_stacks`."""
         return self._stacks
 
     @property
+    def all_stacks(self) -> tuple[StackInfo, ...]:
+        """The FULL listing of the current project — ALL stored frames (any
+        kind: sub, stack, enhanced) plus the file-based mosaics, newest-first
+        — regardless of the :attr:`show_all` filter. This is what
+        :meth:`open_stack` / :meth:`open_path` look entries up in, so any
+        kind stays openable."""
+        return self._all_stacks
+
+    @property
+    def show_all(self) -> bool:
+        """Whether the list filter is off: True lists every stored frame
+        (subs/enhanced included) plus the mosaics; False (the default) lists
+        the stacks + mosaics only. See :meth:`set_show_all`."""
+        return self._show_all
+
+    def set_show_all(self, show_all: bool) -> None:
+        """Toggle the list filter: ``show_all=False`` (the default) shows the
+        ``kind="stack"`` frames plus the file-based mosaics only;
+        ``show_all=True`` also shows the subs and enhanced frames. The
+        visible :attr:`stacks` list is re-filtered from the full listing and
+        the listeners are notified (a no-op when the value is unchanged)."""
+        show_all = bool(show_all)
+        if show_all == self._show_all:
+            return
+        self._show_all = show_all
+        self._stacks = self._visible(self._all_stacks)
+        self._notify()
+
+    def _visible(self, entries: tuple[StackInfo, ...]) -> tuple[StackInfo, ...]:
+        """The filtered view of ``entries``: everything when
+        :attr:`show_all` is on, else the stacks (``kind="stack"``) plus the
+        file-based entries (mosaics — ``frame_id is None``)."""
+        if self._show_all:
+            return entries
+        return tuple(
+            entry
+            for entry in entries
+            if entry.kind == KIND_STACK or entry.frame_id is None
+        )
+
+    @property
     def mosaics(self) -> tuple[StackInfo, ...]:
-        """The file-based entries of :attr:`stacks` — the stitched mosaics
+        """The file-based entries of the listing — the stitched mosaics
         (``frame_id=None``)."""
-        return tuple(s for s in self._stacks if s.frame_id is None)
+        return tuple(s for s in self._all_stacks if s.frame_id is None)
 
     def refresh_stacks(self) -> tuple[StackInfo, ...]:
-        """(Re-)list the current project's entries — all stored frames (all
-        kinds — subs included) plus the file-based mosaics; returns them and
-        notifies the listeners. Raises :class:`EnhanceError` when no project
-        is set or the listing fails (the error is also recorded in the
-        snapshot)."""
+        """(Re-)list the current project's entries — ALL stored frames (all
+        kinds — subs included) plus the file-based mosaics, sorted
+        NEWEST-FIRST (descending ``jd``) — and apply the current list filter
+        (:attr:`show_all`, default: stacks + mosaics only). Returns the
+        VISIBLE entries (same as :attr:`stacks`) and notifies the listeners;
+        the full listing stays in :attr:`all_stacks`. Raises
+        :class:`EnhanceError` when no project is set or the listing fails
+        (the error is also recorded in the snapshot)."""
         if self._project is None:
+            self._all_stacks = ()
             self._stacks = ()
             self._error = None
             self._notify()
@@ -188,11 +262,15 @@ class ViewerController:
             )
         frames = list_project_frames(self._project)
         mosaics = list_project_mosaics(self._project)
-        stacks = tuple(sorted((*frames, *mosaics), key=lambda info: info.jd))
-        self._stacks = stacks
+        # newest-first: the latest stack is the top row of the viewer list
+        all_entries = tuple(
+            sorted((*frames, *mosaics), key=lambda info: info.jd, reverse=True)
+        )
+        self._all_stacks = all_entries
+        self._stacks = self._visible(all_entries)
         self._error = None
         self._notify()
-        return stacks
+        return self._stacks
 
     # -- opening a stack ------------------------------------------------------------
 
@@ -218,6 +296,10 @@ class ViewerController:
         the preview, set it as current, notify the listeners, and return the
         :class:`FitsImage`.
 
+        The lookup goes through the FULL listing (:attr:`all_stacks`), not
+        the filtered :attr:`stacks`, so a sub or enhanced frame opens even
+        while the list shows stacks only (image-enhance issue 05).
+
         Raises :class:`EnhanceError` when no project is set, ``frame_id`` is
         ``None`` (a file-based entry such as a mosaic has no frame id — open
         it by path with :meth:`open_path`), the id is unknown (the entry list
@@ -240,20 +322,20 @@ class ViewerController:
                     "id — open them by path with open_path()"
                 )
             )
-        stack = next((s for s in self._stacks if s.frame_id == frame_id), None)
+        stack = next((s for s in self._all_stacks if s.frame_id == frame_id), None)
         if stack is None:
             # maybe a new frame was stored since the last listing: refresh once
             try:
                 self.refresh_stacks()
             except EnhanceError:
                 pass  # keep the old list; the lookup below reports the miss
-            stack = next((s for s in self._stacks if s.frame_id == frame_id), None)
+            stack = next((s for s in self._all_stacks if s.frame_id == frame_id), None)
         if stack is None:
             self._fail(
                 EnhanceError(
                     f"project {self._project.slug!r} has no frame with frame id "
                     f"{frame_id!r} (listed: "
-                    f"{[s.frame_id for s in self._stacks if s.frame_id is not None] or 'none'})"
+                    f"{[s.frame_id for s in self._all_stacks if s.frame_id is not None] or 'none'})"
                 )
             )
         return self._open(stack)
@@ -287,14 +369,14 @@ class ViewerController:
         file_path = Path(path)
         if not file_path.is_absolute():
             file_path = self._project.path / file_path
-        info = next((s for s in self._stacks if s.path == file_path), None)
+        info = next((s for s in self._all_stacks if s.path == file_path), None)
         if info is None:
             # maybe a new file was written since the last listing: refresh once
             try:
                 self.refresh_stacks()
             except EnhanceError:
                 pass  # keep the old list; the transient entry below is built
-            info = next((s for s in self._stacks if s.path == file_path), None)
+            info = next((s for s in self._all_stacks if s.path == file_path), None)
         if info is None:
             kind = (
                 KIND_MOSAIC
@@ -351,6 +433,7 @@ class ViewerController:
             image=self._image,
             preview=self._preview,
             error=self._error,
+            show_all=self._show_all,
         )
 
     @property

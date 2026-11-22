@@ -21,12 +21,12 @@ one shared
 window passes them down via
 :func:`seestar_controller.ui.views.build_view`):
 
-- **left pane** — the project's listed entries (all stored **frames** — subs,
-  stacks, enhanced, sub-frames ticket 01 — PLUS the file-based stitched
-  **mosaics**, app-improvement ticket 08) as a :class:`Gtk.ListBox` (one row
-  per :class:`~seestar_controller.enhance.fits_io.StackInfo`, subtitle with the
-  entry kind; selecting a row opens the entry via the viewer controller) with
-  a **Refresh** button, and
+- **left pane** — the project's listed entries as a :class:`Gtk.ListBox`
+  (one row per :class:`~seestar_controller.enhance.fits_io.StackInfo`,
+  subtitle with the entry kind emphasized; the list defaults to the stacks +
+  file-based stitched **mosaics**, newest-first — subs/enhanced behind the
+  **Show all frames** check button, image-enhance issue 05) with a
+  **Refresh** button, and
   below it the **per-op parameter sliders**: one
   :class:`Adw.PreferencesGroup` per pipeline op (from the
   :data:`~seestar_controller.enhance.ops.OPS` registry + the params dataclass
@@ -82,7 +82,7 @@ from .editor_controller import EditorController, EditorSnapshot
 from .fits_io import EnhanceError, StackInfo
 from .ops import BACKGROUND_METHODS, STRETCH_KINDS, WB_MODES
 from .pipeline import Pipeline
-from .viewer import texture_from_pil
+from .viewer import subtitle_markup, texture_from_pil
 from .viewer_controller import ViewerController, ViewerSnapshot
 
 #: Left-pane width at construction (pixels; the user can drag the paned handle).
@@ -118,9 +118,10 @@ GAINS_CHANNELS = ("r", "g", "b")
 
 
 class EnhanceEditor(Gtk.Box):
-    """The Enhance-view editor: entry list (all stored frames — subs included —
-    plus the file-based mosaics) + per-op sliders on the left, before/after
-    preview + undo/redo/reset on the right.
+    """The Enhance-view editor: entry list (stacks + file-based mosaics by
+    default, newest-first; subs/enhanced behind the "show all" toggle) +
+    per-op sliders on the left, before/after preview + undo/redo/reset on
+    the right.
 
     Constructed with the two controllers (the app passes its shared
     instances; fresh ones are created when omitted, so the widget also works
@@ -199,10 +200,20 @@ class EnhanceEditor(Gtk.Box):
 
         self._refresh_button = Gtk.Button(
             label="Refresh",
-            tooltip_text="Re-list the entries (frames and mosaics) of the current project",
+            tooltip_text="Re-list the entries (stacks and mosaics; subs/enhanced with "
+            "'Show all frames') of the current project",
         )
         self._refresh_button.connect("clicked", self._on_refresh_clicked)
-        left.append(self._refresh_button)
+        self._show_all_button = Gtk.CheckButton(
+            label="Show all frames",
+            tooltip_text="Also list the subs and enhanced frames (default: stacks and "
+            "mosaics only, newest first)",
+        )
+        self._show_all_button.connect("toggled", self._on_show_all_toggled)
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        controls.append(self._refresh_button)
+        controls.append(self._show_all_button)
+        left.append(controls)
 
         self._status_label = Gtk.Label(label="", wrap=True, halign=Gtk.Align.CENTER)
         left.append(self._status_label)
@@ -349,6 +360,12 @@ class EnhanceEditor(Gtk.Box):
         return self._refresh_button
 
     @property
+    def show_all_button(self) -> Gtk.CheckButton:
+        """The 'Show all frames' check button next to Refresh (the list
+        filter toggle — image-enhance issue 05)."""
+        return self._show_all_button
+
+    @property
     def status_label(self) -> Gtk.Label:
         return self._status_label
 
@@ -448,14 +465,15 @@ class EnhanceEditor(Gtk.Box):
         return label.get_label() if label is not None else ""
 
     def row_subtitle(self, index: int) -> str:
-        """The subtitle (kind · session · jd · …) of the entry row at
-        ``index`` (test helper)."""
+        """The plain-text subtitle (kind · session · jd · …) of the entry row
+        at ``index`` (test helper; the widget renders it with the kind
+        bolded via Pango markup)."""
         row = self._list_box.get_row_at_index(index)
         if row is None:
             return ""
         child = row.get_child()
         subtitle = child.get_last_child() if child is not None else None
-        return subtitle.get_label() if subtitle is not None else ""
+        return subtitle.get_text() if subtitle is not None else ""
 
     # -- slider construction ---------------------------------------------------------
 
@@ -637,6 +655,13 @@ class EnhanceEditor(Gtk.Box):
         except EnhanceError as exc:
             self._set_status(str(exc), error=True)
 
+    def _on_show_all_toggled(self, button: Gtk.CheckButton) -> None:
+        """'Show all frames' toggled: switch the controller's list filter
+        (stacks + mosaics by default, all stored frames when on)."""
+        if self._updating:
+            return
+        self._viewer_controller.set_show_all(button.get_active())
+
     def _on_save_enhanced_clicked(self, *_args) -> None:
         try:
             frame = self._editor_controller.save_enhanced()
@@ -703,12 +728,15 @@ class EnhanceEditor(Gtk.Box):
         if keys != self._keys:
             self._keys = keys
             self._rebuild_rows(snapshot.stacks)
-        if snapshot.current is not None and snapshot.current.key in self._rows:
-            self._updating = True
-            try:
+        self._updating = True
+        try:
+            # keep the toggle in sync with the controller's filter
+            if self._show_all_button.get_active() != snapshot.show_all:
+                self._show_all_button.set_active(snapshot.show_all)
+            if snapshot.current is not None and snapshot.current.key in self._rows:
                 self._list_box.select_row(self._rows[snapshot.current.key])
-            finally:
-                self._updating = False
+        finally:
+            self._updating = False
         if snapshot.error:
             self._set_status(snapshot.error, error=True)
         elif not self._editor_controller.snapshot.error:
@@ -788,7 +816,8 @@ class EnhanceEditor(Gtk.Box):
 
     def _rebuild_rows(self, stacks: tuple[StackInfo, ...]) -> None:
         """Rebuild the entry list rows from ``stacks`` (one row per listed
-        entry — a stored frame or a file-based mosaic)."""
+        entry — a stored frame or a file-based mosaic; the subtitle carries
+        the entry kind, bolded at the front so it scans)."""
         self._rows = {}
         while (row := self._list_box.get_row_at_index(0)) is not None:
             self._list_box.remove(row)
@@ -799,11 +828,9 @@ class EnhanceEditor(Gtk.Box):
             box.set_margin_start(8)
             box.set_margin_end(8)
             box.append(Gtk.Label(label=stack.label(), xalign=0.0))
-            box.append(
-                Gtk.Label(
-                    label=stack.subtitle(), xalign=0.0, css_classes=["dim-label", "caption"]
-                )
-            )
+            subtitle = Gtk.Label(xalign=0.0, css_classes=["caption"])
+            subtitle.set_markup(subtitle_markup(stack))
+            box.append(subtitle)
             row = Gtk.ListBoxRow(child=box)
             row.key = stack.key  # type: ignore[attr-defined]
             row.frame_id = stack.frame_id  # type: ignore[attr-defined]

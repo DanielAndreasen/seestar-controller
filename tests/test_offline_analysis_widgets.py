@@ -266,10 +266,11 @@ def test_analysis_views_render_stored_data_offline(app, gtk, stored_project):
     # the shared controllers all carry the offline-opened project
     assert app.viewer_controller.project is project
     stacks = app.viewer_controller.refresh_stacks()
-    # sub-frames ticket 01: the viewer lists ALL stored frames — the 8 subs
-    # then the stack, ordered by jd
-    assert [s.kind for s in stacks] == ["sub"] * N_SUBS + ["stack"]
-    assert stacks[-1].frame_id == stored_project["stack"].id
+    # image-enhance issue 05: the DEFAULT list is the single stack only
+    # (newest first); the 8 subs sit behind the show-all toggle
+    assert [s.kind for s in stacks] == ["stack"]
+    assert stacks[0].frame_id == stored_project["stack"].id
+    assert [s.kind for s in app.viewer_controller.all_stacks] == ["stack"] + ["sub"] * N_SUBS
 
     cases = (
         ("enhance", EnhanceView),

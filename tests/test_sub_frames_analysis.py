@@ -200,6 +200,11 @@ def test_solve_controller_solves_an_open_sub_and_persists_wcs(project, raw_sub):
     cross-match rows are persisted too."""
     viewer = ViewerController(project=project)
     viewer.refresh_stacks()
+    # issue 05: the default list is stacks only (empty here — the project
+    # has just the sub); the sub is in the full listing and behind show-all
+    assert not viewer.stacks
+    assert [s.frame_id for s in viewer.all_stacks] == [raw_sub.id]
+    viewer.set_show_all(True)
     assert [s.frame_id for s in viewer.stacks] == [raw_sub.id]
     viewer.open_stack(raw_sub.id)
 
