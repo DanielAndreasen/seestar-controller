@@ -511,8 +511,12 @@ class Device:
         :class:`GotoTimeoutError` is raised. Returns the state after
         arrival.
 
-        ``name`` is the target's display name; it is remembered as the
-        last-goto hint so :meth:`state` can report it even when the
+        ``name`` is the target's display name. On legacy firmware it is sent
+        in the ``scope_goto_target`` params (``{"ra", "dec", "name"}``), so
+        the Scope names the target — and the frames stacked on it — after
+        it; on fw 9.75 ``scope_goto`` takes only the positional ``[ra, dec]``
+        (live-verified), so there the name is remembered as the last-goto
+        hint instead, letting :meth:`state` report it even when the
         firmware's ``View.target_name`` is stale after a coordinate goto
         (fw 9.75 does not update it).
         """
@@ -533,7 +537,12 @@ class Device:
             if method == compat.GOTO_METHOD_975:
                 # fw 9.75 scope_goto takes POSITIONAL [ra_hours, dec_deg]
                 return [ra, dec]
-            return {"ra": ra, "dec": dec}
+            params: dict[str, Any] = {"ra": ra, "dec": dec}
+            if name is not None:
+                # legacy scope_goto_target also takes the target's display
+                # name, so the Scope names the target (and its frames) after it
+                params["name"] = name
+            return params
 
         # Register before sending the request so a fast slew cannot be missed.
         self._transport.add_event_handler(GOTO_EVENT, on_goto_event)

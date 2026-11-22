@@ -114,9 +114,9 @@ class FakeDevice:
         self.stack_errors: list[Exception] = []
         self._lock = threading.Lock()
 
-    def goto(self, ra, dec, *, timeout=None):
+    def goto(self, ra, dec, *, name=None, timeout=None):
         with self._lock:
-            self.calls.append(("goto", ra, dec))
+            self.calls.append(("goto", ra, dec, name))
             error = self.goto_error
         if error is not None:
             raise error

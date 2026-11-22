@@ -608,16 +608,26 @@ class MockScope:
         with self._scope_state_lock:
             self._scope_state["target_name"] = name
 
-    def begin_goto(self, ra: float, dec: float) -> None:
+    def begin_goto(self, ra: float, dec: float, name: str | None = None) -> None:
         """Start a simulated slew to (ra, dec).
 
         Mode goes to ``slewing`` immediately and a ``ScopeGoto`` "slewing"
         event is pushed; after :attr:`slew_duration` seconds the mode goes
         back to ``idle`` and a ``ScopeGoto`` "complete" event is pushed.
+
+        ``name`` is the target's display name when the goto carried one
+        (``scope_goto_target {"ra", "dec", "name"}``): the target — and the
+        frames stacked on it — is then named after it. A coordinate goto
+        without a name leaves ``target_name`` untouched (live-observed on
+        fw 9.75).
         """
         with self._scope_state_lock:
             self._scope_state["mode"] = "slewing"
-            self._scope_state["target"] = {"ra": ra, "dec": dec}
+            target: dict[str, Any] = {"ra": ra, "dec": dec}
+            if name is not None:
+                target["name"] = name
+                self._scope_state["target_name"] = name
+            self._scope_state["target"] = target
             self.last_goto = {"ra": ra, "dec": dec}
         self.push_event({"Event": "ScopeGoto", "state": "slewing", "ra": ra, "dec": dec})
         thread = threading.Thread(
@@ -1158,7 +1168,10 @@ class MockScope:
                 return True, {"error": f"ra/dec must be numbers, got {dict(params)!r}"}, -1
             if not (0.0 <= ra < 24.0 and -90.0 <= dec <= 90.0):
                 return True, {"error": f"ra/dec out of range: ra={ra} dec={dec}"}, -1
-            self.begin_goto(ra, dec)
+            name = params.get("name")
+            if name is not None and not isinstance(name, str):
+                return True, {"error": f"name must be a string, got {name!r}"}, -1
+            self.begin_goto(ra, dec, name=name)
             return True, {"ra": ra, "dec": dec}, 0
         if method == "scope_park":
             self.park()
