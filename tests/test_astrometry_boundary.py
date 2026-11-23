@@ -181,6 +181,10 @@ def test_astrometry_public_api_is_exported_from_package():
         "StoreCall",
         "solve_session_unsolved",
         "session_wcs_coverage",
+        # issue 16: low-confidence solve quality
+        "is_low_confidence_solve",
+        "LOW_CONFIDENCE_MIN_STARS",
+        "LOW_CONFIDENCE_MAX_RMS_ARCSEC",
     ):
         assert name in astrometry.__all__, name
     assert issubclass(astrometry.SolveError, ValueError)

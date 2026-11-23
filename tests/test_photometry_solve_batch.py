@@ -425,6 +425,74 @@ def test_wcs_coverage_empty_session_and_error_paths(project):
         RunController().wcs_coverage(sid)
 
 
+# --- issue 16: low-confidence solve quality surfaced via the controller -------------------------
+
+
+def test_wcs_coverage_surfaces_low_confidence_solves(project):
+    """Issue 16, synthetic frame_wcs rows: subs solved with n_stars=1 /
+    rms_arcsec NULL (or above the RMS threshold) are counted as solved AND
+    flagged — ``summary`` = ``"3 of 4 subs solved (low-confidence: 2)"``,
+    ``low_confidence_ids`` names them; a solved stack does not count."""
+    sid, frames = make_session(project, n=4)
+    save_frame_wcs(  # the issue-16 repro: 1-star solve, no RMS
+        project, frames[0].id, solver="gaia", n_stars=1, center_ra_deg=83.0,
+        center_dec_deg=22.0, cards=dict(CARDS), rms_arcsec=None,
+    )
+    save_frame_wcs(  # healthy solve
+        project, frames[1].id, solver="gaia", n_stars=10, center_ra_deg=83.0,
+        center_dec_deg=22.0, cards=dict(CARDS), rms_arcsec=0.4,
+    )
+    save_frame_wcs(  # RMS above the 5 arcsec threshold
+        project, frames[2].id, solver="gaia", n_stars=12, center_ra_deg=83.0,
+        center_dec_deg=22.0, cards=dict(CARDS), rms_arcsec=23.7,
+    )
+    stack = store_frame(project, sid, KIND_STACK, sub_fits(99))
+    save_frame_wcs(  # a solved STACK must not count (neither solved nor low)
+        project, stack.id, solver="gaia", n_stars=1, center_ra_deg=83.0,
+        center_dec_deg=22.0, cards=dict(CARDS), rms_arcsec=None,
+    )
+    ctrl = RunController(project=project)
+
+    cov = ctrl.wcs_coverage(sid)
+
+    assert cov.solved == 3 and cov.total == 4 and cov.unsolved == 1
+    assert cov.low_confidence == 2
+    assert cov.low_confidence_ids == (frames[0].id, frames[2].id)
+    assert cov.high_confidence == 1
+    assert cov.summary == "3 of 4 subs solved (low-confidence: 2)"
+
+
+def test_solve_session_unsolved_report_marks_low_confidence_solves(project, monkeypatch):
+    """Issue 16 through the controller: batch-solved low-confidence frames
+    (n_stars=1, rms NULL) appear in ``report.low_confidence_ids`` and the
+    summary, and the coverage afterwards shows them too."""
+    sid, frames = make_session(project, n=3)
+
+    def fake_solve_frame(*, data, header, solver="auto", **kwargs):
+        index = sub_index(header)
+        n_stars, rms = (1, None) if index == 1 else (10, 0.4)
+        return SolveResult(
+            wcs=None, cards=dict(CARDS), solver="gaia",
+            solved_at=f"2026-11-22T00:00:{index:02d}.000+00:00",
+            center_ra_deg=83.0, center_dec_deg=22.0,
+            n_stars=n_stars, rms_arcsec=rms, matches=(), rows=(),
+        )
+
+    monkeypatch.setattr(astrometry_session, "solve_frame", fake_solve_frame)
+    ctrl = RunController(project=project)
+
+    report = ctrl.solve_session_unsolved(sid)
+
+    assert report.solved_ids == tuple(f.id for f in frames)
+    assert report.low_confidence_ids == (frames[1].id,)
+    assert report.low_confidence == 1
+    assert report.summary == "3 of 3 unsolved subs solved (1 low-confidence)"
+    assert ctrl.solve_report is report
+    cov = ctrl.wcs_coverage(sid)
+    assert cov.summary == "3 of 3 subs solved (low-confidence: 1)"
+    assert cov.low_confidence_ids == (frames[1].id,)
+
+
 # --- package boundary (subprocess + source scan) -------------------------------------------------
 
 

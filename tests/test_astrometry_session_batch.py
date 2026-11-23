@@ -16,6 +16,7 @@ the solve stays on the calling worker thread, and the WCS coverage helper.
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 from datetime import UTC, datetime, timedelta
@@ -26,11 +27,14 @@ import pytest
 from astropy.io import fits as pyfits
 
 from seestar_controller.astrometry import (
+    LOW_CONFIDENCE_MAX_RMS_ARCSEC,
+    LOW_CONFIDENCE_MIN_STARS,
     SessionSolveReport,
     SessionWcsCoverage,
     SkippedSolve,
     SolvedFrame,
     SolveError,
+    is_low_confidence_solve,
     session_wcs_coverage,
     solve_project_frame,
     solve_session_unsolved,
@@ -485,6 +489,8 @@ def test_session_wcs_coverage_empty_session_and_unknown_session(project):
     sid = start_session(project, clock=frozen(T0))
     cov = session_wcs_coverage(project, sid)
     assert cov.solved == 0 and cov.total == 0 and cov.fraction == 0.0
+    assert cov.low_confidence == 0 and cov.low_confidence_ids == ()
+    assert cov.high_confidence == 0
     assert cov.summary == "no subs in the session"
     with pytest.raises(SessionNotFoundError, match="no session"):
         session_wcs_coverage(project, "no-such-session")
@@ -529,3 +535,167 @@ def test_solve_then_coverage_reflects_the_batch(project, monkeypatch):
     assert report.summary == "3 of 4 unsolved subs solved (1 skipped)"
     assert cov.summary == "4 of 5 subs solved"  # 1 pre-solved + 3 new; 1 failed
     assert cov.unsolved == 1
+
+
+# --- issue 16: low-confidence solve quality is surfaced, not silently "solved" ------------------
+
+
+def test_is_low_confidence_solve_thresholds():
+    """The issue-16 predicate: n_stars below the threshold, or rms_arcsec
+    NULL / above the threshold, marks a solve low-confidence."""
+    assert LOW_CONFIDENCE_MIN_STARS == 8
+    assert LOW_CONFIDENCE_MAX_RMS_ARCSEC == 5.0
+    # high-confidence: enough stars AND a reported, small RMS (the boundary
+    # values themselves are still high-confidence)
+    assert not is_low_confidence_solve(10, 0.4)
+    assert not is_low_confidence_solve(8, 5.0)
+    assert not is_low_confidence_solve(100, 0.0)
+    # low-confidence: too few matched stars...
+    assert is_low_confidence_solve(7, 0.4)
+    assert is_low_confidence_solve(0, 0.1)
+    assert is_low_confidence_solve(1, None)  # the issue-16 repro: n_stars=1, rms NULL
+    # ...or no RMS reported / an RMS above the threshold
+    assert is_low_confidence_solve(10, None)
+    assert is_low_confidence_solve(10, 5.1)
+    # custom thresholds
+    assert is_low_confidence_solve(10, 0.4, min_stars=12)
+    assert not is_low_confidence_solve(10, 0.4, min_stars=10, max_rms_arcsec=0.5)
+    assert is_low_confidence_solve(10, 0.4, min_stars=10, max_rms_arcsec=0.3)
+    with pytest.raises(TypeError, match="min_stars"):
+        is_low_confidence_solve(10, 0.4, min_stars="8")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    with pytest.raises(ValueError, match="min_stars"):
+        is_low_confidence_solve(10, 0.4, min_stars=-1)
+    with pytest.raises(TypeError, match="max_rms_arcsec"):
+        is_low_confidence_solve(10, 0.4, max_rms_arcsec="5")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+
+
+def test_session_wcs_coverage_counts_low_confidence_solves(project):
+    """Issue 16, synthetic frame_wcs rows: a n_stars=1 / rms NULL solve is
+    counted as solved AND as low-confidence — in the count, the ids and the
+    summary (``"4 of 5 subs solved (low-confidence: 3)"``)."""
+    sid = start_session(project, clock=frozen(T0))
+    frames = add_subs(project, sid, 5)
+    # frame 0: the issue-16 repro (n_stars=1, rms NULL); frame 1: healthy;
+    # frame 2: too few stars; frame 3: RMS above the threshold; frame 4: unsolved
+    specs = [(1, None), (10, 0.4), (7, 0.4), (12, 9.9)]
+    for frame, (n_stars, rms) in zip(frames[:4], specs):
+        save_frame_wcs(
+            project,
+            frame.id,
+            solver="gaia",
+            n_stars=n_stars,
+            center_ra_deg=83.0,
+            center_dec_deg=22.0,
+            cards=dict(CARDS),
+            rms_arcsec=rms,
+        )
+
+    cov = session_wcs_coverage(project, sid)
+
+    assert isinstance(cov, SessionWcsCoverage)
+    assert cov.solved == 4 and cov.total == 5 and cov.unsolved == 1
+    assert cov.low_confidence == 3
+    assert cov.low_confidence_ids == (frames[0].id, frames[2].id, frames[3].id)
+    assert cov.high_confidence == 1
+    assert cov.summary == "4 of 5 subs solved (low-confidence: 3)"
+
+
+def test_session_wcs_coverage_threshold_boundaries_and_custom_thresholds(project):
+    """Exactly at both thresholds (n_stars=8, rms_arcsec=5.0) is still
+    high-confidence; just above the RMS threshold is low-confidence; the
+    thresholds are configurable per call."""
+    sid = start_session(project, clock=frozen(T0))
+    frames = add_subs(project, sid, 2)
+    save_frame_wcs(
+        project, frames[0].id, solver="gaia", n_stars=8, center_ra_deg=83.0,
+        center_dec_deg=22.0, cards=dict(CARDS), rms_arcsec=5.0,
+    )
+    save_frame_wcs(
+        project, frames[1].id, solver="gaia", n_stars=8, center_ra_deg=83.0,
+        center_dec_deg=22.0, cards=dict(CARDS), rms_arcsec=5.0001,
+    )
+
+    cov = session_wcs_coverage(project, sid)
+    assert cov.solved == 2 and cov.low_confidence == 1
+    assert cov.low_confidence_ids == (frames[1].id,)
+    assert cov.high_confidence == 1
+    assert cov.summary == "2 of 2 subs solved (low-confidence: 1)"
+
+    cov2 = session_wcs_coverage(project, sid, min_stars=9)
+    assert cov2.low_confidence == 2 and cov2.low_confidence_ids == (frames[0].id, frames[1].id)
+    assert cov2.summary == "2 of 2 subs solved (low-confidence: 2)"
+    cov3 = session_wcs_coverage(project, sid, max_rms_arcsec=4.0)
+    assert cov3.low_confidence == 2
+
+
+def test_solve_session_unsolved_marks_low_confidence_solves(project, monkeypatch, caplog):
+    """Issue 16: batch-solved frames whose solve is low-confidence (n_stars=1,
+    rms_arcsec NULL) are marked in the report (``low_confidence_ids`` +
+    ``summary``) and logged as a warning — still counted as SOLVED (a
+    quality flag, not a failure), and the coverage afterwards shows them."""
+    sid = start_session(project, clock=frozen(T0))
+    frames = add_subs(project, sid, 4)
+
+    def fake_solve_frame(*, data, header, solver="auto", **kwargs):
+        index = sub_index(header)
+        n_stars, rms = (1, None) if index in (0, 2) else (10, 0.4)
+        return SolveResult(
+            wcs=None,
+            cards=dict(CARDS),
+            solver="gaia",
+            solved_at=f"2026-11-22T00:00:{index:02d}.000+00:00",
+            center_ra_deg=83.0,
+            center_dec_deg=22.0,
+            n_stars=n_stars,
+            rms_arcsec=rms,
+            matches=(),
+            rows=(),
+        )
+
+    monkeypatch.setattr(astrometry_session, "solve_frame", fake_solve_frame)
+    with caplog.at_level(logging.WARNING, logger="seestar_controller.astrometry.session"):
+        report = solve_session_unsolved(project, sid)
+
+    assert isinstance(report, SessionSolveReport)
+    assert report.solved_ids == tuple(f.id for f in frames)
+    assert report.skipped == ()
+    assert report.low_confidence_ids == (frames[0].id, frames[2].id)
+    assert report.low_confidence == 2
+    assert report.summary == "4 of 4 unsolved subs solved (2 low-confidence)"
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "low-confidence" in r.getMessage()
+    ]
+    assert len(warnings) == 2
+    # still persisted as solved (low-confidence is a quality flag, not a failure)
+    assert len(list_solved_frames(project, sid)) == 4
+    assert load_frame_wcs(project, frames[0].id).n_stars == 1  # ty: ignore[missing-union-attribute]
+    # and the coverage afterwards surfaces the same low-confidence solves
+    cov = session_wcs_coverage(project, sid)
+    assert cov.summary == "4 of 4 subs solved (low-confidence: 2)"
+    assert cov.low_confidence_ids == (frames[0].id, frames[2].id)
+
+
+def test_solve_session_unsolved_summary_combines_skipped_and_low_confidence(project, monkeypatch):
+    sid = start_session(project, clock=frozen(T0))
+    frames = add_subs(project, sid, 3)
+
+    def fake_solve_frame(*, data, header, solver="auto", **kwargs):
+        index = sub_index(header)
+        if index == 1:
+            raise SolveError("mock: frame 1 has only 0 sources detected")
+        n_stars, rms = (1, None) if index == 0 else (10, 0.4)
+        return SolveResult(
+            wcs=None, cards=dict(CARDS), solver="gaia",
+            solved_at=f"2026-11-22T00:00:{index:02d}.000+00:00",
+            center_ra_deg=83.0, center_dec_deg=22.0,
+            n_stars=n_stars, rms_arcsec=rms, matches=(), rows=(),
+        )
+
+    monkeypatch.setattr(astrometry_session, "solve_frame", fake_solve_frame)
+    report = solve_session_unsolved(project, sid)
+
+    assert report.solved_ids == (frames[0].id, frames[2].id)
+    assert report.skipped_ids == (frames[1].id,)
+    assert report.low_confidence_ids == (frames[0].id,)
+    assert report.summary == "2 of 3 unsolved subs solved (1 skipped, 1 low-confidence)"

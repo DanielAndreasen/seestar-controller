@@ -1074,6 +1074,65 @@ def test_results_panel_solve_tolerates_a_failing_sub(gtk, project, monkeypatch):
     assert not panel.status_label.has_css_class("error")
 
 
+def test_results_panel_wcs_label_warns_on_low_confidence_solves(gtk, project, monkeypatch):
+    """Issue 16: when the batch solve produces only low-confidence solves
+    (n_stars=1, rms_arcsec NULL — the issue's repro), the Run-tab WCS label
+    says so — ``"WCS: 4 of 4 subs solved (low-confidence: 4)"`` — and carries
+    the ``warning`` css class, and the solve summary marks them too."""
+    from seestar_controller.astrometry import session as astrometry_session
+    from seestar_controller.astrometry.solve import SolveResult
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    _store_subs(project, n=4)
+
+    def low_confidence_solve(*, data, header, solver="auto", **kwargs):
+        return SolveResult(
+            wcs=None,
+            cards=wcs_header(),
+            solver="gaia",
+            solved_at="2026-11-22T00:00:00.000+00:00",
+            center_ra_deg=83.0,
+            center_dec_deg=22.0,
+            n_stars=1,  # a 1-star solve: low-confidence
+            rms_arcsec=None,  # no RMS reported: low-confidence
+            matches=(),
+            rows=(),
+        )
+
+    monkeypatch.setattr(astrometry_session, "solve_frame", low_confidence_solve)
+    rc = RunController(project=project, invoke_on_main=lambda cb: GLib.idle_add(cb))
+    panel = ResultsPanel(run_controller=rc)
+    assert panel.wcs_label.get_label() == "WCS: 0 of 4 subs solved"
+    assert not panel.wcs_label.has_css_class("warning")
+
+    thread = panel.solve_unsolved_subs()
+    _drain_run(thread)
+
+    assert "4 of 4 unsolved subs solved (4 low-confidence)" in panel.progress_label.get_label()
+    assert "4 of 4 unsolved subs solved (4 low-confidence)" in panel.status_label.get_label()
+    assert panel.wcs_label.get_label() == "WCS: 4 of 4 subs solved (low-confidence: 4)"
+    assert panel.wcs_label.has_css_class("warning")
+
+
+def test_results_panel_wcs_label_has_no_warning_when_solves_are_confident(gtk, project, monkeypatch):
+    """Issue 16, the healthy case: solves with enough stars and a small RMS
+    keep the plain label (no low-confidence note, no warning css class)."""
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    _store_subs(project, n=2)
+    _install_mock_solver(monkeypatch)  # n_stars=10, rms_arcsec=0.4 -> confident
+    rc = RunController(project=project, invoke_on_main=lambda cb: GLib.idle_add(cb))
+    panel = ResultsPanel(run_controller=rc)
+
+    thread = panel.solve_unsolved_subs()
+    _drain_run(thread)
+
+    assert "2 of 2 unsolved subs solved" in panel.progress_label.get_label()
+    assert "low-confidence" not in panel.progress_label.get_label()
+    assert panel.wcs_label.get_label() == "WCS: 2 of 2 subs solved"
+    assert not panel.wcs_label.has_css_class("warning")
+
+
 def test_results_panel_solve_without_a_session_shows_a_clean_error(gtk, tmp_path):
     from seestar_controller.photometry.results_view import ResultsPanel
 

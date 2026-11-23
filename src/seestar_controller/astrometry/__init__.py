@@ -36,6 +36,12 @@ inside the functions that need them, and the local astrometry.net
   tolerated as skipped, frozen :class:`~.session.SessionSolveReport` +
   ``on_progress(done, total, frame)``) and :func:`~.session.session_wcs_coverage`
   (the session's solved/total subs, :class:`~.session.SessionWcsCoverage`);
+  issue 16 adds the solve-QUALITY surface:
+  :func:`~.session.is_low_confidence_solve` (with
+  :data:`~.session.LOW_CONFIDENCE_MIN_STARS` /
+  :data:`~.session.LOW_CONFIDENCE_MAX_RMS_ARCSEC`) plus
+  ``SessionSolveReport.low_confidence_ids`` and
+  ``SessionWcsCoverage.low_confidence`` / ``low_confidence_ids``;
 - :mod:`.drift` — the pointing/drift statistics (issue 02, a read-only
   consumer of the ``frame_wcs`` store): :func:`~.drift.pointing_error`
   (requested queue-entry target vs. the solved WCS centers, arcsec) and
@@ -112,12 +118,15 @@ from .plot import (
     render_drift_png,
 )
 from .session import (
+    LOW_CONFIDENCE_MAX_RMS_ARCSEC,
+    LOW_CONFIDENCE_MIN_STARS,
     SessionSolveReport,
     SessionWcsCoverage,
     SkippedSolve,
     SolvedFrame,
     SolveProgressCallback,
     StoreCall,
+    is_low_confidence_solve,
     session_wcs_coverage,
     solve_project_frame,
     solve_session_frame,
@@ -182,6 +191,8 @@ __all__ = [
     "DEFAULT_WIDTH_PX",
     "FIRST_PASS_RADIUS_FACTOR",
     "FOV_COLOR",
+    "LOW_CONFIDENCE_MAX_RMS_ARCSEC",
+    "LOW_CONFIDENCE_MIN_STARS",
     "MAX_RENDER_PX",
     "NICE_SCALE_BAR_ARCSEC",
     "SCALE_BAR_COLOR",
@@ -223,6 +234,7 @@ __all__ = [
     "has_celestial_wcs",
     "header_center",
     "header_pixel_scale_arcsec",
+    "is_low_confidence_solve",
     "pointing_error",
     "provisional_wcs_cards",
     "read_fits_bytes",

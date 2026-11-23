@@ -150,7 +150,10 @@ Conventions (documented choices):
   marshalled through :meth:`_call_store` exactly like :meth:`run_session`.
   :meth:`~RunController.wcs_coverage` returns the session's solved/total subs
   (:class:`~seestar_controller.astrometry.SessionWcsCoverage`) for the
-  "508 of 512 subs solved" display.
+  "508 of 512 subs solved" display — issue 16: the coverage also counts the
+  LOW-CONFIDENCE solves (``low_confidence`` / ``low_confidence_ids``,
+  e.g. ``"512 of 512 subs solved (low-confidence: 512)"``), and the batch
+  report marks them via ``SessionSolveReport.low_confidence_ids``.
 - **Excluded frames (frame-quality ticket 03)** are skipped BEFORE any
   measuring (no FITS read, no store write) and recorded as
   :class:`ExcludedFrame`\\ s on the report; they still advance the progress
@@ -1456,6 +1459,12 @@ class RunController:
         (``solved`` / ``total``, ``summary`` = ``"508 of 512 subs solved"``) —
         via :func:`seestar_controller.astrometry.session.session_wcs_coverage`
         with the store reads marshalled through :meth:`_call_store`.
+
+        Issue 16: the coverage also surfaces the solve QUALITY —
+        ``low_confidence`` / ``low_confidence_ids`` count the solved subs
+        whose stored solve is low-confidence (n_stars < 8 or rms_arcsec NULL
+        / > 5 arcsec), and ``summary`` shows them, e.g. ``"512 of 512 subs
+        solved (low-confidence: 512)"``.
 
         Raises :class:`RunError` when no project is set, the session is
         unknown, or the store read fails.
