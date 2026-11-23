@@ -1,6 +1,6 @@
 # Issue 15: mag_err badly underestimated — median 0.006 vs actual 0.30 mag scatter
 
-**Status:** needs-triage
+**Status:** completed (fixed in 07eac8e, merged to main: 6e6e06e; reviewed APPROVE)
 
 ## Found while
 Headless lightcurve run 2026-11-22 (vw-cep): mag_err median 0.0061 / max 0.0090, while the target differential curve has robust scatter 0.30 mag. The error model (`MAG_ERR_COEFF` etc. in measure.py) ignores centroid/refinement uncertainty, edge systematics at small aperture radius (r=1.5 px here), and WCS pointing error.
