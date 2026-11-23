@@ -483,15 +483,15 @@ class ResultsPanel(Gtk.Box):
         )
         self._run_thread.start()
 
-    def _on_progress(self, done: int, total: int, frame_id: int) -> None:
+    def _on_progress(self, done: int, total: int, frame: Frame) -> None:
         """The run's progress callback — called on the WORKER thread, so
         marshal the UI update onto the GLib main loop."""
-        GLib.idle_add(self._render_progress, done, total, frame_id)
+        GLib.idle_add(self._render_progress, done, total, frame)
 
-    def _render_progress(self, done: int, total: int, frame_id: int) -> bool:
+    def _render_progress(self, done: int, total: int, frame: Frame) -> bool:
         fraction = (done / total) if total else 0.0
         self._progress_bar.set_fraction(fraction)
-        self._progress_label.set_label(f"measuring {done}/{total} — frame {frame_id}")
+        self._progress_label.set_label(f"measuring {done}/{total} — frame {frame.id}")
         return GLib.SOURCE_REMOVE
 
     def _on_run_failed(self, message: str) -> bool:

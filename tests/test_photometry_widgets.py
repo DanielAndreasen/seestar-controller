@@ -869,6 +869,56 @@ def test_results_panel_run_button_runs_on_a_worker_thread(gtk, project):
     assert panel.run_button.get_sensitive() is True
 
 
+def test_results_panel_run_progress_label_shows_the_frame_id(gtk, project, monkeypatch):
+    """Mid-run, the progress label reads ``measuring k/N — frame <id>`` with
+    the just-measured sub's numeric db id: the run progress callback receives
+    a ``Frame`` (``ProgressCallback``), so the label must interpolate
+    ``frame.id`` — never the ``Frame`` repr. (The snapshot listener is detached
+    for the mid-run observation so the label under test is the one written by
+    ``_render_progress`` — ``_render`` would otherwise overwrite it with the
+    same value from ``RunProgress.frame_id``.)"""
+    from seestar_controller.photometry import run as run_module
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs(project, n=4)
+    _save_widget_picks(project)
+    frames = list_frames(project, session_id=session, kind=KIND_SUB)
+    calls = []
+    # park the worker inside the LAST frame's measure, so the run is observed
+    # mid-run with the first 3 progress updates already marshalled
+    gate = threading.Event()
+    fake_measure = run_module.measure_frame_data
+
+    def blocking_measure(data, header, picks, **kwargs):
+        result = fake_measure(data, header, picks, **kwargs)
+        calls.append(1)
+        if len(calls) == 4:  # 4th frame's measure returned, its progress not yet emitted
+            gate.wait(timeout=30.0)
+        return result
+
+    monkeypatch.setattr(run_module, "measure_frame_data", blocking_measure)
+    rc = RunController(project=project, invoke_on_main=lambda cb: GLib.idle_add(cb))
+    panel = ResultsPanel(run_controller=rc)
+    rc.remove_listener(panel._on_snapshot)  # isolate the progress-callback label
+
+    thread = panel.run()  # same as clicking the Run button
+    assert thread is not None and thread.name == "photometry-run"
+    deadline = time.monotonic() + 10.0
+    while len(calls) < 4 and time.monotonic() < deadline:
+        pump_main(0.1)  # drives the marshalled store calls of frames 1-3
+        time.sleep(0.005)
+    assert len(calls) == 4  # the worker is parked in the last frame's measure
+    pump_main()  # render the marshalled "measuring 3/4" update
+    label = panel.progress_label.get_label()
+    assert label == f"measuring 3/4 — frame {frames[2].id}"
+    assert "Frame(" not in label  # a leaked Frame repr would contain this
+    assert panel.progress_bar.get_fraction() == pytest.approx(3 / 4)
+    gate.set()
+    rc.add_listener(panel._on_snapshot)  # let the final snapshot render again
+    _drain_run(thread)
+    assert "4 measured, 0 skipped" in panel.progress_label.get_label()
+
+
 def test_results_panel_shows_clean_error_when_run_fails(gtk, project):
     from seestar_controller.photometry.results_view import ResultsPanel
 
