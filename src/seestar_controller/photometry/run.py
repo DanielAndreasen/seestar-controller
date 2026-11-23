@@ -114,6 +114,17 @@ Conventions (documented choices):
   without sky coordinates — are measured on the fixed pixel picks. The
   report counts WCS-reprojected vs fixed-pixel frames (``wcs_frames`` /
   ``pixel_frames`` / ``wcs_summary``).
+- **Centroid refinement of reprojected picks (issue 12)**: the solve WCS
+  carries a ~few-px pointing error, so each reprojected pick is refined on
+  the frame data before measuring
+  (:func:`~.measure.refine_pick_on_frame`, wired into
+  :func:`~.measure.measure_frame_data`): a significant local maximum within
+  ~10 px of the predicted pixel, centroided, is measured instead — without
+  it the star core falls outside a small aperture while the sky annulus
+  catches the star wings (non-positive flux → spurious skip). The refinement
+  rides on the per-frame results (``FrameMeasurement.wcs_refined`` +
+  ``StarMeasurement.pick_offset``) and the report counts refined frames
+  (``refined_frames``, persisted as ``wcs_refined_frames`` in the run record).
 - **Batch solve of a session's unsolved subs (issue 10)**:
   :meth:`~RunController.solve_session_unsolved` plate-solves every sub-frame
   of a session that has NO stored ``frame_wcs`` row yet, via
@@ -319,6 +330,10 @@ class RunReport:
       ``wcs_frames`` / ``pixel_frames`` / ``wcs_summary`` (WCS-reprojected vs
       fixed-pixel measured frames, from the ``frame_results``'s
       ``wcs_reprojected`` counts).
+    - issue 12: the centroid refinement of the reprojected picks on the
+      frame data is aggregated as ``refined_frames`` (from the
+      ``frame_results``'s ``wcs_refined`` counts; the per-star offsets ride
+      on the ``StarMeasurement.pick_offset``\\ s).
     """
 
     measurements: tuple[Measurement, ...]
@@ -403,6 +418,12 @@ class RunReport:
         """The measured frames measured on fixed pixel picks — no stored WCS
         for the frame, or no pick carrying a sky coordinate (issue 09)."""
         return sum(1 for fm in self.frame_results if fm.wcs_reprojected == 0)
+
+    @property
+    def refined_frames(self) -> int:
+        """The measured frames with at least one WCS-reprojected pick
+        centroid-refined on the frame data (issue 12)."""
+        return sum(1 for fm in self.frame_results if fm.wcs_refined > 0)
 
     @property
     def wcs_summary(self) -> str:
@@ -902,7 +923,8 @@ class RunController:
           :class:`~seestar_controller.store.wcs.FrameWcs` record (or its
           cards mapping / an astropy WCS), or None when the frame has none —
           picks that carry a sky coordinate are reprojected onto it before
-          measuring (fixed pixel picks otherwise);
+          measuring (fixed pixel picks otherwise), and the reprojected picks
+          are centroid-refined on the frame data (issue 12);
         - ``on_stored`` — optional hook invoked with the stored
           ``(measurement, frame_measurement)`` on the DB-OWNING thread, inside
           the same store dispatch as the insert — so state published there is
@@ -980,6 +1002,7 @@ class RunController:
              "last_run": {"session_id": ..., "at": ..., "measured": N,
                           "skipped": N, "skip_reasons": {...},
                           "wcs_frames": N, "pixel_frames": N,
+                          "wcs_refined_frames": N,
                           "excluded_count": N,
                           "excluded": [{"frame_id": ..., "reasons": [...]}]}}
 
@@ -1003,6 +1026,7 @@ class RunController:
                     "skip_reasons": report.skip_reasons,  # issue 09
                     "wcs_frames": report.wcs_frames,  # issue 09
                     "pixel_frames": report.pixel_frames,  # issue 09
+                    "wcs_refined_frames": report.refined_frames,  # issue 12
                     "excluded_count": report.excluded_count,
                     "excluded": [
                         {"frame_id": e.frame_id, "reasons": list(e.reasons)}
@@ -1052,7 +1076,9 @@ class RunController:
           that carry a sky coordinate are reprojected onto that frame's pixel
           coordinates before measuring (fixed pixel picks otherwise — the
           per-frame mode is aggregated on the report as ``wcs_frames`` /
-          ``pixel_frames``); a per-frame failure is recorded as a
+          ``pixel_frames``); issue 12: the reprojected picks are additionally
+          centroid-refined on the frame data before measuring (aggregated as
+          ``refined_frames``); a per-frame failure is recorded as a
           :class:`~.measure.SkippedFrame` (with its skip ``kind``, aggregated
           on ``skip_reasons``), never a crash;
         - the picks come from the shared picker controller, falling back to the

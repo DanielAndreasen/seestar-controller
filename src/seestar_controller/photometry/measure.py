@@ -46,6 +46,11 @@ What lives here:
   reprojected to THIS frame's pixel coordinates via
   :func:`~.picking.try_sky_to_pixel`; the number of reprojected picks is
   recorded on the :class:`FrameMeasurement` (``wcs_reprojected``);
+  issue 12: every WCS-reprojected pick is then CENTROID-REFINED on the
+  actual frame data (:func:`refine_pick_on_frame`) before measuring — the
+  solve WCS carries a ~few-px pointing error, so the reprojected pixel can
+  sit off the star core; the refinement and its offset are recorded
+  (``StarMeasurement.pick_offset``, ``FrameMeasurement.wcs_refined``);
 - :func:`measure_frame` — one stored frame of a project →
   :class:`~seestar_controller.store.measurements.Measurement` via
   :func:`seestar_controller.store.measurements.add_measurement` (JD from the
@@ -87,6 +92,27 @@ Conventions (documented choices):
   picks. The per-frame count of WCS-reprojected picks is recorded on the
   :class:`FrameMeasurement` (``wcs_reprojected``) and aggregated on the run
   reports (WCS-reprojected vs fixed-pixel frames).
+- **Centroid refinement of reprojected picks (issue 12).** The stored solve
+  WCS carries a ~few-px pointing error (live data: the true star core sits
+  4.5–6.7 px from the WCS-predicted pixel on every frame), so with a small
+  aperture (r=4) the star core can fall OUTSIDE the aperture while the sky
+  annulus (8–12 px) catches the star wings — the background is overestimated,
+  the net flux goes non-positive and the frame is spuriously skipped. After
+  the reprojection, every reprojected pick is therefore refined ON THE FRAME
+  DATA: :func:`refine_pick_on_frame` searches a
+  :data:`REPROJECT_SEARCH_RADIUS_PX` window around the predicted pixel for a
+  significant local brightness maximum (peak > background + k·σ, σ = the
+  robust window noise, floored by the Poisson-like √background) and centroids
+  it in a :data:`REPROJECT_CENTROID_RADIUS_PX` window around that maximum
+  (weights ``clip(value - background, 0, None)``). The refined position is
+  what gets measured, and the refinement is recorded — the per-star offset
+  ``StarMeasurement.pick_offset`` (refined minus predicted) and the per-frame
+  ``FrameMeasurement.wcs_refined`` count. When no significant local maximum
+  is found near the predicted pixel, the predicted pixel is kept and the
+  normal skip logic applies downstream (a no-star frame still skips with
+  ``kind="non-positive-flux"``; a reprojected pick outside the image still
+  skips with ``kind="outside-image"``). Fixed-pixel picks (no WCS, or a
+  failed conversion) are NEVER refined — the fallback path is unchanged.
 - **Pixel convention: 0-based, ``x`` = column, ``y`` = row** (same as
   :mod:`.picking` and the numpy ``data[y, x]`` array). photutils apertures take
   0-based ``(x, y)`` positions directly.
@@ -186,6 +212,17 @@ class FrameSkippedError(MeasurementError):
 #: The magnitude-error coefficient ``2.5 / ln(10) ≈ 1.0857``:
 #: ``d(-2.5 log10 f) = -2.5/ln(10) * df/f``.
 MAG_ERR_COEFF = 2.5 / math.log(10.0)
+
+#: Half-size of the search window (px) around a WCS-reprojected predicted
+#: pixel in which :func:`refine_pick_on_frame` looks for the local brightness
+#: maximum before centroiding (issue 12) — ~8–10 px covers the live ~5 px
+#: plate-solve pointing error.
+REPROJECT_SEARCH_RADIUS_PX = 10.0
+#: Half-size of the centroid window (px) around the found maximum (issue 12).
+REPROJECT_CENTROID_RADIUS_PX = 5.0
+#: A local maximum counts as significant when it exceeds the window
+#: background by more than this many (robust) sigmas (issue 12).
+REPROJECT_SIGNIFICANCE_SIGMA = 5.0
 
 
 def _finite_float(value: Any, what: str) -> float:
@@ -288,7 +325,11 @@ class StarMeasurement:
     - ``flux_err`` — the propagated flux error (photutils
       ``aperture_sum_err`` of the aperture and the annulus in quadrature);
     - ``mag`` — the instrumental magnitude ``-2.5*log10(flux)``;
-    - ``mag_err`` — ``MAG_ERR_COEFF * flux_err / flux``.
+    - ``mag_err`` — ``MAG_ERR_COEFF * flux_err / flux``;
+    - ``pick_offset`` — issue 12: the refinement offset ``(dx, dy)`` of a
+      WCS-reprojected pick that was centroid-refined on the frame data
+      (refined position minus the WCS-predicted pixel), or None when the
+      star was measured at its predicted/fixed pixel (never refined).
     """
 
     role: str
@@ -299,6 +340,7 @@ class StarMeasurement:
     flux_err: float
     mag: float
     mag_err: float
+    pick_offset: tuple[float, float] | None = None
 
 
 def _as_2d_plane(data: Any) -> np.ndarray:
@@ -324,6 +366,7 @@ def measure_star(
     *,
     role: str = ROLE_COMP,
     label: str | None = None,
+    pick_offset: tuple[float, float] | None = None,
 ) -> StarMeasurement:
     """Measure ONE star at 0-based pixel ``(x, y)`` with circular-aperture +
     sky-annulus photometry (photutils, ``method="exact"``).
@@ -337,7 +380,11 @@ def measure_star(
     - the flux error array is Poisson-like ``sqrt(clip(data, 1, None))`` over
       the finite pixels (non-finite pixels are masked);
     - a non-positive or non-finite background-subtracted flux raises
-      :class:`FrameSkippedError` (no magnitude exists then).
+      :class:`FrameSkippedError` (no magnitude exists then);
+    - ``pick_offset`` — issue 12: the refinement offset ``(dx, dy)`` of a
+      centroid-refined reprojected pick (refined minus predicted pixel),
+      recorded verbatim on the returned :class:`StarMeasurement`; None when
+      the star is measured at its predicted/fixed pixel.
 
     Returns the :class:`StarMeasurement`.
     """
@@ -348,6 +395,15 @@ def measure_star(
         )
     px = _finite_float(x, "x")
     py = _finite_float(y, "y")
+    if pick_offset is not None:
+        if not isinstance(pick_offset, (tuple, list)) or len(pick_offset) != 2:
+            raise MeasurementError(
+                f"pick_offset must be a (dx, dy) pair of numbers, got {pick_offset!r}"
+            )
+        pick_offset = (
+            _finite_float(pick_offset[0], "pick_offset dx"),
+            _finite_float(pick_offset[1], "pick_offset dy"),
+        )
     plane = _as_2d_plane(data)
     height, width = int(plane.shape[0]), int(plane.shape[1])
     if not (0.0 <= px < width and 0.0 <= py < height):
@@ -399,6 +455,7 @@ def measure_star(
         flux_err=flux_err,
         mag=flux_to_mag(flux),
         mag_err=flux_err_to_mag_err(flux, flux_err),
+        pick_offset=pick_offset,
     )
 
 
@@ -413,6 +470,11 @@ class _NormPick:
     ``ra_deg`` / ``dec_deg`` — the pick's J2000 sky position (from
     ``StarPick.ra_deg``/``dec_deg`` or ``StarPickSpec.coord``), or None for a
     pixel-only pick; used for the per-frame WCS reprojection (issue 09).
+
+    ``reprojected`` — True when this pick's pixel came from the per-frame WCS
+    reprojection (issue 09) — only such picks are centroid-refined on the
+    frame data (issue 12); ``refined_from`` — the predicted (pre-refinement)
+    pixel of a refined pick, else None.
     """
 
     role: str
@@ -422,6 +484,8 @@ class _NormPick:
     aperture: ApertureParams
     ra_deg: float | None = None
     dec_deg: float | None = None
+    reprojected: bool = False
+    refined_from: tuple[float, float] | None = None
 
 
 def _sky_of(pick: Any) -> tuple[float | None, float | None]:
@@ -547,6 +611,92 @@ def _wcs_cards(wcs: Any) -> Mapping[str, Any] | None:
     )
 
 
+def refine_pick_on_frame(
+    data: Any,
+    x: float,
+    y: float,
+    *,
+    search_radius_px: float = REPROJECT_SEARCH_RADIUS_PX,
+    centroid_radius_px: float = REPROJECT_CENTROID_RADIUS_PX,
+    significance_sigma: float = REPROJECT_SIGNIFICANCE_SIGMA,
+) -> tuple[float, float] | None:
+    """Refine a predicted pixel ``(x, y)`` on the actual frame ``data`` (issue
+    12): find the local brightness maximum within ``search_radius_px`` of the
+    predicted pixel and centroid it within ``centroid_radius_px`` of that
+    maximum, returning the refined 0-based ``(x, y)``.
+
+    - the search window is the square ``[x ± search_radius_px] × [y ±
+      search_radius_px]`` clipped to the image; its robust background is the
+      median of its finite pixels and its noise σ the
+      ``1.4826 * MAD`` floored by the Poisson-like ``sqrt(max(background,
+      1))`` (the same noise model as :func:`measure_star`'s error array);
+    - the brightest finite pixel of the window is the candidate maximum; it
+      counts as SIGNIFICANT only when it exceeds ``background +
+      significance_sigma * σ`` — otherwise (flat/noise window, no star near
+      the predicted pixel) **None** is returned and the caller keeps the
+      predicted pixel (the normal skip logic then applies downstream);
+    - the centroid uses weights ``clip(value - background, 0, None)`` over
+      the finite pixels of the centroid window (clamped to the search window
+      and the image); when the weights sum to zero the maximum pixel itself
+      is returned.
+
+    The refined position always stays within ``search_radius_px`` of the
+    predicted pixel. Never raises on bad window geometry (a predicted pixel
+    outside the image yields None) — bad *arguments* (non-finite ``x``/``y``,
+    non-positive radii/sigma) raise :class:`MeasurementError`.
+    """
+    px = _finite_float(x, "x")
+    py = _finite_float(y, "y")
+    search = _finite_float(search_radius_px, "search_radius_px")
+    centroid_r = _finite_float(centroid_radius_px, "centroid_radius_px")
+    k_sigma = _finite_float(significance_sigma, "significance_sigma")
+    if search <= 0.0 or centroid_r <= 0.0:
+        raise MeasurementError(
+            f"search_radius_px and centroid_radius_px must be positive, got "
+            f"{search_radius_px!r} / {centroid_radius_px!r}",
+            kind="bad-refinement-params",
+        )
+    if k_sigma <= 0.0:
+        raise MeasurementError(
+            f"significance_sigma must be positive, got {significance_sigma!r}",
+            kind="bad-refinement-params",
+        )
+    plane = _as_2d_plane(data)
+    height, width = int(plane.shape[0]), int(plane.shape[1])
+    x0 = max(0, math.floor(px - search))
+    x1 = min(width, math.ceil(px + search) + 1)
+    y0 = max(0, math.floor(py - search))
+    y1 = min(height, math.ceil(py + search) + 1)
+    if x1 <= x0 or y1 <= y0:
+        return None  # the predicted pixel is (entirely) outside the image
+    win = plane[y0:y1, x0:x1]
+    finite = np.isfinite(win)
+    if not bool(finite.any()):
+        return None
+    values = win[finite]
+    background = float(np.median(values))
+    mad = float(np.median(np.abs(values - background)))
+    sigma = max(1.4826 * mad, math.sqrt(max(background, 1.0)), 1e-12)
+    masked = np.where(finite, win, -np.inf)
+    iy, ix = np.unravel_index(int(np.argmax(masked)), masked.shape)
+    peak = float(win[iy, ix])
+    if not peak > background + k_sigma * sigma:
+        return None  # no significant local maximum near the predicted pixel
+    max_x, max_y = x0 + int(ix), y0 + int(iy)
+    # the centroid window around the maximum, clamped to the search window
+    cx0 = max(x0, math.floor(max_x - centroid_r))
+    cx1 = min(x1, math.ceil(max_x + centroid_r) + 1)
+    cy0 = max(y0, math.floor(max_y - centroid_r))
+    cy1 = min(y1, math.ceil(max_y + centroid_r) + 1)
+    cwin = plane[cy0:cy1, cx0:cx1]
+    weights = np.where(np.isfinite(cwin), np.clip(cwin - background, 0.0, None), 0.0)
+    total = float(weights.sum())
+    if not total > 0.0:
+        return float(max_x), float(max_y)
+    yy, xx = np.mgrid[cy0:cy1, cx0:cx1]
+    return float((weights * xx).sum() / total), float((weights * yy).sum() / total)
+
+
 def resolve_pick_pixels(
     picks: Iterable[_NormPick], wcs: Any
 ) -> tuple[tuple[_NormPick, ...], int]:
@@ -556,7 +706,10 @@ def resolve_pick_pixels(
     mapping of FITS cards, or an astropy WCS) via
     :func:`~.picking.try_sky_to_pixel`, returning the resolved picks (a pick
     without a sky coordinate, or whose conversion fails, keeps its fixed
-    pixel) plus the number of WCS-reprojected picks.
+    pixel) plus the number of WCS-reprojected picks. Reprojected picks are
+    flagged ``reprojected=True`` on the returned records — those are the
+    picks :func:`_refine_reprojected_picks` centroid-refines on the frame
+    data (issue 12).
 
     With ``wcs=None`` the picks pass through unchanged (fixed pixel picks,
     count 0). The reprojected position is NOT range-checked here — a
@@ -574,7 +727,7 @@ def resolve_pick_pixels(
         if pick.ra_deg is not None and pick.dec_deg is not None:
             xy = try_sky_to_pixel(cards, (pick.ra_deg, pick.dec_deg))
             if xy is not None:
-                resolved.append(replace(pick, x=xy[0], y=xy[1]))
+                resolved.append(replace(pick, x=xy[0], y=xy[1], reprojected=True))
                 reprojected += 1
                 continue
             # conversion failed (e.g. the stored cards carry no celestial
@@ -588,6 +741,42 @@ def resolve_pick_pixels(
             )
         resolved.append(pick)
     return tuple(resolved), reprojected
+
+
+def _refine_reprojected_picks(
+    picks: tuple[_NormPick, ...], plane: np.ndarray
+) -> tuple[tuple[_NormPick, ...], int]:
+    """The issue-12 refinement step: centroid-refine every WCS-reprojected
+    pick (``reprojected=True``) of ``picks`` on the frame ``plane`` via
+    :func:`refine_pick_on_frame`, returning the refined picks (each carrying
+    ``refined_from`` = its predicted pixel) plus the number of refined picks.
+
+    A reprojected pick with NO significant local maximum near its predicted
+    pixel is kept at the predicted pixel (the normal skip logic applies
+    downstream — e.g. a no-star frame still skips with
+    ``kind="non-positive-flux"``). Fixed-pixel picks (``reprojected=False``)
+    are never touched — the fallback path is unchanged.
+    """
+    refined: list[_NormPick] = []
+    count = 0
+    for pick in picks:
+        if not pick.reprojected:
+            refined.append(pick)
+            continue
+        xy = refine_pick_on_frame(plane, pick.x, pick.y)
+        if xy is None:
+            logger.debug(
+                "no significant local maximum near the reprojected pick %s "
+                "(%.2f, %.2f) — keeping the predicted pixel",
+                pick.role,
+                pick.x,
+                pick.y,
+            )
+            refined.append(pick)
+            continue
+        count += 1
+        refined.append(replace(pick, x=xy[0], y=xy[1], refined_from=(pick.x, pick.y)))
+    return tuple(refined), count
 
 
 # --- the pure core on a raw array ---------------------------------------------------------
@@ -623,6 +812,11 @@ class FrameMeasurement:
     - ``wcs_reprojected`` — how many picks were reprojected onto THIS frame's
       WCS before measuring (issue 09); 0 means the frame was measured on the
       fixed pixel picks (no WCS, or no pick carried a sky coordinate).
+    - ``wcs_refined`` — how many of the reprojected picks were additionally
+      centroid-refined on the frame data before measuring (issue 12 — the
+      solve WCS has a ~few-px pointing error); the per-star refinement
+      offsets ride on the :class:`StarMeasurement`\\ s (``pick_offset``).
+      0 when nothing was reprojected/refined (fixed-pixel path unchanged).
     """
 
     jd: float
@@ -637,6 +831,7 @@ class FrameMeasurement:
     target_minus_check: float | None = None
     target_minus_check_err: float | None = None
     wcs_reprojected: int = 0
+    wcs_refined: int = 0
 
 
 def _header_jd(header: Mapping[str, Any] | None) -> float | None:
@@ -681,19 +876,47 @@ def measure_frame_data(
       picks without a sky coordinate (or with a failed conversion) keep
       their fixed pixel. The count of reprojected picks is recorded on the
       result's ``wcs_reprojected``.
+    - issue 12: every REPROJECTED pick is then centroid-refined on ``data``
+      via :func:`refine_pick_on_frame` (a significant local maximum within
+      :data:`REPROJECT_SEARCH_RADIUS_PX` of the predicted pixel, centroided
+      within :data:`REPROJECT_CENTROID_RADIUS_PX` of it) before measuring —
+      the solve WCS has a ~few-px pointing error, and an unrefined pick can
+      miss the star core with the annulus contaminated by the star wings
+      (non-positive flux → spurious skip). The refined position is measured,
+      the per-star offsets ride on the ``StarMeasurement.pick_offset``\\ s and
+      the refined count on the result's ``wcs_refined``. A reprojected pick
+      with no significant local maximum near the predicted pixel keeps the
+      predicted pixel (the normal skip logic applies). Fixed-pixel picks are
+      never refined.
 
     Returns the :class:`FrameMeasurement` — with the check star's differential
     mag + error (``check_mag`` / ``check_mag_err``, same error propagation as
     the target) and the target-minus-check curve (``target_minus_check`` /
     ``target_minus_check_err``) when a check pick is present. Raises
-    :class:`FrameSkippedError` when a (possibly reprojected) pick falls
-    outside the image or a flux is non-positive.
+    :class:`FrameSkippedError` when a (possibly reprojected/refined) pick
+    falls outside the image or a flux is non-positive.
     """
     norm = _normalize_picks(picks, aperture)
     norm, wcs_reprojected = resolve_pick_pixels(norm, wcs)
     plane = _as_2d_plane(data)
+    wcs_refined = 0
+    if wcs_reprojected:
+        # issue 12: centroid-refine the reprojected picks on the frame data
+        norm, wcs_refined = _refine_reprojected_picks(norm, plane)
     stars = [
-        measure_star(plane, p.x, p.y, p.aperture, role=p.role, label=p.label)
+        measure_star(
+            plane,
+            p.x,
+            p.y,
+            p.aperture,
+            role=p.role,
+            label=p.label,
+            pick_offset=(
+                None
+                if p.refined_from is None
+                else (p.x - p.refined_from[0], p.y - p.refined_from[1])
+            ),
+        )
         for p in norm
     ]
     target = next(s for s in stars if s.role == ROLE_TARGET)
@@ -739,6 +962,7 @@ def measure_frame_data(
         target_minus_check=target_minus_check,
         target_minus_check_err=target_minus_check_err,
         wcs_reprojected=wcs_reprojected,
+        wcs_refined=wcs_refined,
     )
 
 
@@ -779,7 +1003,9 @@ class MeasureReport:
       the measured frames (in frame order, aligned with ``measurements``) —
       they carry the check star's differential mag + error and the
       target-minus-check curve (check-star-plot ticket 01) plus the
-      ``wcs_reprojected`` count of the per-frame WCS reprojection (issue 09).
+      ``wcs_reprojected`` count of the per-frame WCS reprojection (issue 09)
+      and the ``wcs_refined`` count of the centroid refinement of the
+      reprojected picks on the frame data (issue 12).
     """
 
     measurements: tuple[Measurement, ...]
@@ -828,6 +1054,12 @@ class MeasureReport:
         """The measured frames measured on fixed pixel picks (no WCS or no
         sky-carrying picks — issue 09)."""
         return sum(1 for fm in self.frame_results if fm.wcs_reprojected == 0)
+
+    @property
+    def refined_frames(self) -> int:
+        """The measured frames with at least one WCS-reprojected pick
+        centroid-refined on the frame data (issue 12)."""
+        return sum(1 for fm in self.frame_results if fm.wcs_refined > 0)
 
 
 def _read_frame_fits(project: Any, frame: Any) -> tuple[Any, dict[str, Any]]:
@@ -902,11 +1134,13 @@ def _measure_frame_full(
       (or its cards mapping / an astropy WCS), None for fixed pixel picks, or
       the default sentinel to load the frame's stored WCS from the project db
       via :func:`load_frame_wcs` (a WCS read failure falls back to None).
+      The reprojected picks are centroid-refined on the frame data before
+      measuring (issue 12).
 
     Returns ``(measurement, frame_measurement)`` — the stored
     :class:`~seestar_controller.store.measurements.Measurement` and the full
-    :class:`FrameMeasurement` (which carries the check-star curves and the
-    ``wcs_reprojected`` count)."""
+    :class:`FrameMeasurement` (which carries the check-star curves, the
+    ``wcs_reprojected`` count and the ``wcs_refined`` refinement count)."""
     data, header = _read_frame_fits(project, frame)
     if frame_wcs is _LOAD_WCS:
         frame_wcs = _load_frame_wcs_lenient(project, frame.id)
@@ -955,12 +1189,14 @@ def measure_frame(
       (:func:`seestar_controller.store.wcs.load_frame_wcs`), picks that carry
       a sky coordinate are reprojected onto it and measured at the
       frame-corrected pixel; otherwise the fixed pixel picks are used;
+    - issue 12: the reprojected picks are additionally centroid-refined on
+      the frame data (:func:`refine_pick_on_frame`) before measuring;
     - the differential mag + error are stored via
       :func:`seestar_controller.store.measurements.add_measurement` (store
       errors wrapped into :class:`MeasurementError`).
 
-    Raises :class:`FrameSkippedError` when a (possibly reprojected) pick falls
-    outside the image or a flux is non-positive.
+    Raises :class:`FrameSkippedError` when a (possibly reprojected/refined)
+    pick falls outside the image or a flux is non-positive.
     """
     if isinstance(frame_id, bool) or not isinstance(frame_id, int):
         raise MeasurementError(f"frame_id must be an int, got {frame_id!r}")
@@ -995,6 +1231,11 @@ def measure_project(
       ``wcs_reprojected`` count rides on the ``frame_results``, and the
       report aggregates WCS-reprojected vs fixed-pixel frames
       (``wcs_frames`` / ``pixel_frames``);
+    - issue 12: the reprojected picks are additionally centroid-refined on
+      each frame's data before measuring (the solve WCS has a ~few-px
+      pointing error); the per-frame ``wcs_refined`` count rides on the
+      ``frame_results`` and the report aggregates refined frames
+      (``refined_frames``);
     - every sub-frame is measured via :func:`measure_frame`; a frame whose
       target/comp falls outside the image or whose flux is non-positive (or
       that cannot be read at all) is recorded as a :class:`SkippedFrame` (with

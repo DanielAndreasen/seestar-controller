@@ -117,6 +117,9 @@ from seestar_controller.store.stars import ROLE_CHECK, ROLE_COMP, ROLE_TARGET, R
 
 from .measure import (
     MAG_ERR_COEFF,
+    REPROJECT_CENTROID_RADIUS_PX,
+    REPROJECT_SEARCH_RADIUS_PX,
+    REPROJECT_SIGNIFICANCE_SIGMA,
     FrameMeasurement,
     FrameSkippedError,
     MeasurementError,
@@ -133,6 +136,7 @@ from .measure import (
     measure_frame_data,
     measure_project,
     measure_star,
+    refine_pick_on_frame,
     resolve_pick_pixels,
 )
 from .picking import (
@@ -215,6 +219,9 @@ __all__ = [
     "MAG_ERR_COEFF",
     "MAX_COMP_SEARCH_RADIUS_DEG",
     "NO_WCS_HINT",
+    "REPROJECT_CENTROID_RADIUS_PX",
+    "REPROJECT_SEARCH_RADIUS_PX",
+    "REPROJECT_SIGNIFICANCE_SIGMA",
     "ROLES",
     "ROLE_CHECK",
     "ROLE_COMP",
@@ -275,6 +282,7 @@ __all__ = [
     "measure_star",
     "parse_goto_target",
     "pixel_to_sky",
+    "refine_pick_on_frame",
     "resolve_pick_pixels",
     "sky_to_pixel",
     "try_pixel_to_sky",

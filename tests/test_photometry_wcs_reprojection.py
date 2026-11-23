@@ -26,6 +26,20 @@ frames skip), :meth:`~seestar_controller.photometry.run.RunController.run_sessio
 aggregated skip reasons + WCS-vs-fallback counts on the :class:`RunReport`,
 persisted into ``project.json``), the pure report aggregation properties, and
 the package boundary (subprocess + source scan).
+
+Issue 12 (this file's second half): centroid refinement of the WCS-reprojected
+picks on the frame data — the solve WCS is ~5 px off, so an unrefined pick
+misses the star core with the r=4 aperture while the 8-12 px annulus catches
+the wings (non-positive flux -> skip). Covered: :func:`refine_pick_on_frame`
+(offset star centroided, no-star/outside-window/outside-image -> None, bad
+args raise), ``measure_frame_data`` with a ~5 px and a ~6.7 px solve error
+(measures OK at the true star, refinement + offset recorded on
+``wcs_refined``/``pick_offset``; the unrefined fixed-pixel control still skips
+non-positive-flux; no-star frames still skip non-positive-flux),
+``measure_project`` / ``RunController.run_session`` over a session whose stored
+WCS is uniformly ~5 px off (all frames measured + refined, ``refined_frames``
+on the reports, ``wcs_refined_frames`` persisted in ``project.json``), and the
+fixed-pixel fallback path staying unrefined.
 """
 
 import io
@@ -49,11 +63,14 @@ from seestar_controller.photometry import (
     measure_frame_data,
     measure_project,
     pixel_to_sky,
+    refine_pick_on_frame,
     resolve_pick_pixels,
     sky_to_pixel,
     try_sky_to_pixel,
 )
 from seestar_controller.photometry.measure import (
+    REPROJECT_CENTROID_RADIUS_PX,
+    REPROJECT_SEARCH_RADIUS_PX,
     FrameMeasurement,
     FrameSkippedError,
     MeasurementError,
@@ -165,12 +182,14 @@ def frame_data(
     seed: int,
     *,
     noise: float = NOISE,
+    sigma2: float = 8.0,
 ) -> np.ndarray:
     """A synthetic SIZE x SIZE frame: flat background + Gaussian stars
-    (sigma^2=8) at the GIVEN ``(x, y)`` positions (``star_positions`` maps the
-    star key to its 0-based ``(x, y)`` — the reprojected position for this
-    frame) + noise, float32. The target sits at ``star_positions["target"]``
-    with ``target_peak``, the comps at their positions with peak ``F0``."""
+    (sigma^2=``sigma2``) at the GIVEN ``(x, y)`` positions (``star_positions``
+    maps the star key to its 0-based ``(x, y)`` — the reprojected position for
+    this frame) + noise, float32. The target sits at
+    ``star_positions["target"]`` with ``target_peak``, the comps at their
+    positions with peak ``F0``."""
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:SIZE, 0:SIZE]
     data = np.full((SIZE, SIZE), BACKGROUND, dtype=np.float64)
@@ -179,7 +198,7 @@ def frame_data(
         peaks[key] = F0
     for key, peak in peaks.items():
         x, y = star_positions[key]
-        data = data + peak * np.exp(-(((yy - y) ** 2 + (xx - x) ** 2) / 8.0))
+        data = data + peak * np.exp(-(((yy - y) ** 2 + (xx - x) ** 2) / sigma2))
     if noise:
         data = data + rng.normal(0.0, noise, size=(SIZE, SIZE))
     return np.ascontiguousarray(data, dtype=np.float32)
@@ -188,6 +207,19 @@ def frame_data(
 def drifted_positions(shift_x: float, shift_y: float) -> dict[str, tuple[float, float]]:
     """The star pixel positions of the frame with the given WCS shift."""
     return {key: star_pixel(shift_x, shift_y, coord) for key, coord in STAR_COORDS.items()}
+
+
+def offset_positions(
+    shift_x: float, shift_y: float, dx: float, dy: float = 0.0
+) -> dict[str, tuple[float, float]]:
+    """The star pixel positions of the frame with the given WCS shift, but
+    DRAWN ``(dx, dy)`` px away from where the WCS predicts them — the
+    ~few-px plate-solve pointing error of issue 12 (the stored WCS says the
+    star is at the drifted position, the frame data has it offset)."""
+    return {
+        key: (pos[0] + dx, pos[1] + dy)
+        for key, pos in drifted_positions(shift_x, shift_y).items()
+    }
 
 
 def fits_bytes(data: np.ndarray, *, date_obs: str | None = "2026-11-20T22:00:00.000") -> bytes:
@@ -383,6 +415,11 @@ def test_measure_frame_data_reprojects_sky_picks_onto_the_frame_wcs():
     fm = measure_frame_data(data, header, picks, APERTURE, wcs=wcs_cards(sx, sy))
     assert isinstance(fm, FrameMeasurement)
     assert fm.wcs_reprojected == 4
+    # issue 12: the reprojected picks are centroid-refined on the (noiseless)
+    # frame — the star sits exactly at the WCS pixel, so the refinement is
+    # the identity and the measured pixel is the reprojected one
+    assert fm.wcs_refined == 4
+    assert fm.target.pick_offset == pytest.approx((0.0, 0.0), abs=1e-6)
     assert fm.mag == pytest.approx(m_inj, abs=0.02)
     expected_target = star_pixel(sx, sy, STAR_COORDS["target"])
     assert (fm.target.x, fm.target.y) == pytest.approx(expected_target, abs=1e-6)
@@ -407,6 +444,8 @@ def test_measure_frame_data_reprojects_sky_picks_onto_the_frame_wcs():
         wcs=wcs_cards(0.0, 0.0),
     )
     assert fm4.wcs_reprojected == 0
+    assert fm4.wcs_refined == 0  # issue 12: fixed-pixel picks are never refined
+    assert fm4.target.pick_offset is None
     assert (fm4.target.x, fm4.target.y) == pytest.approx(base_target)
     # ... while on the DRIFTED frame the same pixel-only picks miss the star
     with pytest.raises(FrameSkippedError) as excinfo2:
@@ -474,10 +513,17 @@ def test_measure_project_recovers_all_drifted_frames_via_per_frame_wcs(project):
     assert report.wcs_frames == n
     assert report.pixel_frames == 0
     assert all(fm.wcs_reprojected == 4 for fm in report.frame_results)
-    # the per-frame target pixel follows the drift (not the fixed pick)
+    # the per-frame target pixel follows the drift (not the fixed pick);
+    # issue 12: the pick is centroid-refined on the frame, so it lands within
+    # ~1 px of the (noisy-frame) star centroid rather than exactly on the WCS
+    # pixel — the drift itself is >= 25 px, so abs=1 still proves the drift
     for i, fm in enumerate(report.frame_results):
         expected = star_pixel(*drift(i), STAR_COORDS["target"])
-        assert (fm.target.x, fm.target.y) == pytest.approx(expected, abs=1e-6)
+        assert (fm.target.x, fm.target.y) == pytest.approx(expected, abs=1.0)
+        # issue 12: every reprojected pick was centroid-refined on the frame
+        assert fm.wcs_refined == 4
+        assert fm.target.pick_offset is not None
+        assert math.hypot(*fm.target.pick_offset) <= REPROJECT_SEARCH_RADIUS_PX
     # the injected sinusoid is recovered on every frame
     lc = lightcurve(project)
     assert len(lc) == n
@@ -638,13 +684,13 @@ def test_run_session_with_picker_spec_picks_also_reprojects(project):
 # --- pure report aggregation properties ---------------------------------------------
 
 
-def _fm(wcs_reprojected: int = 0, jd: float = 2460000.5) -> FrameMeasurement:
+def _fm(wcs_reprojected: int = 0, jd: float = 2460000.5, wcs_refined: int = 0) -> FrameMeasurement:
     star = StarMeasurement(
         role="target", label=None, x=1.0, y=1.0, flux=100.0, flux_err=1.0, mag=-5.0, mag_err=0.01
     )
     return FrameMeasurement(
         jd=jd, target=star, comps=(star,), ensemble_mag=-5.0, mag=0.0, mag_err=0.02,
-        wcs_reprojected=wcs_reprojected,
+        wcs_reprojected=wcs_reprojected, wcs_refined=wcs_refined,
     )
 
 
@@ -658,7 +704,7 @@ def test_run_report_skip_and_wcs_aggregation_pure():
             SkippedFrame(frame_id=4, reason="r4"),  # no kind -> "error"
         ),
         session_id="s1",
-        frame_results=(_fm(4), _fm(0), _fm(2)),
+        frame_results=(_fm(4, wcs_refined=4), _fm(0), _fm(2, wcs_refined=1)),
     )
     assert report.skip_reasons == {
         "non-positive-flux": 2,
@@ -668,16 +714,19 @@ def test_run_report_skip_and_wcs_aggregation_pure():
     assert report.skip_summary == "4 frames skipped (error×1, non-positive-flux×2, outside-image×1)"
     assert report.wcs_frames == 2
     assert report.pixel_frames == 1
+    assert report.refined_frames == 2  # issue 12
     assert report.wcs_summary == "2 of 3 frames via per-frame WCS reprojection (1 fixed-pixel)"
     # empty report
     empty = RunReport(measurements=(), skipped=(), session_id="s")
     assert empty.skip_reasons == {}
     assert empty.skip_summary == "no frames skipped"
     assert empty.wcs_frames == 0 and empty.pixel_frames == 0
+    assert empty.refined_frames == 0  # issue 12
     assert empty.wcs_summary == "no frames measured"
     # one frame, all WCS
     one = RunReport(measurements=(), skipped=(), session_id="s", frame_results=(_fm(4),))
     assert one.wcs_summary == "1 of 1 frame via per-frame WCS reprojection"
+    assert one.refined_frames == 0  # reprojected but not refined
 
 
 def test_measure_report_skip_and_wcs_aggregation_pure():
@@ -689,7 +738,16 @@ def test_measure_report_skip_and_wcs_aggregation_pure():
     assert report.skip_reasons == {"unreadable-frame": 1}
     assert report.skip_summary == "1 frame skipped (unreadable-frame×1)"
     assert report.wcs_frames == 0 and report.pixel_frames == 1
+    assert report.refined_frames == 0  # issue 12
     assert MeasureReport(measurements=(), skipped=()).skip_summary == "no frames skipped"
+    # issue 12: the refined-frame aggregation
+    refined = MeasureReport(
+        measurements=(),
+        skipped=(),
+        frame_results=(_fm(4, wcs_refined=4), _fm(4, wcs_refined=2), _fm(0)),
+    )
+    assert refined.wcs_frames == 2 and refined.pixel_frames == 1
+    assert refined.refined_frames == 2
 
 
 def test_error_kinds_are_carried_on_the_exceptions():
@@ -711,6 +769,246 @@ def test_error_kinds_are_carried_on_the_exceptions():
             APERTURE,
             wcs=object(),
         )
+
+
+# --- issue 12: centroid refinement of WCS-reprojected picks on the frame -------
+#
+# The stored solve WCS has a ~few-px pointing error: on the live vw-cep run the
+# true star core sits 4.5-6.7 px from the WCS-predicted pixel on every frame,
+# so with aperture_radius=4 the core falls OUTSIDE the aperture while the
+# 8-12 px sky annulus catches the star wings -> background overestimated ->
+# non-positive flux -> spurious skip on nearly every frame. After the issue-09
+# reprojection each pick is therefore centroid-refined on the actual frame.
+
+
+def test_refine_pick_on_frame_centroids_an_offset_star_and_rejects_no_star():
+    # the defaults: the centroid window is smaller than the search window
+    assert 0.0 < REPROJECT_CENTROID_RADIUS_PX < REPROJECT_SEARCH_RADIUS_PX
+    sx, sy = drift(1)
+    base = drifted_positions(sx, sy)
+    pred = base["target"]
+    # the star is drawn 5 px away from the WCS-predicted pixel (issue 12)
+    drawn = offset_positions(sx, sy, 5.0, 0.0)
+    data = frame_data(drawn, F0, seed=21, noise=0.0)
+    refined = refine_pick_on_frame(data, *pred)
+    assert refined is not None
+    assert refined == pytest.approx(drawn["target"], abs=0.5)
+    # the refinement stays within the search window of the predicted pixel
+    assert math.hypot(refined[0] - pred[0], refined[1] - pred[1]) <= REPROJECT_SEARCH_RADIUS_PX
+    # every star of the field is found the same way
+    for key, pos in drawn.items():
+        assert refine_pick_on_frame(data, *base[key]) == pytest.approx(pos, abs=0.5)
+    # a no-star frame (flat background + noise): no significant local max -> None
+    rng = np.random.default_rng(31)
+    flat = np.ascontiguousarray(
+        np.full((SIZE, SIZE), BACKGROUND) + rng.normal(0.0, NOISE, (SIZE, SIZE)),
+        dtype=np.float32,
+    )
+    assert refine_pick_on_frame(flat, *pred) is None
+    # an all-zero frame -> None as well
+    assert refine_pick_on_frame(np.zeros((SIZE, SIZE), dtype=np.float32), *pred) is None
+    # a star far OUTSIDE the search window (sharp profile, 15 px away) -> None
+    far = offset_positions(sx, sy, 15.0, 0.0)
+    far_data = frame_data(far, F0, seed=32, noise=0.0, sigma2=2.0)
+    assert refine_pick_on_frame(far_data, *pred) is None
+    # a predicted pixel outside the image -> None (never raises)
+    assert refine_pick_on_frame(data, -440.0, 10.0) is None
+    assert refine_pick_on_frame(data, 10.0, 99999.0) is None
+    # bad arguments raise MeasurementError
+    with pytest.raises(MeasurementError, match="must be positive"):
+        refine_pick_on_frame(data, *pred, search_radius_px=0.0)
+    with pytest.raises(MeasurementError, match="must be positive"):
+        refine_pick_on_frame(data, *pred, centroid_radius_px=-1.0)
+    with pytest.raises(MeasurementError, match="must be positive"):
+        refine_pick_on_frame(data, *pred, significance_sigma=0.0)
+    with pytest.raises(MeasurementError, match="must be finite"):
+        refine_pick_on_frame(data, float("nan"), 0.0)  # type: ignore[arg-type]
+
+
+def _fixed_picks_at(positions: dict[str, tuple[float, float]]) -> list[StarPickSpec]:
+    """Pixel-only picks (no sky coord) placed at the GIVEN ``(x, y)``
+    positions (keyed by label) — the fixed-pixel fallback path of issue 09,
+    which issue 12 deliberately leaves unchanged (never refined)."""
+    picks: list[StarPickSpec] = []
+    for spec in make_spec_picks(with_sky=False):
+        label = spec.label
+        assert label is not None  # make_spec_picks always labels its picks
+        x, y = positions[label]
+        picks.append(StarPickSpec(role=spec.role, x=x, y=y, coord=None, label=label))
+    return picks
+
+
+def test_measure_frame_data_centroid_refines_5px_offset_reprojected_picks():
+    """The issue-12 headline: a synthetic frame whose stars sit ~5 px from the
+    WCS-predicted pixel (the live plate-solve pointing error) measures OK —
+    after the reprojection the picks are centroid-refined onto the stars."""
+    sx, sy = drift(1)
+    wcs = wcs_cards(sx, sy)
+    predicted = drifted_positions(sx, sy)
+    drawn = offset_positions(sx, sy, 5.0, 0.0)  # the ~5 px solve error
+    m_inj = 0.25
+    data = frame_data(drawn, F0 * 10 ** (-0.4 * m_inj), seed=41, noise=0.0)
+    header = {"DATE-OBS": date_obs_str(1)}
+
+    fm = measure_frame_data(data, header, make_spec_picks(), APERTURE, wcs=wcs)
+    assert fm.wcs_reprojected == 4
+    assert fm.wcs_refined == 4  # every reprojected pick was refined
+    assert fm.mag == pytest.approx(m_inj, abs=0.02)
+    # the target was measured AT THE STAR (5 px from the WCS-predicted pixel),
+    # and the refinement offset is recorded on the StarMeasurement
+    assert (fm.target.x, fm.target.y) == pytest.approx(drawn["target"], abs=0.5)
+    assert fm.target.pick_offset == pytest.approx((5.0, 0.0), abs=0.5)
+    for comp, key in zip(fm.comps, ("comp_a", "comp_b", "comp_c")):
+        assert (comp.x, comp.y) == pytest.approx(drawn[key], abs=0.5)
+        assert comp.pick_offset == pytest.approx((5.0, 0.0), abs=0.5)
+
+    # control — the fixed-pixel fallback path is UNCHANGED (never refined):
+    # pixel-only picks at the WCS-predicted pixels, no wcs: the star is
+    # measured at the predicted pixel, with no refinement and no offset
+    fm_fixed = measure_frame_data(data, header, _fixed_picks_at(predicted), APERTURE)
+    assert fm_fixed.wcs_reprojected == 0 and fm_fixed.wcs_refined == 0
+    assert fm_fixed.target.pick_offset is None
+    assert (fm_fixed.target.x, fm_fixed.target.y) == pytest.approx(predicted["target"])
+
+
+def test_measure_frame_data_refinement_recovers_the_live_non_positive_flux_skip():
+    """The exact live failure mode of issue 12: with a sharper (saturated-like)
+    profile the star core 6.7 px from the WCS-predicted pixel falls outside the
+    r=4 aperture while the 8-12 px annulus catches the wings -> the UNREFINED
+    pick skips non-positive-flux; the centroid-refined one measures OK."""
+    sx, sy = drift(1)
+    wcs = wcs_cards(sx, sy)
+    predicted = drifted_positions(sx, sy)
+    drawn = offset_positions(sx, sy, 6.7, 0.0)
+    m_inj = 0.25
+    data = frame_data(drawn, F0 * 10 ** (-0.4 * m_inj), seed=42, noise=0.0, sigma2=4.0)
+    header = {"DATE-OBS": date_obs_str(1)}
+
+    # control: the same frame with pixel-only picks at the predicted pixels and
+    # NO wcs (the fixed-pixel path — unchanged by issue 12) -> the star core is
+    # outside the aperture, the annulus is contaminated by the wings -> skip
+    with pytest.raises(FrameSkippedError) as excinfo:
+        measure_frame_data(data, header, _fixed_picks_at(predicted), APERTURE)
+    assert excinfo.value.kind == "non-positive-flux"
+
+    # with the frame WCS the picks are reprojected AND centroid-refined -> OK
+    fm = measure_frame_data(data, header, make_spec_picks(), APERTURE, wcs=wcs)
+    assert fm.wcs_reprojected == 4 and fm.wcs_refined == 4
+    assert fm.mag == pytest.approx(m_inj, abs=0.02)
+    assert (fm.target.x, fm.target.y) == pytest.approx(drawn["target"], abs=0.5)
+    assert fm.target.pick_offset == pytest.approx((6.7, 0.0), abs=0.5)
+
+
+def test_measure_frame_data_no_star_frame_still_skips_non_positive_flux():
+    """Issue 12: a no-star frame has no significant local max near the
+    reprojected pick — the predicted pixel is kept and the frame still skips
+    with kind non-positive-flux (the skip semantics are unchanged)."""
+    sx, sy = drift(1)
+    predicted = drifted_positions(sx, sy)
+    rng = np.random.default_rng(51)
+    data = np.ascontiguousarray(
+        np.full((SIZE, SIZE), BACKGROUND) + rng.normal(0.0, NOISE, (SIZE, SIZE)),
+        dtype=np.float32,
+    )
+    header = {"DATE-OBS": date_obs_str(1)}
+    # no significant local maximum near the predicted target pixel
+    assert refine_pick_on_frame(data, *predicted["target"]) is None
+    with pytest.raises(FrameSkippedError) as excinfo:
+        measure_frame_data(data, header, make_spec_picks(), APERTURE, wcs=wcs_cards(sx, sy))
+    assert excinfo.value.kind == "non-positive-flux"
+    # ... and an all-zero frame as well
+    with pytest.raises(FrameSkippedError) as excinfo2:
+        measure_frame_data(
+            np.zeros((SIZE, SIZE), dtype=np.float32),
+            header,
+            make_spec_picks(),
+            APERTURE,
+            wcs=wcs_cards(sx, sy),
+        )
+    assert excinfo2.value.kind == "non-positive-flux"
+
+
+def make_solve_error_session(project, n: int = 4, dx: float = 5.0, amp: float = 0.3):
+    """One session of ``n`` sub-frames whose stored WCS carries a constant
+    ``dx`` px pointing error (issue 12): frame ``i``'s stored WCS is the
+    drifted one, but the stars are DRAWN ``dx`` px away from where that WCS
+    predicts them. Returns ``(session_id, frames, injected_mags)``."""
+    session = start_session(project, clock=frozen(T0))
+    injected: list[float] = []
+    frames = []
+    for i in range(n):
+        m_inj = amp * math.sin(2.0 * math.pi * i / n)
+        injected.append(m_inj)
+        target_peak = F0 * 10 ** (-0.4 * m_inj)
+        sx, sy = drift(i)
+        drawn = offset_positions(sx, sy, dx, 0.0)
+        frame = store_frame(
+            project,
+            session,
+            KIND_SUB,
+            fits_bytes(
+                frame_data(drawn, target_peak, seed=200 + i),
+                date_obs=date_obs_str(i),
+            ),
+        )
+        save_frame_wcs(
+            project,
+            frame.id,
+            solver="gaia",
+            n_stars=12,
+            center_ra_deg=CRVAL[0],
+            center_dec_deg=CRVAL[1],
+            cards=wcs_cards(sx, sy),
+        )
+        frames.append(frame)
+    return session, frames, injected
+
+
+def test_measure_project_centroid_refines_reprojected_picks_on_every_frame(project):
+    n, dx = 4, 5.0
+    _session, _frames, injected = make_solve_error_session(project, n=n, dx=dx)
+    save_star_picks(project, make_picks())
+
+    report = measure_project(project, load_star_picks(project))
+    assert isinstance(report, MeasureReport)
+    assert len(report.measurements) == n and report.skipped == ()
+    assert report.wcs_frames == n
+    assert report.refined_frames == n  # issue 12: every measured frame refined
+    assert report.pixel_frames == 0
+    for i, fm in enumerate(report.frame_results):
+        drawn = offset_positions(*drift(i), dx, 0.0)
+        assert fm.wcs_reprojected == 4 and fm.wcs_refined == 4
+        assert (fm.target.x, fm.target.y) == pytest.approx(drawn["target"], abs=0.5)
+        assert fm.target.pick_offset == pytest.approx((dx, 0.0), abs=0.5)
+        assert fm.mag == pytest.approx(injected[i], abs=0.02)
+    lc = lightcurve(project)
+    assert len(lc) == n
+    for meas, m_inj in zip(lc, injected):
+        assert meas.mag == pytest.approx(m_inj, abs=0.02)
+
+
+def test_run_session_reports_and_persists_refined_frames(project):
+    """The run.py pass-through of issue 12: ``run_session``'s report aggregates
+    the centroid-refined frames (``refined_frames``) and persists them in the
+    project.json ``last_run`` record (``wcs_refined_frames``)."""
+    n, dx = 4, 5.0
+    session, _frames, injected = make_solve_error_session(project, n=n, dx=dx)
+    save_star_picks(project, make_picks())
+
+    ctrl = RunController(project=project)
+    report = ctrl.run_session(session)
+    assert isinstance(report, RunReport)
+    assert len(report.measurements) == n and report.skipped == ()
+    assert report.wcs_frames == n and report.pixel_frames == 0
+    assert report.refined_frames == n  # issue 12
+    assert all(fm.wcs_refined == 4 for fm in report.frame_results)
+    assert report.frame_results[0].target.pick_offset == pytest.approx((dx, 0.0), abs=0.5)
+    for meas, m_inj in zip(report.measurements, injected):
+        assert meas.mag == pytest.approx(m_inj, abs=0.02)
+    # ... persisted into project.json's last_run record
+    last = project.config["photometry"]["last_run"]
+    assert last["wcs_frames"] == n and last["pixel_frames"] == 0
+    assert last["wcs_refined_frames"] == n  # issue 12
 
 
 # --- package boundary (subprocess + source scan) -------------------------------------
@@ -743,8 +1041,9 @@ def test_measure_and_run_source_scan_stays_pure():
 
 
 def test_public_api_exports_the_new_helpers():
-    for name in ("resolve_pick_pixels", "try_sky_to_pixel"):
+    for name in ("resolve_pick_pixels", "try_sky_to_pixel", "refine_pick_on_frame"):
         assert name in photometry.__all__, name
         assert hasattr(photometry, name), name
     assert photometry.resolve_pick_pixels is resolve_pick_pixels
     assert photometry.try_sky_to_pixel is try_sky_to_pixel
+    assert photometry.refine_pick_on_frame is refine_pick_on_frame
