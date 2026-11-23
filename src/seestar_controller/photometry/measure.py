@@ -152,6 +152,27 @@ Conventions (documented choices):
 - **Error array** for photutils: Poisson-like ``sqrt(clip(data, 1, None))``
   over the finite pixels (non-finite pixels are masked out), so
   ``aperture_sum_err`` is always finite and positive for a real star.
+- **Error model (issue 15).** ``mag_err`` is NOT just the photon/read-noise
+  propagation ``MAG_ERR_COEFF * flux_err / flux`` — that underestimates the real
+  scatter by ~50x on small-aperture runs (median 0.006 vs 0.30 mag observed).
+  On top of the Poisson/read-noise term, the model folds in (in quadrature, on
+  the flux, before the magnitude propagation):
+  - the **positional/centering uncertainty** of the aperture center w.r.t. the
+    star core, converted to a fractional flux error via
+    :func:`positional_flux_frac` (the aperture-flux curvature
+    :func:`_aperture_flux_curvature`, which blows up at small aperture radii —
+    e.g. r=1.5 px). The positional uncertainty is: the centroid uncertainty of a
+    centroid-refined reprojected pick (``~CENTROID_SIGMA_COEFF * sigma_psf /
+    SNR``), plus a residual fraction of its recorded ``pick_offset``; the WCS
+    match rms converted to px (:func:`_wcs_rms_px`) when the frame WCS is a
+    :class:`~seestar_controller.store.wcs.FrameWcs` carrying ``rms_arcsec``
+    (it bounds the astrometric uncertainty of every position in the frame,
+    including stale fixed picks); and a default few-px pointing error
+    (:data:`DEFAULT_REPROJECT_ERR_PX`) for reprojected picks that were NOT
+    refined and whose WCS carries no usable rms;
+  - a **small-aperture systematics floor** :func:`aperture_systematics_frac` —
+    the fraction of the star light OUTSIDE the aperture is uncertain (PSF /
+    seeing / focus variation) and propagates straight into the flux.
 - **RGB frames** are reduced to their channel mean first (same as the
   picking snap); anything that is not 2-D after that raises
   :class:`MeasurementError`.
@@ -278,6 +299,46 @@ REPROJECT_CENTROID_RADIUS_PX = 5.0
 #: background by more than this many (robust) sigmas (issue 12).
 REPROJECT_SIGNIFICANCE_SIGMA = 5.0
 
+#: Issue 15 — centroid-uncertainty coefficient: the centroid of a star of PSF
+#: width ``sigma_psf`` measured with SNR = ``flux / flux_err`` is uncertain by
+#: ~``CENTROID_SIGMA_COEFF * sigma_psf / SNR`` px.
+CENTROID_SIGMA_COEFF = 1.0
+#: Issue 15 — residual fraction of a refinement ``pick_offset`` kept as
+#: positional uncertainty of the refined pick: the refinement corrects the
+#: pointing offset, but not perfectly (e.g. a centroid window clamped at the
+#: search-window edge biases the centroid when the offset is large).
+PICK_OFFSET_RESIDUAL_FRAC = 0.1
+#: Issue 15 — default positional uncertainty (px) of a WCS-reprojected pick
+#: that was NOT centroid-refined and whose WCS carries no usable rms — the
+#: ~few-px plate-solve pointing error seen on live frames (issue 12).
+DEFAULT_REPROJECT_ERR_PX = 0.5 * REPROJECT_SEARCH_RADIUS_PX
+#: Issue 15 — coefficient of the positional fractional-flux error: for a small
+#: aperture the flux varies to second order in a center offset
+#: (``F(d) ≈ F(0) * (1 - c2 * d^2)``), and the rms over a Gaussian offset
+#: distribution of width ``sigma_pos`` is ``sqrt(3) * c2 * sigma_pos^2``.
+POSITION_ERR_COEFF = math.sqrt(3.0)
+#: Issue 15 — saturation cap of the positional fractional-flux error (an
+#: aperture far off the star core measures essentially no star light).
+POSITION_FRAC_MAX = 0.95
+#: Issue 15 — small-aperture systematics: the fraction of the star light
+#: OUTSIDE the aperture (``exp(-r^2 / (2 sigma_psf^2))``) is uncertain at this
+#: level (PSF / seeing / focus variation) and propagates straight into the
+#: measured flux.
+APERTURE_SYS_COEFF = 0.02
+#: Issue 15 — the systematics floor only applies to a SMALL aperture, one that
+#: misses more than this fraction of the star light (``r < ~1.18 sigma_psf``);
+#: for a larger aperture the edge systematics are negligible next to the
+#: photon noise, so the floor is exactly 0 there.
+APERTURE_SYS_MIN_OUTSIDE_FRAC = 0.5
+#: Issue 15 — floor of the PSF-sigma estimate (px) — smaller than any real PSF.
+MIN_PSF_SIGMA_PX = 0.7
+#: Issue 15 — minimum half-size (px) of the window used to estimate the PSF
+#: sigma around a pick (the window half-size is
+#: ``max(PSF_ESTIMATE_MIN_RADIUS_PX, 2 * aperture_radius, 3 * sigma_estimate)``,
+#: iterated so the window covers ~3 sigma of the PSF and the second moment is
+#: not truncated).
+PSF_ESTIMATE_MIN_RADIUS_PX = 6.0
+
 
 def _finite_float(value: Any, what: str) -> float:
     """Coerce ``value`` to a finite float (bools rejected); raise
@@ -365,6 +426,187 @@ def differential_mag_err(target_mag_err: float, comp_mag_errs: Sequence[float]) 
     return math.sqrt(t * t + ensemble_mag_err(comp_mag_errs) ** 2)
 
 
+# --- the issue-15 error model: positional + small-aperture systematics --------------------
+
+
+def _psf_sigma_in_window(plane: np.ndarray, x: float, y: float, half: float) -> float:
+    """The PSF sigma (px) estimated in the square window of half-size ``half``
+    around ``(x, y)`` (clipped to the image): background = median of the
+    finite window pixels, weights ``clip(value - background, 0, None)``, the
+    weighted centroid computed first and the second moment taken around IT
+    (so a jittered star does not inflate the estimate):
+    ``sigma^2 = sum(w * r^2) / (2 * sum(w))`` (a 2-D Gaussian has
+    ``E[r^2] = 2 sigma^2``). Floored at :data:`MIN_PSF_SIGMA_PX`, capped at
+    ``half``; a window with no positive weights yields the floor."""
+    height, width = int(plane.shape[0]), int(plane.shape[1])
+    x0 = max(0, math.floor(x - half))
+    x1 = min(width, math.ceil(x + half) + 1)
+    y0 = max(0, math.floor(y - half))
+    y1 = min(height, math.ceil(y + half) + 1)
+    if x1 <= x0 or y1 <= y0:
+        return MIN_PSF_SIGMA_PX
+    win = plane[y0:y1, x0:x1]
+    finite = np.isfinite(win)
+    if not bool(finite.any()):
+        return MIN_PSF_SIGMA_PX
+    values = win[finite]
+    # sigma-clipped background: a plain median is biased up by the star wings
+    # of a bright star, which would clip the weights and underestimate sigma
+    background = float(np.median(values))
+    for _ in range(3):
+        mad = float(np.median(np.abs(values - background)))
+        clip = max(1.4826 * mad, math.sqrt(max(background, 1.0)), 1e-12)
+        keep = values <= background + 2.5 * clip
+        if not bool(keep.any()):
+            break
+        values = values[keep]
+        background = float(np.median(values))
+    weights = np.where(finite, np.clip(win - background, 0.0, None), 0.0)
+    total = float(weights.sum())
+    if not total > 0.0:
+        return MIN_PSF_SIGMA_PX
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    cx = float((weights * xx).sum() / total)
+    cy = float((weights * yy).sum() / total)
+    r2 = (xx - cx) ** 2 + (yy - cy) ** 2
+    sigma2 = float((weights * r2).sum() / (2.0 * total))
+    return float(min(max(math.sqrt(max(sigma2, 0.0)), MIN_PSF_SIGMA_PX), half))
+
+
+def _estimate_psf_sigma(plane: np.ndarray, x: float, y: float, radius_px: float) -> float:
+    """Estimate the Gaussian PSF sigma (px) around the pick ``(x, y)`` from the
+    frame ``plane`` (issue 15) via :func:`_psf_sigma_in_window`, iterating the
+    window half-size up to ``max(PSF_ESTIMATE_MIN_RADIUS_PX, 2 * radius_px,
+    3 * sigma_estimate)`` so the window covers ~3 sigma of the PSF and the
+    second moment is not truncated."""
+    half = max(PSF_ESTIMATE_MIN_RADIUS_PX, 2.0 * radius_px)
+    sigma = MIN_PSF_SIGMA_PX
+    for _ in range(3):
+        sigma = _psf_sigma_in_window(plane, x, y, half)
+        half = max(PSF_ESTIMATE_MIN_RADIUS_PX, 2.0 * radius_px, 3.0 * sigma)
+    return sigma
+
+
+def _aperture_flux_curvature(radius_px: float, sigma_psf: float) -> float:
+    """The quadratic coefficient ``c2`` of the aperture-flux loss for a small
+    center offset ``d`` on a Gaussian PSF of width ``sigma_psf`` (issue 15):
+    ``F(d) ≈ F(0) * (1 - c2 * d^2)`` with
+    ``c2 = r^2 * exp(-r^2 / 2 sigma^2) / (4 sigma^4 (1 - exp(-r^2 / 2 sigma^2)))``.
+
+    For a small aperture (``r << sigma``) ``c2 → 1 / (2 sigma^2)`` — the
+    aperture sits in the steep wing of the star, so a small centering error
+    costs a lot of flux; for ``r >> sigma`` the aperture already encircles the
+    star and ``c2 → 0``. ``radius_px`` must be positive, ``sigma_psf`` is
+    floored at :data:`MIN_PSF_SIGMA_PX`.
+    """
+    r = _finite_float(radius_px, "radius_px")
+    s = max(_finite_float(sigma_psf, "sigma_psf"), MIN_PSF_SIGMA_PX)
+    if r <= 0.0:
+        raise MeasurementError(f"radius_px must be positive, got {radius_px!r}")
+    s2 = s * s
+    r2 = r * r
+    x = r2 / (2.0 * s2)
+    ex = math.exp(-x)
+    denom = 4.0 * s2 * s2 * (1.0 - ex)
+    if denom <= 0.0:
+        return 0.0
+    return r2 * ex / denom
+
+
+def positional_flux_frac(radius_px: float, sigma_psf: float, positional_err_px: float) -> float:
+    """The fractional flux uncertainty of a circular aperture of
+    ``radius_px`` on a Gaussian PSF ``sigma_psf`` whose center is uncertain by
+    ``positional_err_px`` (1σ, px) — issue 15:
+    ``min(POSITION_FRAC_MAX, POSITION_ERR_COEFF * c2 * positional_err_px^2)``
+    with :func:`_aperture_flux_curvature` ``c2`` (the rms of the second-order
+    flux variation over a Gaussian offset distribution is
+    ``sqrt(3) * c2 * sigma_pos^2`` = :data:`POSITION_ERR_COEFF`).
+
+    The result saturates at :data:`POSITION_FRAC_MAX` — an aperture far off
+    the star core measures essentially no star light. ``positional_err_px <= 0``
+    yields 0 (an exactly centered aperture has no positional error).
+    """
+    err = _finite_float(positional_err_px, "positional_err_px")
+    if err < 0.0:
+        raise MeasurementError(f"positional_err_px must be >= 0, got {positional_err_px!r}")
+    if err == 0.0:
+        return 0.0
+    c2 = _aperture_flux_curvature(radius_px, sigma_psf)
+    return min(POSITION_FRAC_MAX, POSITION_ERR_COEFF * c2 * err * err)
+
+
+def aperture_systematics_frac(radius_px: float, sigma_psf: float) -> float:
+    """The small-aperture edge-systematics fraction (issue 15): for a SMALL
+    aperture the fraction of the star light OUTSIDE the aperture,
+    ``exp(-r^2 / (2 sigma_psf^2))``, is uncertain at the
+    :data:`APERTURE_SYS_COEFF` level (PSF / seeing / focus variation between
+    frames), and that uncertainty propagates straight into the
+    background-subtracted flux. The floor applies only when the aperture
+    misses more than :data:`APERTURE_SYS_MIN_OUTSIDE_FRAC` of the light
+    (``r < ~1.18 sigma_psf`` — e.g. the live-run r=1.5 px vs sigma_psf=2 px
+    misses ~75%); for a larger aperture (e.g. the default r=4 px vs
+    sigma_psf=2 px misses ~14%) the edge systematics are negligible next to
+    the photon noise and the floor is exactly 0."""
+    r = _finite_float(radius_px, "radius_px")
+    s = max(_finite_float(sigma_psf, "sigma_psf"), MIN_PSF_SIGMA_PX)
+    if r <= 0.0:
+        raise MeasurementError(f"radius_px must be positive, got {radius_px!r}")
+    outside = math.exp(-(r * r) / (2.0 * s * s))
+    if outside <= APERTURE_SYS_MIN_OUTSIDE_FRAC:
+        return 0.0
+    return APERTURE_SYS_COEFF * outside
+
+
+def _pixel_scale_arcsec(cards: Mapping[str, Any]) -> float | None:
+    """The pixel scale in arcsec/px from FITS WCS ``cards``: the ``CD`` matrix
+    (``sqrt(|det CD|)``), else ``PC`` × ``CDELT``, else ``CDELT`` alone — all
+    in deg/px, converted to arcsec. None when the cards carry no usable scale
+    (e.g. a raw Seestar sub with no celestial WCS)."""
+
+    def _num(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        f = float(value)
+        return f if math.isfinite(f) else None
+
+    cd00, cd01 = _num(cards.get("CD1_1")), _num(cards.get("CD1_2"))
+    cd10, cd11 = _num(cards.get("CD2_1")), _num(cards.get("CD2_2"))
+    if cd00 is not None and cd01 is not None and cd10 is not None and cd11 is not None:
+        det = cd00 * cd11 - cd01 * cd10
+        if det != 0.0:
+            return abs(det) ** 0.5 * 3600.0
+    cdelt1, cdelt2 = _num(cards.get("CDELT1")), _num(cards.get("CDELT2"))
+    if cdelt1 is not None and cdelt2 is not None:
+        pc00 = _num(cards.get("PC1_1", 1.0))
+        pc01 = _num(cards.get("PC1_2", 0.0))
+        pc10 = _num(cards.get("PC2_1", 0.0))
+        pc11 = _num(cards.get("PC2_2", 1.0))
+        det_pc = 1.0
+        if pc00 is not None and pc01 is not None and pc10 is not None and pc11 is not None:
+            det_pc = pc00 * pc11 - pc01 * pc10
+        scale = abs(det_pc) ** 0.5 * math.sqrt(abs(cdelt1 * cdelt2))
+        if scale > 0.0:
+            return scale * 3600.0
+    return None
+
+
+def _wcs_rms_px(wcs: Any) -> float | None:
+    """The WCS match RMS converted to pixels (issue 15): only a
+    :class:`~seestar_controller.store.wcs.FrameWcs` record carries
+    ``rms_arcsec``; the pixel scale comes from its cards via
+    :func:`_pixel_scale_arcsec`. Returns None when the wcs is not a
+    ``FrameWcs`` (plain cards / an astropy WCS carry no rms), when the record
+    has no rms, or when no pixel scale is derivable."""
+    if not isinstance(wcs, FrameWcs):
+        return None
+    if wcs.rms_arcsec is None:
+        return None
+    scale = _pixel_scale_arcsec(wcs.cards)
+    if scale is None or scale <= 0.0:
+        return None
+    return wcs.rms_arcsec / scale
+
+
 # --- per-star aperture photometry ------------------------------------------------------
 
 
@@ -379,7 +621,11 @@ class StarMeasurement:
     - ``flux_err`` — the propagated flux error (photutils
       ``aperture_sum_err`` of the aperture and the annulus in quadrature);
     - ``mag`` — the instrumental magnitude ``-2.5*log10(flux)``;
-    - ``mag_err`` — ``MAG_ERR_COEFF * flux_err / flux``;
+    - ``mag_err`` — the issue-15 error model: ``MAG_ERR_COEFF *
+      flux_err_model / flux`` where ``flux_err_model`` is the photon/read-noise
+      ``flux_err`` plus, in quadrature, the positional/centering term
+      (:func:`positional_flux_frac` × flux) and the small-aperture systematics
+      floor (:func:`aperture_systematics_frac` × flux);
     - ``pick_offset`` — issue 12: the refinement offset ``(dx, dy)`` of a
       WCS-reprojected pick that was centroid-refined on the frame data
       (refined position minus the WCS-predicted pixel), or None when the
@@ -421,6 +667,8 @@ def measure_star(
     role: str = ROLE_COMP,
     label: str | None = None,
     pick_offset: tuple[float, float] | None = None,
+    positional_err_px: float | None = None,
+    wcs_err_px: float | None = None,
 ) -> StarMeasurement:
     """Measure ONE star at 0-based pixel ``(x, y)`` with circular-aperture +
     sky-annulus photometry (photutils, ``method="exact"``).
@@ -435,7 +683,8 @@ def measure_star(
     - the background is the annulus mean (``aperture_sum / annulus.area``)
       times the aperture area, subtracted from the aperture sum;
     - ``flux_err`` = ``sqrt(aperture_sum_err^2 + (ap_area * annulus_sum_err /
-      annulus_area)^2)`` — both photutils errors in quadrature;
+      annulus_area)^2)`` — both photutils errors in quadrature (the
+      Poisson/read-noise term);
     - the flux error array is Poisson-like ``sqrt(clip(data, 1, None))`` over
       the finite pixels (non-finite pixels are masked);
     - a non-positive or non-finite background-subtracted flux raises
@@ -443,7 +692,23 @@ def measure_star(
     - ``pick_offset`` — issue 12: the refinement offset ``(dx, dy)`` of a
       centroid-refined reprojected pick (refined minus predicted pixel),
       recorded verbatim on the returned :class:`StarMeasurement`; None when
-      the star is measured at its predicted/fixed pixel.
+      the star is measured at its predicted/fixed pixel;
+    - issue 15 (``mag_err``): on top of the photon/read-noise term, the model
+      adds in quadrature on the flux
+      - the **positional/centering term**: ``positional_flux_frac(radius,
+        sigma_psf, sigma_pos) * flux`` where ``sigma_psf`` is estimated from
+        the frame around the pick (:func:`_estimate_psf_sigma`) and
+        ``sigma_pos`` is the 1σ uncertainty of the aperture center in px —
+        ``positional_err_px`` when given (an explicit override, e.g. the WCS
+        pointing error of an unrefined reprojected pick), else derived from
+        ``pick_offset`` when present: the centroid uncertainty
+        ``CENTROID_SIGMA_COEFF * sigma_psf * flux_err / flux`` plus a residual
+        ``PICK_OFFSET_RESIDUAL_FRAC`` of ``|pick_offset|``; plus ``wcs_err_px``
+        (the frame WCS match rms in px, :func:`_wcs_rms_px`) when given — all
+        in quadrature;
+      - the **small-aperture systematics floor**:
+        ``aperture_systematics_frac(radius, sigma_psf) * flux``.
+      Then ``mag_err = MAG_ERR_COEFF * flux_err_model / flux``.
 
     Returns the :class:`StarMeasurement`.
     """
@@ -463,6 +728,18 @@ def measure_star(
             _finite_float(pick_offset[0], "pick_offset dx"),
             _finite_float(pick_offset[1], "pick_offset dy"),
         )
+    sigma_pos = 0.0
+    if positional_err_px is not None:
+        sigma_pos = _finite_float(positional_err_px, "positional_err_px")
+        if sigma_pos < 0.0:
+            raise MeasurementError(
+                f"positional_err_px must be >= 0, got {positional_err_px!r}"
+            )
+    if wcs_err_px is not None:
+        wcs_err = _finite_float(wcs_err_px, "wcs_err_px")
+        if wcs_err < 0.0:
+            raise MeasurementError(f"wcs_err_px must be >= 0, got {wcs_err_px!r}")
+        sigma_pos = math.hypot(sigma_pos, wcs_err)
     plane = _as_2d_plane(data)
     height, width = int(plane.shape[0]), int(plane.shape[1])
     if not (0.0 <= px < width and 0.0 <= py < height):
@@ -519,6 +796,27 @@ def measure_star(
             f"invalid flux error {flux_err!r} at pick ({px}, {py})",
             kind="invalid-flux-error",
         )
+    # issue 15: the full error model — photon/read noise + positional term +
+    # small-aperture systematics, folded in quadrature on the flux
+    sigma_psf = _estimate_psf_sigma(plane, px, py, aperture.radius_px)
+    if positional_err_px is None and pick_offset is not None:
+        # a centroid-refined reprojected pick: the refinement corrected the
+        # pointing offset; its residual uncertainty is the centroid uncertainty
+        # (~ sigma_psf / SNR) plus a residual fraction of the measured offset,
+        # combined (in quadrature) with any explicit wcs_err_px already folded in
+        sigma_c = CENTROID_SIGMA_COEFF * sigma_psf * flux_err / flux
+        sigma_pos = math.hypot(
+            sigma_pos,
+            sigma_c,
+            PICK_OFFSET_RESIDUAL_FRAC * math.hypot(*pick_offset),
+        )
+    frac_pos = positional_flux_frac(aperture.radius_px, sigma_psf, sigma_pos)
+    frac_sys = aperture_systematics_frac(aperture.radius_px, sigma_psf)
+    flux_err_model = math.sqrt(
+        flux_err * flux_err
+        + (frac_pos * flux) ** 2
+        + (frac_sys * flux) ** 2
+    )
     return StarMeasurement(
         role=role,
         label=label,
@@ -527,7 +825,7 @@ def measure_star(
         flux=flux,
         flux_err=flux_err,
         mag=flux_to_mag(flux),
-        mag_err=flux_err_to_mag_err(flux, flux_err),
+        mag_err=flux_err_to_mag_err(flux, flux_err_model),
         pick_offset=pick_offset,
     )
 
@@ -868,7 +1166,10 @@ class FrameMeasurement:
       is NEVER among them — the ensemble is the mean of the comps only);
     - ``ensemble_mag`` — the comp-ensemble mean instrumental mag;
     - ``mag`` — the differential magnitude ``target.mag - ensemble_mag``;
-    - ``mag_err`` — ``sqrt(target.mag_err^2 + mean(comp.mag_err^2))``;
+    - ``mag_err`` — ``sqrt(target.mag_err^2 + mean(comp.mag_err^2))`` where
+      each star's ``mag_err`` is the issue-15 error model of
+      :func:`measure_star` (photon/read noise + positional/centering term +
+      small-aperture systematics);
     - ``check`` — the check star's :class:`StarMeasurement`, or None when no
       check star was picked;
     - ``check_mag`` — the check star's differential magnitude
@@ -968,6 +1269,16 @@ def measure_frame_data(
       with no significant local maximum near the predicted pixel keeps the
       predicted pixel (the normal skip logic applies). Fixed-pixel picks are
       never refined.
+    - issue 15 (error model): every ``StarMeasurement.mag_err`` is the full
+      model of :func:`measure_star` — photon/read noise plus the
+      positional/centering term plus the small-aperture systematics floor. The
+      positional uncertainty of each pick is: the centroid uncertainty + a
+      residual fraction of the ``pick_offset`` for refined reprojected picks;
+      the WCS match rms in px (:func:`_wcs_rms_px`, only for a
+      :class:`~seestar_controller.store.wcs.FrameWcs` with ``rms_arcsec`` and
+      a derivable pixel scale) for every pick of a frame whose WCS carries one;
+      and :data:`DEFAULT_REPROJECT_ERR_PX` for reprojected picks that were NOT
+      refined (measured at the WCS-predicted pixel) when no rms is available.
 
     Returns the :class:`FrameMeasurement` — with the check star's differential
     mag + error (``check_mag`` / ``check_mag_err``, same error propagation as
@@ -991,6 +1302,9 @@ def measure_frame_data(
     if wcs_reprojected:
         # issue 12: centroid-refine the reprojected picks on the frame data
         norm, wcs_refined = _refine_reprojected_picks(norm, plane)
+    # issue 15: the frame WCS match rms (px) is the astrometric uncertainty of
+    # every position in this frame — it enters every pick's mag_err
+    wcs_err_px = _wcs_rms_px(wcs)
     stars: list[StarMeasurement] = []
     drops: list[DroppedPick] = []
     for p in norm:
@@ -1008,6 +1322,20 @@ def measure_frame_data(
                         if p.refined_from is None
                         else (p.x - p.refined_from[0], p.y - p.refined_from[1])
                     ),
+                    # issue 15: an unrefined reprojected pick is measured at
+                    # the WCS-predicted pixel, whose pointing error is the WCS
+                    # rms (or the default few-px plate-solve error when the
+                    # WCS carries no rms)
+                    positional_err_px=(
+                        (
+                            wcs_err_px
+                            if wcs_err_px is not None
+                            else DEFAULT_REPROJECT_ERR_PX
+                        )
+                        if p.reprojected and p.refined_from is None
+                        else None
+                    ),
+                    wcs_err_px=wcs_err_px,
                 )
             )
         except FrameSkippedError as exc:
