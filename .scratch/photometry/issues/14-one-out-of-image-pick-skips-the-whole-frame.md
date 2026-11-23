@@ -1,6 +1,6 @@
 # Issue 14: one out-of-image pick skips the ENTIRE frame — 146/512 frames (28.5%) lost when one comp drifted off the edge
 
-**Status:** needs-triage
+**Status:** completed (reviewed APPROVE, merged as 370cea9: per-pick DroppedPick semantics, frame skipped only on unusable target or no-comps)
 
 ## Found while
 Headless lightcurve run 2026-11-22 (vw-cep): skip_reasons = {"outside-image": 146}. Every skip was a WCS-reprojected COMP pick landing outside the 1080×1920 frame (Comp C off the right edge in 138 frames, Comp D bottom in 9, Comp B top in 3) — the target and other comps were perfectly measurable, but one bad pick fails the whole frame in `measure_frame_data`.
