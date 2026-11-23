@@ -451,6 +451,29 @@ ASU_TSV = (
     "083.922080\t-05.391140\t 0.367\t 0.468\t\t 0.000\t15.527\t15.945\n"
 )
 
+#: Malformed mirror bodies (issue 06): what a mirror answers when it is down,
+#: rate-limiting, or erroring — an HTML error page, a TSV missing the band
+#: column, an empty body, metadata-only lines, plain text. ``parse_asu_tsv``
+#: rejects all of them; ``fetch_standards_payload`` must fall through.
+HTML_ERROR_PAGE = (
+    "<!DOCTYPE html>\n"
+    "<html><head><title>503 Service Unavailable</title></head>\n"
+    "<body><h1>Service Unavailable</h1><p>viz-bin is temporarily down.</p></body></html>\n"
+)
+MISSING_VMAG_TSV = "RAJ2000\tDEJ2000\ndeg\tdeg\n----\t----\n83.822080\t-05.291140\n"
+METADATA_ONLY_TSV = "# only\n# metadata\n"
+EMPTY_BODY = ""
+PLAIN_TEXT = "VizieR: rate limit exceeded, retry later\n"
+
+#: (bad mirror body, fragment expected in the resulting error message) pairs.
+BAD_ASU_BODIES = [
+    (HTML_ERROR_PAGE, "<!DOCTYPE html>"),
+    (MISSING_VMAG_TSV, "missing column(s)"),
+    (EMPTY_BODY, "no header row"),
+    (METADATA_ONLY_TSV, "no header row"),
+    (PLAIN_TEXT, "rate limit exceeded"),
+]
+
 
 def test_parse_asu_tsv_normalizes_to_the_tap_payload_shape():
     payload = standards.parse_asu_tsv(ASU_TSV, band="V")
@@ -498,6 +521,22 @@ def test_asu_tsv_band_column_with_apostrophe_header():
 def test_malformed_asu_tsv_raises_response_error(text):
     with pytest.raises(StandardsResponseError):
         standards.parse_asu_tsv(text, band="V")
+
+
+def test_malformed_asu_tsv_error_shows_what_the_response_actually_contained():
+    # the error lists the expected-but-missing columns AND a snippet of the
+    # actual response (issue 06: the old message only showed the expected list)
+    with pytest.raises(StandardsResponseError) as excinfo:
+        standards.parse_asu_tsv(MISSING_VMAG_TSV, band="V")
+    message = str(excinfo.value)
+    assert "missing column(s)" in message and "'Vmag'" in message
+    assert "RAJ2000\\tDEJ2000" in message  # the actual header row
+    with pytest.raises(StandardsResponseError) as excinfo:
+        standards.parse_asu_tsv(HTML_ERROR_PAGE, band="V")
+    assert "<!DOCTYPE html>" in str(excinfo.value)  # first line of the HTML page
+    with pytest.raises(StandardsResponseError, match="no header row") as excinfo:
+        standards.parse_asu_tsv(EMPTY_BODY, band="V")
+    assert "first line" in str(excinfo.value)
 
 
 def test_fetch_vizier_asu_tsv_builds_the_cone_url(monkeypatch):
@@ -624,6 +663,102 @@ def test_fetch_standards_payload_raises_unavailable_when_all_endpoints_fail(monk
     assert "could not reach VizieR" in message
     for url in (VIZIER_TAP_SYNC_URL, *standards.VIZIER_ASU_TSV_URLS):
         assert url in message  # the aggregate error names every endpoint tried
+
+
+# --- malformed mirror responses fall through instead of aborting (issue 06) ---------
+
+
+@pytest.mark.parametrize(
+    "bad_body",
+    [body for body, _ in BAD_ASU_BODIES],
+    ids=["html-error-page", "missing-vmag-column", "empty-body", "metadata-only", "plain-text"],
+)
+def test_fetch_standards_payload_falls_through_a_malformed_mirror(monkeypatch, bad_body):
+    # CfA answers garbage (an error page / truncated TSV), IDIA answers a real
+    # TSV: the malformed body must be treated as a failed mirror, not abort
+    calls = _mock_endpoints(
+        monkeypatch,
+        StandardsUnavailableError("CDS TAP down"),
+        [bad_body, ASU_TSV],
+    )
+    payload = standards.fetch_standards_payload(TARGET, RADIUS)
+    assert calls.tap_calls == [VIZIER_TAP_SYNC_URL]
+    assert calls.asu_calls == list(standards.VIZIER_ASU_TSV_URLS)  # both mirrors tried
+    stars = standards.parse_cone_response(payload, target=TARGET, radius_deg=RADIUS)
+    assert [s.magnitude for s in stars] == [9.5, 11.0, None]  # IDIA's payload won
+
+
+def test_fetch_standards_payload_falls_through_a_malformed_tap_body(monkeypatch):
+    # even a non-JSON body from CDS TAP (an endpoint that did answer) falls
+    # through to the asu-tsv mirrors
+    calls = _mock_endpoints(
+        monkeypatch,
+        StandardsResponseError(
+            "VizieR response is not valid JSON: ... (first line: '<html>oops')"
+        ),
+        [ASU_TSV, StandardsUnavailableError("should not be reached")],
+    )
+    payload = standards.fetch_standards_payload(TARGET, RADIUS)
+    assert calls.asu_calls == [standards.VIZIER_ASU_TSV_URL_CFA]  # first mirror wins
+    assert payload["data"][0][0] == "083.822080"
+
+
+@pytest.mark.parametrize(
+    ("bad_body", "fragment"),
+    BAD_ASU_BODIES,
+    ids=["html-error-page", "missing-vmag-column", "empty-body", "metadata-only", "plain-text"],
+)
+def test_fetch_standards_payload_aggregates_when_every_endpoint_answers_garbage(
+    monkeypatch, bad_body, fragment
+):
+    # every endpoint answered, but all bodies are malformed: the terminal error
+    # is the StandardsResponseError aggregate naming every endpoint and
+    # carrying a snippet of the first response line
+    calls = _mock_endpoints(
+        monkeypatch,
+        StandardsResponseError(
+            "VizieR response is not valid JSON: ... (first line: '<html>oops')"
+        ),
+        [bad_body, bad_body],
+    )
+    with pytest.raises(StandardsResponseError) as excinfo:
+        standards.fetch_standards_payload(TARGET, RADIUS)
+    assert calls.asu_calls == list(standards.VIZIER_ASU_TSV_URLS)  # all endpoints tried
+    message = str(excinfo.value)
+    assert "malformed" in message
+    for url in (VIZIER_TAP_SYNC_URL, *standards.VIZIER_ASU_TSV_URLS):
+        assert url in message  # the aggregate error names every endpoint tried
+    assert fragment in message  # snippet of the first line of a bad mirror body
+
+
+def test_malformed_mirror_responses_win_over_an_unreachable_tap(monkeypatch):
+    # CDS TAP is down (unreachable) and both mirrors answer error pages: the
+    # lookup DID reach VizieR, so the terminal error is the malformed-response
+    # aggregate with the response snippets, not "could not reach"
+    calls = _mock_endpoints(
+        monkeypatch,
+        StandardsUnavailableError("CDS TAP down"),
+        [HTML_ERROR_PAGE, MISSING_VMAG_TSV],
+    )
+    with pytest.raises(StandardsResponseError) as excinfo:
+        standards.fetch_standards_payload(TARGET, RADIUS)
+    assert calls.asu_calls == list(standards.VIZIER_ASU_TSV_URLS)
+    message = str(excinfo.value)
+    assert "<!DOCTYPE html>" in message  # snippet of the first bad response line
+    assert "missing column(s)" in message
+    assert standards.VIZIER_ASU_TSV_URL_CFA in message
+    assert standards.VIZIER_ASU_TSV_URL_IDIA in message
+
+
+def test_find_standard_stars_falls_through_a_malformed_mirror(monkeypatch):
+    _mock_endpoints(
+        monkeypatch,
+        StandardsUnavailableError("CDS TAP down"),
+        [HTML_ERROR_PAGE, ASU_TSV],  # CfA error page -> IDIA answers
+    )
+    stars = find_standard_stars(TARGET, RADIUS)
+    assert [s.magnitude for s in stars] == [9.5, 11.0, None]
+    assert all(isinstance(s, StandardStar) for s in stars)
 
 
 def test_fetch_standards_payload_validates_args_without_any_fetch(monkeypatch):

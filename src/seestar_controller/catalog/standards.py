@@ -51,7 +51,12 @@ Errors reuse the catalog taxonomy: :class:`~.simbad.CatalogError` with
 :class:`StandardsUnavailableError` (network/HTTP failure, mirroring
 :class:`~.simbad.SimbadUnavailableError`) and :class:`StandardsResponseError`
 (malformed response, mirroring :class:`~.simbad.SimbadResponseError`) — never
-a raw traceback.
+a raw traceback. A malformed/error body from one endpoint (an HTML error
+page, a rate-limit page, a truncated TSV — anything
+:func:`parse_asu_tsv` rejects) does **not** abort the lookup: it is recorded
+and the next endpoint is tried; the aggregate error is raised only when
+every endpoint failed, and its malformed-response messages carry a snippet
+of the response's first line for diagnosis.
 """
 
 from __future__ import annotations
@@ -377,7 +382,10 @@ def fetch_vizier_tap_json(
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise StandardsResponseError(f"VizieR response is not valid JSON: {exc}") from exc
+        first_line = _first_line_snippet(body.decode("utf-8", errors="replace"))
+        raise StandardsResponseError(
+            f"VizieR response is not valid JSON: {exc} (first line: {first_line!r})"
+        ) from exc
     if not isinstance(payload, dict):
         raise StandardsResponseError(
             f"VizieR response is not a JSON object but {type(payload).__name__}"
@@ -464,6 +472,26 @@ def fetch_vizier_asu_tsv(
         ) from exc
 
 
+def _line_snippet(line: str, limit: int = 80) -> str:
+    """A short, single-line snippet of ``line`` for error messages.
+
+    Strips surrounding whitespace and truncates to ``limit`` characters (with
+    a ``...`` marker) so an HTML error page never floods the message.
+    """
+    stripped = line.strip()
+    if len(stripped) > limit:
+        return stripped[:limit] + "..."
+    return stripped
+
+
+def _first_line_snippet(text: str, limit: int = 80) -> str:
+    """The snippet of the first non-empty line of ``text`` (``""`` when empty)."""
+    for line in text.splitlines():
+        if line.strip():
+            return _line_snippet(line, limit)
+    return ""
+
+
 def parse_asu_tsv(text: Any, *, band: str = DEFAULT_BAND) -> dict[str, Any]:
     """Parse a ``viz-bin/asu-tsv`` response into the TAP-JSON payload shape.
 
@@ -474,7 +502,11 @@ def parse_asu_tsv(text: Any, *, band: str = DEFAULT_BAND) -> dict[str, Any]:
     flow through the same parser. Column names are normalized by stripping
     apostrophes (the asu-tsv header spells the APASS bands ``g'mag`` /
     ``r'mag`` / ``i'mag`` where TAP spells them ``gmag`` / ``rmag`` /
-    ``imag``). Raises :class:`StandardsResponseError` on a malformed response.
+    ``imag``). Raises :class:`StandardsResponseError` on a malformed response
+    (an HTML error page, a rate-limit page, a truncated TSV); the message
+    always shows a snippet of what the response actually contained — the
+    parsed header row and the first response line — so a bad mirror is
+    diagnosable from the error alone.
     """
     if not isinstance(text, str):
         raise StandardsResponseError(
@@ -488,7 +520,10 @@ def parse_asu_tsv(text: Any, *, band: str = DEFAULT_BAND) -> dict[str, Any]:
         if line.strip() and not line.lstrip().startswith("#")
     ]
     if not rows:
-        raise StandardsResponseError("VizieR asu-tsv response has no header row")
+        raise StandardsResponseError(
+            "VizieR asu-tsv response has no header row "
+            f"(first line: {_first_line_snippet(text)!r})"
+        )
     header = [name.strip().replace("'", "") for name in rows[0].split("\t")]
     rest = rows[1:]
     separator = None
@@ -504,7 +539,9 @@ def parse_asu_tsv(text: Any, *, band: str = DEFAULT_BAND) -> dict[str, Any]:
     missing = [c for c in (*(_REQUIRED_COLUMNS), mag_column) if c not in header]
     if missing:
         raise StandardsResponseError(
-            f"VizieR asu-tsv response is missing column(s) {missing}"
+            f"VizieR asu-tsv response is missing column(s) {missing} "
+            f"(header: {_line_snippet(rows[0])!r}, "
+            f"first line: {_first_line_snippet(text)!r})"
         )
     data = [[field.strip() for field in line.split("\t")] for line in data_lines]
     return {"metadata": [{"name": name} for name in header], "data": data}
@@ -525,11 +562,21 @@ def fetch_standards_payload(
     asu-tsv mirror (:func:`fetch_vizier_asu_tsv` + :func:`parse_asu_tsv`) —
     and normalizes both into the same TAP-JSON payload
     :func:`parse_cone_response` consumes. The first success wins; each
-    endpoint gets its own ``timeout``. :class:`StandardsUnavailableError` is
-    raised only when **every** endpoint fails (network/HTTP failure); a
-    malformed body from an endpoint that did answer raises
-    :class:`StandardsResponseError` immediately. Cache keys stay
-    endpoint-agnostic (keyed on the ADQL cone query, as before).
+    endpoint gets its own ``timeout``.
+
+    **Every** endpoint failure — network/HTTP (:class:`StandardsUnavailableError`)
+    *and* a malformed body from an endpoint that did answer (an HTML error
+    page, a rate-limit page, a truncated TSV: :class:`StandardsResponseError`
+    from :func:`parse_asu_tsv` / :func:`fetch_vizier_tap_json`) — is recorded
+    and the next endpoint is tried; one bad mirror never aborts the lookup.
+    Only when **every** endpoint failed does this raise, with an aggregate
+    message naming each endpoint and its failure (the malformed-response
+    messages carry a snippet of the response's first line):
+    :class:`StandardsResponseError` when any endpoint answered with a
+    malformed body (the lookup reached VizieR — the response is the problem),
+    else :class:`StandardsUnavailableError` when no endpoint could be reached
+    at all. Cache keys stay endpoint-agnostic (keyed on the ADQL cone query,
+    as before).
     """
     target = _as_coord(coord)
     radius = _validate_radius(radius_deg)
@@ -556,13 +603,26 @@ def fetch_standards_payload(
             )
         )
     failures: list[str] = []
+    saw_malformed_response = False
     for label, attempt in attempts:
         try:
             return attempt()
-        except StandardsUnavailableError as exc:
+        except (StandardsUnavailableError, StandardsResponseError) as exc:
+            # a failed endpoint (unreachable OR malformed body) falls through
+            # to the next one — recorded for the aggregate error below
             failures.append(f"{label}: {exc}")
+            saw_malformed_response = saw_malformed_response or isinstance(
+                exc, StandardsResponseError
+            )
+    aggregate = "; ".join(failures)
+    if saw_malformed_response:
+        raise StandardsResponseError(
+            "VizieR returned a malformed response from every endpoint that answered ("
+            + aggregate
+            + ")"
+        )
     raise StandardsUnavailableError(
-        "could not reach VizieR at any endpoint (" + "; ".join(failures) + ")"
+        "could not reach VizieR at any endpoint (" + aggregate + ")"
     )
 
 
