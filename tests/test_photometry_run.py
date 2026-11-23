@@ -705,6 +705,54 @@ def test_run_session_unknown_session_raises_naming_known_sessions(project):
     assert len(report.measurements) == 2
 
 
+def test_failed_run_keeps_the_previous_session_id_and_sets_snapshot_error(project):
+    """Issue 17: a failed :meth:`RunController.run_session` must not leave the
+    invalid id in the snapshot — ``snapshot.session_id`` keeps the previous
+    valid session (or None) and the failure is carried in ``snapshot.error``."""
+    session, _frames, _inj = make_session(project, n=2)
+    store_picks(project)
+    ctrl = RunController(project=project)
+    assert ctrl.snapshot.session_id is None and ctrl.snapshot.error is None
+    # a failed run before any successful one: session_id stays None
+    with pytest.raises(RunError, match="no session 'nope'"):
+        ctrl.run_session("nope")
+    snap = ctrl.snapshot
+    assert snap.session_id is None
+    assert snap.error is not None and "no session 'nope'" in snap.error
+    assert snap.report is None and snap.running is False
+    assert ctrl.session_id is None
+    # a successful run publishes the session id (and clears the error)
+    report = ctrl.run_session(session)
+    assert len(report.measurements) == 2
+    snap = ctrl.snapshot
+    assert snap.session_id == session and snap.error is None
+    assert ctrl.session_id == session
+    # a failed run of an UNKNOWN session afterwards keeps the previous valid id
+    with pytest.raises(RunError, match="no session 'nope'"):
+        ctrl.run_session("nope")
+    snap = ctrl.snapshot
+    assert snap.session_id == session
+    assert snap.error is not None and "no session 'nope'" in snap.error
+    assert len(lightcurve(project)) == 2  # the previous run's rows are untouched
+    # a failed run of a KNOWN session (unrunnable picks) also keeps the id
+    picker = PickController()  # no project: its session holds only the comp below
+    picker.set_image(FakeImage(frame_data(F0, seed=7), wcs_header()))
+    picker.pick_at(16.0, 16.0, "comp", label="Comp A", snap=False)  # comps only
+    ctrl.attach_picker(picker)
+    with pytest.raises(RunError, match="exactly one"):
+        ctrl.run_session(session)
+    snap = ctrl.snapshot
+    assert snap.session_id == session
+    assert snap.error is not None and "exactly one" in snap.error
+    assert len(lightcurve(project)) == 2  # nothing was cleared or measured
+    # and the controller still runs fine afterwards (error cleared, id kept)
+    ctrl.detach_picker()
+    report2 = ctrl.run_session(session)
+    assert len(report2.measurements) == 2
+    snap = ctrl.snapshot
+    assert snap.session_id == session and snap.error is None
+
+
 def test_run_session_validates_arguments(project):
     store_picks(project)
     ctrl = RunController(project=project)

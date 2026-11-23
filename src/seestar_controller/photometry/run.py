@@ -33,9 +33,10 @@ What lives here:
   carrying the check star's differential mag + error and the
   target-minus-check curve, check-star-plot ticket 01);
 - :class:`RunSnapshot` — the frozen controller snapshot handed to the
-  listeners: ``running``, the last ``session_id`` / ``progress`` / ``report`` /
-  ``error``, and the project's **lightcurve** points (the results accessor,
-  see :meth:`RunController.lightcurve_points`);
+  listeners: ``running``, the last ``session_id`` (issue 17: only set once a
+  run actually started — a failed run keeps the previous one) / ``progress`` /
+  ``report`` / ``error``, and the project's **lightcurve** points (the results
+  accessor, see :meth:`RunController.lightcurve_points`);
 - :class:`RunController` — the app-level shared controller (the app owns one,
   bound to the shared :class:`~.picking.PickController`):
 
@@ -553,7 +554,8 @@ class RunSnapshot:
     on every change.
 
     - ``running`` — True while a run is in progress;
-    - ``session_id`` — the session of the last run (None before the first);
+    - ``session_id`` — the session of the last run THAT STARTED (issue 17: a
+      failed run does not change it — None before the first started run);
     - ``progress`` — the last :class:`RunProgress` tick while running, else
       None;
     - ``report`` — the last :class:`RunReport` (None before the first
@@ -679,7 +681,8 @@ class RunController:
 
     @property
     def session_id(self) -> str | None:
-        """The session of the last run (None before the first)."""
+        """The session of the last run that started (issue 17: a failed run
+        keeps the previous value; None before the first started run)."""
         with self._lock:
             return self._session_id
 
@@ -1193,7 +1196,11 @@ class RunController:
         :meth:`_call_store`). Listener notifications go through
         ``invoke_on_main``. Raises :class:`RunError` (a
         :class:`~.picking.PhotometryError`) on any run-level failure; the error
-        is also recorded in :attr:`RunSnapshot.error`.
+        is also recorded in :attr:`RunSnapshot.error`. Issue 17: the snapshot's
+        ``session_id`` is published only once the run is committed (the session
+        is known, the picks are runnable, the pre-run store calls succeeded) —
+        a failed run leaves :attr:`RunSnapshot.session_id` at the previous
+        valid session (or None) and carries the error instead.
         """
         if isinstance(session_id, bool) or not isinstance(session_id, str) or not session_id:
             raise RunError(f"session_id must be a non-empty string, got {session_id!r}")
@@ -1206,11 +1213,14 @@ class RunController:
                     "a photometry run is already in progress — wait for it to finish"
                 )
             self._running = True
-            self._session_id = session_id
+            # issue 17: ``_session_id`` is NOT assigned here — only once the
+            # run is committed (the session is known, the picks are runnable,
+            # the pre-run store calls succeeded), so a FAILED run never
+            # mutates the snapshot's ``session_id`` (it keeps the previous
+            # valid session or None and carries the error instead).
             self._progress = None
             self._report = None
             self._error = None
-        self._emit()
         try:
             known = {s.id for s in self._call_store(lambda: list_sessions(project))}
             if session_id not in known:
@@ -1270,6 +1280,15 @@ class RunController:
                     cleared,
                     session_id,
                 )
+            # issue 17: the run is committed NOW — every failure above (an
+            # unknown session, an unrunnable pick ensemble, a bad
+            # ``excluded_frames`` argument, a store failure while listing or
+            # clearing) raised before this point — so the snapshot's
+            # ``session_id`` is published only here, and a failed run keeps
+            # the previous valid session (or None) plus the error.
+            with self._lock:
+                self._session_id = session_id
+            self._emit()  # the run-start snapshot: running, session_id, no report yet
             total = len(frames)
             measurements: list[Measurement] = []
             frame_results: list[FrameMeasurement] = []
