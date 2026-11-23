@@ -27,9 +27,9 @@ What lives here:
   ``SEESTAR_PROJECT_ROOT`` > ``~/SeestarProjects/``, created on demand), so a
   fresh install never hard-errors on a not-yet-existing default root. The
   site keys likewise default to unset (``""`` — no sane default location;
-  ``site_timezone`` defaults to ``"UTC"``) and are persisted here but not yet
-  editable in the settings dialog (settings-file only for now — the
-  visibility-planner view ticket adds the dialog rows);
+  ``site_timezone`` defaults to ``"UTC"``); since visibility-planner issue 03
+  they are editable in the settings dialog's "Observing site" group (see
+  :data:`EDITABLE_SETTINGS_KEYS` / :data:`SITE_SETTINGS_KEYS`);
 - persistence: one JSON file at ``~/.config/seestar-controller/settings.json``
   (the app config dir — the same dir as the PEM key and the protocol log;
   re-declared here because this package must not import
@@ -172,14 +172,31 @@ SETTINGS_KEYS: tuple[str, ...] = (
 #: ``last_project`` is app-managed (written by the project controller when a
 #: project is opened, see :mod:`.project_controller`) — it is persisted with
 #: the rest of the settings but not shown as an editable dialog row. The
-#: ``site_*`` keys (visibility planner, ticket 01) are persisted here too but
-#: not yet dialog-editable — settings-file only until the visibility-planner
-#: view ticket adds the rows.
+#: ``site_*`` keys (the observing site, visibility planner ticket 01) ARE
+#: dialog-editable too (visibility-planner issue 03) — see
+#: :data:`SITE_SETTINGS_KEYS`.
 EDITABLE_SETTINGS_KEYS: tuple[str, ...] = (
     "scope_ip",
     "key_path",
     "project_root",
     "photometry_comp_search_radius_deg",
+    "site_latitude",
+    "site_longitude",
+    "site_elevation_m",
+    "site_timezone",
+)
+
+#: The observing-site keys among :data:`EDITABLE_SETTINGS_KEYS` (visibility
+#: planner ticket 01, issue 03) — the settings dialog shows them in their own
+#: "Observing site" preferences group. Mirrors
+#: :data:`seestar_controller.visibility.site.SITE_SETTINGS_KEYS` (the same
+#: re-declaration pattern as the other cross-package constants; a test asserts
+#: the names match).
+SITE_SETTINGS_KEYS: tuple[str, ...] = (
+    "site_latitude",
+    "site_longitude",
+    "site_elevation_m",
+    "site_timezone",
 )
 
 #: Default catalog-assist comp-search radius, in degrees (photometry ticket

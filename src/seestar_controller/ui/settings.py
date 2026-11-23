@@ -30,6 +30,10 @@ dialog-level semantics on top of an :class:`~.state.AppState`):
   - ``photometry_comp_search_radius_deg`` — a number of degrees in
     ``(0, 180]`` (the catalog-assist comp-search cone radius, photometry
     ticket 02; reuses :func:`.state.validate_comp_search_radius`);
+  - ``site_latitude`` / ``site_longitude`` / ``site_elevation_m`` /
+    ``site_timezone`` — the observing site (visibility planner ticket 01,
+    dialog-editable since issue 03); unset (``""``) is allowed, otherwise
+    the matching :mod:`.state` site validator applies;
   - unknown keys are errors too.
 
 - :func:`flag_settings` — per-field SOFT flags (warnings) for the dialog:
@@ -61,6 +65,10 @@ from .state import (
     validate_comp_search_radius,
     validate_last_project,
     validate_scope_ip,
+    validate_site_elevation_m,
+    validate_site_latitude,
+    validate_site_longitude,
+    validate_site_timezone,
 )
 
 #: A settings-change listener: called with a copy of the new settings dict
@@ -121,6 +129,10 @@ def validate_settings(values: Mapping[str, Any]) -> dict[str, str]:
       (reuses :func:`.state.validate_last_project`);
     - ``photometry_comp_search_radius_deg`` — a number of degrees in
       ``(0, 180]`` (photometry ticket 02);
+    - ``site_latitude`` / ``site_longitude`` / ``site_elevation_m`` /
+      ``site_timezone`` — the observing site (visibility planner ticket 01,
+      dialog-editable since issue 03); unset (``""``) is allowed, otherwise
+      the value must pass the matching :mod:`.state` site validator;
     - any other key — an "unknown setting" error.
     """
     errors: dict[str, str] = {}
@@ -141,6 +153,26 @@ def validate_settings(values: Mapping[str, Any]) -> dict[str, str]:
         elif key == "photometry_comp_search_radius_deg":
             try:
                 validate_comp_search_radius(value)
+            except SettingsValidationError as exc:
+                errors[key] = str(exc)
+        elif key == "site_latitude":
+            try:
+                validate_site_latitude(value)
+            except SettingsValidationError as exc:
+                errors[key] = str(exc)
+        elif key == "site_longitude":
+            try:
+                validate_site_longitude(value)
+            except SettingsValidationError as exc:
+                errors[key] = str(exc)
+        elif key == "site_elevation_m":
+            try:
+                validate_site_elevation_m(value)
+            except SettingsValidationError as exc:
+                errors[key] = str(exc)
+        elif key == "site_timezone":
+            try:
+                validate_site_timezone(value)
             except SettingsValidationError as exc:
                 errors[key] = str(exc)
         else:  # key_path / project_root
@@ -263,11 +295,16 @@ class SettingsController:
         project_root: Any = None,
         last_project: Any = None,
         photometry_comp_search_radius_deg: Any = None,
+        site_latitude: Any = None,
+        site_longitude: Any = None,
+        site_elevation_m: Any = None,
+        site_timezone: Any = None,
     ) -> dict[str, str]:
         """Validate, apply, persist, and notify; returns the new settings dict.
 
         Each keyword overrides the current value (``None`` = keep current,
-        ``""`` = unset a path). Raises :class:`SettingsFieldError` on any hard
+        ``""`` = unset a value — for the site keys that means "no observing
+        site yet"). Raises :class:`SettingsFieldError` on any hard
         validation error — in that case nothing is applied, nothing is
         persisted, and no listener is notified.
 
@@ -286,6 +323,10 @@ class SettingsController:
             "project_root": project_root,
             "last_project": last_project,
             "photometry_comp_search_radius_deg": photometry_comp_search_radius_deg,
+            "site_latitude": site_latitude,
+            "site_longitude": site_longitude,
+            "site_elevation_m": site_elevation_m,
+            "site_timezone": site_timezone,
         }
         for key, value in overrides.items():
             if value is not None:

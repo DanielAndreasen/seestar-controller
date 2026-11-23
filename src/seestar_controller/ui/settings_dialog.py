@@ -17,9 +17,13 @@ Layout: an :class:`Adw.Dialog` titled "Settings" with an
 :class:`Adw.ToolbarView` — an :class:`Adw.HeaderBar` carrying **Cancel**
 (left) and **Save** (right, ``suggested-action``) — and an
 :class:`Adw.PreferencesPage` content with one :class:`Adw.PreferencesGroup`
-holding one :class:`Adw.EntryRow` per EDITABLE settings key (``scope_ip``,
-``key_path``, ``project_root``, ``photometry_comp_search_radius_deg``), each
-with a validation label as its suffix. The app-managed ``last_project``
+per section: "Connection, storage & photometry" holds one
+:class:`Adw.EntryRow` per EDITABLE settings key (``scope_ip``, ``key_path``,
+``project_root``, ``photometry_comp_search_radius_deg``) and
+"Observing site" holds the visibility-planner site rows
+(``site_latitude``, ``site_longitude``, ``site_elevation_m``,
+``site_timezone`` — visibility-planner issue 03), each with a validation
+label as its suffix. The app-managed ``last_project``
 setting (projects-view ticket 01 — written by the project controller when a
 project is opened) is persisted with the rest of the settings but not shown
 as an editable row.
@@ -28,7 +32,7 @@ Validation UX (documented choices):
 
 - **Live validation** — every entry ``changed`` re-runs the pure-layer
   :func:`~seestar_controller.ui.settings.validate_settings` /
-  :func:`~seestar_controller.ui.settings.flag_settings` over all three
+  :func:`~seestar_controller.ui.settings.flag_settings` over all the
   entries; each row's label shows the hard error (red, ``error`` css class)
   or the soft flag (amber, ``warning`` css class), or hides when clean.
 - **Save semantics: the Save button is INSENSITIVE while any hard validation
@@ -53,14 +57,20 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk
 
 from .settings import SettingsController, SettingsFieldError
-from .state import EDITABLE_SETTINGS_KEYS
+from .state import EDITABLE_SETTINGS_KEYS, SITE_SETTINGS_KEYS
 
-#: field key -> entry row title.
+#: field key -> entry row title. One entry per key of
+#: :data:`~seestar_controller.ui.state.EDITABLE_SETTINGS_KEYS` (a
+#: :class:`KeyError` at dialog build time means the two lists drifted apart).
 FIELD_TITLES: dict[str, str] = {
     "scope_ip": "Scope IP",
     "key_path": "PEM key path",
     "project_root": "Project root",
     "photometry_comp_search_radius_deg": "Comp search radius (deg)",
+    "site_latitude": "Site latitude (deg, -90..90)",
+    "site_longitude": "Site longitude (deg, -180..180, east positive)",
+    "site_elevation_m": "Site elevation (m)",
+    "site_timezone": "Site timezone (IANA name, e.g. Europe/Berlin)",
 }
 
 
@@ -99,6 +109,15 @@ class SettingsDialog(Adw.Dialog):
                 "on start."
             ),
         )
+        # visibility-planner issue 03: the observing site gets its own group
+        site_group = Adw.PreferencesGroup(
+            title="Observing site",
+            description=(
+                "Latitude/longitude/elevation/timezone of the observing site — "
+                "the night timeline in the Observe view needs them (unset = no "
+                "site; elevation unset means 0 m, timezone unset means UTC)."
+            ),
+        )
         self._rows: dict[str, Adw.EntryRow] = {}
         self._error_labels: dict[str, Gtk.Label] = {}
         for key in EDITABLE_SETTINGS_KEYS:
@@ -113,10 +132,11 @@ class SettingsDialog(Adw.Dialog):
             )
             row.add_suffix(error_label)
             row.connect("changed", self._on_entry_changed)
-            group.add(row)
+            (site_group if key in SITE_SETTINGS_KEYS else group).add(row)
             self._rows[key] = row
             self._error_labels[key] = error_label
         page.add(group)
+        page.add(site_group)
         toolbar_view.set_content(page)
         self.set_child(toolbar_view)
 

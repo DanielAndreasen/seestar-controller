@@ -188,16 +188,60 @@ def test_empty_queue_shows_placeholder(gtk):
     assert view.suggested_row_labels() == ()
 
 
-def test_missing_site_shows_error_placeholder(gtk):
+def test_missing_site_shows_actionable_placeholder(gtk):
+    """Visibility-planner issue 03: an unset site is not an error — the
+    placeholder tells the user to set the observing site instead of surfacing
+    a raw VisibilityError (and without a callback the Open Settings button
+    stays hidden)."""
     for settings in ({}, None):
         view = VisibilityView(_controller(), settings=settings, night=NIGHT)
         pump_main()
         assert view.stack.get_visible_child_name() == "empty"
-        assert "unavailable" in view.placeholder_label.get_label().lower()
-        assert "VisibilityError" in view.status_label.get_label()
-        assert view.status_label.has_css_class("error")
+        assert "observing site" in view.placeholder_label.get_label().lower()
+        status = view.status_label.get_label()
+        assert "not set" in status
+        assert "open Settings" in status
+        assert "VisibilityError" not in status
+        assert not view.status_label.has_css_class("error")
+        assert view.on_open_settings is None
+        assert not view.open_settings_button.get_visible()
         assert not view.apply_button.get_sensitive()
         assert view.png_bytes == b""
+
+
+def test_unset_site_placeholder_offers_open_settings_button(gtk):
+    """Issue 03: with an ``on_open_settings`` callback the unset-site
+    placeholder reveals the Open Settings button and clicking it invokes the
+    callback; once the site is set the plot renders and the button hides."""
+    calls = []
+    settings: dict = {}
+    view = VisibilityView(
+        _controller(),
+        settings=lambda: settings,
+        night=NIGHT,
+        on_open_settings=lambda: calls.append("open"),
+    )
+    pump_main()
+    assert view.on_open_settings is not None
+    assert view.stack.get_visible_child_name() == "empty"
+    assert "observing site" in view.placeholder_label.get_label().lower()
+    assert view.open_settings_button.get_visible()
+    view.open_settings_button.emit("clicked")
+    pump_main()
+    assert calls == ["open"]
+    # set the site -> Refresh renders the plot and hides the button again
+    settings.update(MUNICH_SETTINGS)
+    view.refresh()
+    pump_main()
+    assert view.stack.get_visible_child_name() == "plot"
+    assert not view.open_settings_button.get_visible()
+    # without a callback the button stays hidden even when the site is unset
+    plain = VisibilityView(_controller(), settings={}, night=NIGHT)
+    pump_main()
+    assert plain.on_open_settings is None
+    assert not plain.open_settings_button.get_visible()
+    plain.open_settings_button.emit("clicked")  # must not raise
+    pump_main()
 
 
 def test_refresh_rereads_the_live_settings_source(gtk):
@@ -206,12 +250,15 @@ def test_refresh_rereads_the_live_settings_source(gtk):
     view = VisibilityView(qc, settings=lambda: settings, night=NIGHT)
     pump_main()
     assert view.stack.get_visible_child_name() == "plot"
-    # drop the site from the live settings -> Refresh shows the error placeholder
+    # drop the site from the live settings -> Refresh shows the actionable
+    # unset-site placeholder (issue 03), not a raw VisibilityError
     settings.clear()
     view.refresh_button.emit("clicked")
     pump_main()
     assert view.stack.get_visible_child_name() == "empty"
-    assert "VisibilityError" in view.status_label.get_label()
+    assert "observing site" in view.placeholder_label.get_label().lower()
+    assert "not set" in view.status_label.get_label()
+    assert "VisibilityError" not in view.status_label.get_label()
     # restore -> Refresh renders again
     settings.update(MUNICH_SETTINGS)
     view.refresh()
@@ -260,6 +307,38 @@ def test_build_view_observe_wires_visibility_widget(gtk, tmp_path):
     assert standalone.app_state is not state
     pump_main()
     assert standalone.visibility_widget.stack.get_visible_child_name() == "empty"
+    assert "observing site" in standalone.visibility_widget.placeholder_label.get_label().lower()
+    # no on_open_settings wired -> the placeholder's button stays hidden
+    assert standalone.on_open_settings is None
+    assert not standalone.visibility_widget.open_settings_button.get_visible()
+
+
+def test_build_view_observe_forwards_on_open_settings(gtk, tmp_path):
+    """Issue 03: build_view forwards on_open_settings to the Observe page and
+    its visibility widget; with the site unset the placeholder's Open
+    Settings button is visible and clicking it invokes the callback."""
+    from seestar_controller.ui.views import ObserveView as ObservePage
+    from seestar_controller.ui.views import build_view
+
+    calls = []
+    qc = _controller()
+    state = AppState(tmp_path / "settings.json")  # no site_* set
+    page = build_view(
+        "observe",
+        queue_controller=qc,
+        app_state=state,
+        on_open_settings=lambda: calls.append("open"),
+    )
+    assert isinstance(page, ObservePage)
+    assert page.on_open_settings is not None
+    assert page.visibility_widget.on_open_settings is page.on_open_settings
+    pump_main()
+    assert page.visibility_widget.stack.get_visible_child_name() == "empty"
+    assert "observing site" in page.visibility_widget.placeholder_label.get_label().lower()
+    assert page.visibility_widget.open_settings_button.get_visible()
+    page.visibility_widget.open_settings_button.emit("clicked")
+    pump_main()
+    assert calls == ["open"]
 
 
 def test_app_window_passes_state_down_to_the_observe_page(gtk, tmp_path):
@@ -283,3 +362,27 @@ def test_app_window_passes_state_down_to_the_observe_page(gtk, tmp_path):
     assert page.visibility_widget.stack.get_visible_child_name() == "plot"
     assert page.visibility_widget.model is not None
     assert page.visibility_widget.png_bytes[:8] == PNG_MAGIC
+
+
+def test_app_window_open_settings_button_presents_the_settings_dialog(gtk, tmp_path):
+    """Issue 03 end-to-end: with no site configured, the Observe page's
+    placeholder shows the actionable unset-site message plus the Open
+    Settings button, and clicking it presents the window's SettingsDialog
+    (which now has editable site_* rows)."""
+    from seestar_controller.ui.app import SeestarApplication, SeestarWindow
+    from seestar_controller.ui.settings_dialog import SettingsDialog
+    from seestar_controller.ui.state import SITE_SETTINGS_KEYS
+
+    app = SeestarApplication(settings_path=str(tmp_path / "settings.json"))
+    window = SeestarWindow(app, app.state)  # no site_* set
+    page = window.view_stack.get_child_by_name("observe")
+    pump_main()
+    assert page.visibility_widget.stack.get_visible_child_name() == "empty"
+    assert "observing site" in page.visibility_widget.placeholder_label.get_label().lower()
+    assert page.visibility_widget.open_settings_button.get_visible()
+    # the affordance triggers the window's settings action -> dialog presented
+    page.visibility_widget.open_settings_button.emit("clicked")
+    pump_main()
+    assert isinstance(window._settings_dialog, SettingsDialog)
+    for key in SITE_SETTINGS_KEYS:
+        assert window._settings_dialog.entry_for(key) is not None

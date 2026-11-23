@@ -302,7 +302,12 @@ class ObserveView(_PlaceholderView):
     ``app_state`` (visibility-planner ticket 02) is the app's shared
     :class:`~seestar_controller.ui.state.AppState`; it feeds the night-timeline
     widget's site settings (a default ``AppState()`` is created when omitted,
-    so the view also constructs standalone).
+    so the view also constructs standalone). ``on_open_settings``
+    (visibility-planner issue 03) is an optional zero-arg callback forwarded to
+    the night-timeline widget's placeholder **Open Settings** button (shown
+    when the observing site is unset); the app window passes its
+    ``win.settings`` action handler, so the button opens the settings dialog
+    where the ``site_*`` rows live.
     ``drift_controller`` (astrometry ticket 03) is the app's shared
     :class:`~seestar_controller.astrometry.DriftController`; when omitted, the
     view creates its own, so it also constructs standalone. The drift plot
@@ -327,6 +332,7 @@ class ObserveView(_PlaceholderView):
         project: Any = None,
         project_controller: ProjectController | None = None,
         app_state: AppState | None = None,
+        on_open_settings: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         # set before super().__init__(): _build_content() runs inside it
@@ -347,6 +353,7 @@ class ObserveView(_PlaceholderView):
         self._project = project
         self._project_controller = project_controller
         self._app_state = app_state if app_state is not None else AppState()
+        self._on_open_settings = on_open_settings
         # offline-analysis ticket 01: scope gating (offline mode) — the
         # night-control buttons + live preview are disabled/hidden while
         # gated; the base sensitivity/tooltip are remembered to restore them
@@ -386,6 +393,7 @@ class ObserveView(_PlaceholderView):
         self._visibility_widget = VisibilityViewWidget(
             self._queue_controller,
             settings=lambda: self._app_state.settings,
+            on_open_settings=self._on_open_settings,
         )
         self._content.append(self._visibility_widget)
         # astrometry ticket 03: the drift plot (RA/Dec offset vs time of the
@@ -431,6 +439,13 @@ class ObserveView(_PlaceholderView):
     def visibility_widget(self) -> VisibilityViewWidget:
         """The night-timeline widget (visibility-planner ticket 02)."""
         return self._visibility_widget
+
+    @property
+    def on_open_settings(self) -> Callable[[], None] | None:
+        """The callback the night-timeline's Open Settings button invokes
+        (visibility-planner issue 03; ``None`` when the view was built
+        standalone without one)."""
+        return self._on_open_settings
 
     @property
     def drift_controller(self) -> DriftController:
@@ -1954,6 +1969,7 @@ def build_view(
     app_state: AppState | None = None,
     invoke_on_main: Callable[[Callable[[], None]], Any] | None = None,
     show_view: Callable[[str], None] | None = None,
+    on_open_settings: Callable[[], None] | None = None,
 ) -> _PlaceholderView:
     """Construct the widget for ``view_id``.
 
@@ -1961,7 +1977,9 @@ def build_view(
     not in the pure-layer view list. ``queue_controller`` /
     ``observe_controller`` / ``project_controller`` / ``project`` /
     ``app_state`` are forwarded to the Observe view (observing tickets 01 +
-    03, projects-view ticket 01, visibility-planner ticket 02),
+    03, projects-view ticket 01, visibility-planner ticket 02), and
+    ``on_open_settings`` too (visibility-planner issue 03 — the Observe
+    page's night-timeline Open Settings button),
     ``viewer_controller`` /
     ``editor_controller`` to the Enhance view (image-enhance tickets 01 + 03),
     ``crossmatch_controller`` to the Enhance view's cross-match overlay panel
@@ -2005,6 +2023,7 @@ def build_view(
             project_controller=project_controller,
             project=project,
             app_state=app_state,
+            on_open_settings=on_open_settings,
         )
     if view_id == EnhanceView.view_id:
         return EnhanceView(

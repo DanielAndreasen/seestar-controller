@@ -376,6 +376,74 @@ def test_settings_dialog_missing_project_root_blocks_save(app, gtk, tmp_path):
     assert not state.settings_path.exists()
 
 
+def test_settings_dialog_has_editable_site_rows_with_live_validation(app, gtk, tmp_path):
+    """Visibility-planner issue 03: the site_* settings are editable rows in
+    the Settings dialog (own "Observing site" group), with per-row error
+    labels reusing the pure validators, and saving persists them."""
+    from seestar_controller.ui.settings_dialog import FIELD_TITLES, SettingsDialog
+    from seestar_controller.ui.state import EDITABLE_SETTINGS_KEYS, SITE_SETTINGS_KEYS
+
+    controller, state = _settings_controller(tmp_path)
+    dialog = SettingsDialog(controller)
+
+    # one entry row per editable key — including the four site_* keys — and a
+    # title for each (FIELD_TITLES covers EDITABLE_SETTINGS_KEYS exactly)
+    assert set(SITE_SETTINGS_KEYS) <= set(EDITABLE_SETTINGS_KEYS)
+    assert set(FIELD_TITLES) == set(EDITABLE_SETTINGS_KEYS)
+    for key in EDITABLE_SETTINGS_KEYS:
+        row = dialog.entry_for(key)
+        assert row.get_title() == FIELD_TITLES[key]
+        assert row.get_text() == controller.values[key]
+    # the site rows live in their own "Observing site" preferences group
+    # (PreferencesGroup packs its rows in an internal ListBox, so walk up to
+    # the group ancestor)
+    site_row = dialog.entry_for("site_latitude")
+    site_group = site_row.get_ancestor(Adw.PreferencesGroup)
+    assert site_group is not None and site_group.get_title() == "Observing site"
+    other_row = dialog.entry_for("scope_ip")
+    assert other_row.get_ancestor(Adw.PreferencesGroup) is not site_group
+
+    # defaults: site unset is valid -> save stays sensitive
+    assert dialog.save_sensitive()
+
+    # invalid latitude -> per-row error label, save blocked, nothing persisted
+    dialog.set_field("site_latitude", "999")
+    label = dialog.error_label_for("site_latitude")
+    assert label.get_visible() and "site_latitude" in label.get_label()
+    assert label.has_css_class("error")
+    assert not dialog.save_sensitive()
+    assert dialog.save() is False
+    assert not state.settings_path.exists()
+
+    # invalid timezone -> same treatment on its own row
+    dialog.set_field("site_latitude", "48.1373")
+    dialog.set_field("site_timezone", "Not/AZone")
+    tz_label = dialog.error_label_for("site_timezone")
+    assert tz_label.get_visible() and "site_timezone" in tz_label.get_label()
+    assert not dialog.save_sensitive()
+
+    # valid site -> save enabled, persists + reloads, listeners notified
+    seen = []
+    controller.add_listener(seen.append)
+    dialog.set_field("site_timezone", "Europe/Berlin")
+    dialog.set_field("site_longitude", "11.5755")
+    dialog.set_field("site_elevation_m", "520")
+    assert dialog.save_sensitive()
+    assert dialog.save() is True
+    assert seen == [controller.values]
+    reloaded = ui_state.load_state(str(state.settings_path))
+    assert reloaded.get_setting("site_latitude") == "48.1373"
+    assert reloaded.get_setting("site_longitude") == "11.5755"
+    assert reloaded.get_setting("site_elevation_m") == "520"
+    assert reloaded.get_setting("site_timezone") == "Europe/Berlin"
+    # ... and the visibility bridge builds a Site from the saved settings
+    from seestar_controller.visibility.site import Site
+
+    site = Site.from_settings(reloaded.settings)
+    assert (site.latitude_deg, site.longitude_deg, site.elevation_m) == (48.1373, 11.5755, 520.0)
+    assert site.timezone == "Europe/Berlin"
+
+
 def test_window_header_has_settings_action_and_shared_controller(app, gtk):
     from seestar_controller.ui.app import SeestarWindow
     from seestar_controller.ui.settings_dialog import SettingsDialog

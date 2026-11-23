@@ -28,8 +28,10 @@ from seestar_controller.ui.settings import (
 from seestar_controller.ui.state import (
     DEFAULT_COMP_SEARCH_RADIUS_DEG,
     DEFAULT_SETTINGS,
+    EDITABLE_SETTINGS_KEYS,
     SETTINGS_FILE_NAME,
     SETTINGS_KEYS,
+    SITE_SETTINGS_KEYS,
     AppState,
     SettingsValidationError,
     UIStateError,
@@ -170,6 +172,130 @@ def test_validate_settings_multiple_errors_at_once(root_dir):
         {"scope_ip": "999.1.1.1", "key_path": 42, "project_root": "/no/such/dir"}
     )
     assert set(errors) == {"scope_ip", "key_path", "project_root"}
+
+
+# --- the observing site settings are dialog-editable (visibility-planner issue 03) -----
+
+
+def test_site_keys_are_editable_settings_keys():
+    # the settings dialog edits the site_* rows (issue 03) — last_project stays
+    # app-managed and is the only SETTINGS_KEYS member not editable
+    assert set(EDITABLE_SETTINGS_KEYS) == set(SETTINGS_KEYS) - {"last_project"}
+    assert SITE_SETTINGS_KEYS == (
+        "site_latitude",
+        "site_longitude",
+        "site_elevation_m",
+        "site_timezone",
+    )
+    assert set(SITE_SETTINGS_KEYS) <= set(EDITABLE_SETTINGS_KEYS)
+    # same names as the visibility package's bridge (re-declared constant)
+    from seestar_controller.visibility.site import SITE_SETTINGS_KEYS as VIS_SITE_KEYS
+
+    assert SITE_SETTINGS_KEYS == VIS_SITE_KEYS
+    assert "SITE_SETTINGS_KEYS" in ui.__all__
+    # defaults are valid (unset site allowed) — the dialog starts saveable
+    assert validate_settings(DEFAULT_SETTINGS) == {}
+
+
+@pytest.mark.parametrize("good", ["", "0", "48.1373", "-90", "90", 48.1373, -90.0, 90.0])
+def test_validate_settings_site_latitude_valid(good):
+    assert validate_settings({"site_latitude": good}) == {}
+
+
+@pytest.mark.parametrize("bad", ["90.1", "-90.1", "abc", None, True])
+def test_validate_settings_site_latitude_invalid(bad):
+    errors = validate_settings({"site_latitude": bad})
+    assert set(errors) == {"site_latitude"}
+    assert "site_latitude" in errors["site_latitude"]
+
+
+@pytest.mark.parametrize("good", ["", "0", "11.5755", "-180", "180", -74.0])
+def test_validate_settings_site_longitude_valid(good):
+    assert validate_settings({"site_longitude": good}) == {}
+
+
+@pytest.mark.parametrize("bad", ["180.1", "-180.1", "abc", None, True])
+def test_validate_settings_site_longitude_invalid(bad):
+    errors = validate_settings({"site_longitude": bad})
+    assert set(errors) == {"site_longitude"}
+
+
+@pytest.mark.parametrize("good", ["", "0", "520", "-500", "9000", 8848.0])
+def test_validate_settings_site_elevation_valid(good):
+    assert validate_settings({"site_elevation_m": good}) == {}
+
+
+@pytest.mark.parametrize("bad", ["9000.1", "-500.1", "abc", None, True])
+def test_validate_settings_site_elevation_invalid(bad):
+    errors = validate_settings({"site_elevation_m": bad})
+    assert set(errors) == {"site_elevation_m"}
+
+
+@pytest.mark.parametrize("good", ["", "UTC", "Europe/Berlin", "America/New_York"])
+def test_validate_settings_site_timezone_valid(good):
+    assert validate_settings({"site_timezone": good}) == {}
+
+
+@pytest.mark.parametrize("bad", ["Not/AZone", "Europe/Nowhere", 42, True, None])
+def test_validate_settings_site_timezone_invalid(bad):
+    errors = validate_settings({"site_timezone": bad})
+    assert set(errors) == {"site_timezone"}
+    assert "site_timezone" in errors["site_timezone"]
+
+
+def test_update_site_settings_persists_and_reloads(settings_file, controller, root_dir):
+    controller.update(project_root=str(root_dir))
+    new_values = controller.update(
+        site_latitude="48.1373",
+        site_longitude="11.5755",
+        site_elevation_m="520",
+        site_timezone="Europe/Berlin",
+    )
+    assert new_values["site_latitude"] == "48.1373"
+    assert new_values["site_longitude"] == "11.5755"
+    assert new_values["site_elevation_m"] == "520"
+    assert new_values["site_timezone"] == "Europe/Berlin"
+    # normalized to %g string form
+    new_values = controller.update(site_latitude="48.1373000", site_elevation_m="520.0")
+    assert new_values["site_latitude"] == "48.1373"
+    assert new_values["site_elevation_m"] == "520"
+    # persisted + reloaded on a fresh AppState
+    reloaded = load_state(settings_file)
+    assert reloaded.get_setting("site_latitude") == "48.1373"
+    assert reloaded.get_setting("site_longitude") == "11.5755"
+    assert reloaded.get_setting("site_elevation_m") == "520"
+    assert reloaded.get_setting("site_timezone") == "Europe/Berlin"
+    # ... and the visibility bridge builds a Site from them
+    from seestar_controller.visibility.site import Site
+
+    site = Site.from_settings(reloaded.settings)
+    assert site.latitude_deg == 48.1373
+    assert site.longitude_deg == 11.5755
+    assert site.elevation_m == 520.0
+    assert site.timezone == "Europe/Berlin"
+    # unsetting again round-trips
+    new_values = controller.update(site_latitude="", site_longitude="")
+    assert new_values["site_latitude"] == "" and new_values["site_longitude"] == ""
+    assert load_state(settings_file).get_setting("site_latitude") == ""
+
+
+def test_update_invalid_site_value_raises_field_error_and_persists_nothing(
+    settings_file, controller, root_dir
+):
+    controller.update(project_root=str(root_dir), site_latitude="48.1373")
+    before = settings_file.read_bytes()
+    with pytest.raises(SettingsFieldError) as excinfo:
+        controller.update(site_latitude="999")
+    err = excinfo.value
+    assert err.field == "site_latitude"
+    assert "site_latitude" in err.message
+    assert set(err.errors) == {"site_latitude"}
+    assert settings_file.read_bytes() == before
+    assert controller.values["site_latitude"] == "48.1373"
+    with pytest.raises(SettingsFieldError) as excinfo:
+        controller.update(site_timezone="Not/AZone")
+    assert excinfo.value.field == "site_timezone"
+    assert controller.values["site_timezone"] == "UTC"
 
 
 # --- flag_settings: soft flags, never blocking --------------------------------------

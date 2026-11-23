@@ -700,6 +700,11 @@ class SeestarWindow(Adw.ApplicationWindow):
                     # controller and then switch to the Enhance view via
                     # select_view, so the opened frame is visible.
                     show_view=self.select_view,
+                    # visibility-planner issue 03: the Observe page's
+                    # night-timeline "Open Settings" button (shown when the
+                    # observing site is unset) opens this window's settings
+                    # dialog, where the site_* rows live.
+                    on_open_settings=self._on_settings_action,
                 ),
                 view.id,
                 view.title,

@@ -39,7 +39,14 @@ the Observe page wires it in):
   ``move(index, to_index)`` calls, each notifying the queue's listeners, so the
   Observe view's queue editor re-renders too);
 - an **empty-state placeholder** (:class:`Gtk.Stack`) when the queue is empty
-  or the site is not configured (settings), with the reason in the status line.
+  or the site is not configured (settings), with the reason in the status
+  line. When the site is simply UNSET (no latitude/longitude yet — the normal
+  fresh-install case, visibility-planner issue 03) the placeholder is
+  actionable instead of a raw error: it says to set the observing site and
+  carries an **Open Settings** button (shown when the view was constructed
+  with an ``on_open_settings`` callback — the app window passes its
+  ``win.settings`` action handler) that opens the settings dialog where the
+  site rows live.
 
 The view re-renders on every queue-changed event (it registers as a queue
 listener; events from a worker thread are marshalled onto the GLib main loop)
@@ -51,6 +58,7 @@ from __future__ import annotations
 import datetime
 import io
 import threading
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +78,12 @@ from seestar_controller.visibility.render import (
     DEFAULT_WIDTH_PX,
     render_timeline_png,
 )
-from seestar_controller.visibility.site import Site, VisibilityError
+from seestar_controller.visibility.site import (
+    SITE_LATITUDE_KEY,
+    SITE_LONGITUDE_KEY,
+    Site,
+    VisibilityError,
+)
 from seestar_controller.visibility.timeline import (
     SettingsSource,
     TimelineModel,
@@ -104,7 +117,11 @@ class VisibilityView(Gtk.Box):
       :meth:`~seestar_controller.visibility.Site.from_settings`. ``None`` means
       no site — the view shows the "set the observing site" placeholder;
     - ``night`` — the night date (a ``date``/``datetime``; ``None`` = tonight at
-      the site's timezone, resolved on every render).
+      the site's timezone, resolved on every render);
+    - ``on_open_settings`` — an optional zero-arg callback invoked by the
+      placeholder's **Open Settings** button when the observing site is unset
+      (the app window passes its ``win.settings`` action handler, so the
+      button opens the settings dialog where the ``site_*`` rows live).
     """
 
     def __init__(
@@ -113,6 +130,7 @@ class VisibilityView(Gtk.Box):
         *,
         settings: SettingsSource | None = None,
         night: Any = None,
+        on_open_settings: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("orientation", Gtk.Orientation.VERTICAL)
@@ -130,6 +148,7 @@ class VisibilityView(Gtk.Box):
         self._queue_controller = queue_controller
         self._settings = settings
         self._night = night
+        self._on_open_settings = on_open_settings
         self._main_thread_id = threading.get_ident()
         self._model: TimelineModel | None = None
         self._night_used: datetime.date | None = None
@@ -176,7 +195,28 @@ class VisibilityView(Gtk.Box):
             wrap=True,
             css_classes=["dim-label"],
         )
-        self._stack.add_titled(self._placeholder_label, "empty", "Empty")
+        # visibility-planner issue 03: the placeholder page also carries the
+        # "Open Settings" affordance, shown only in the unset-site state (and
+        # only when an on_open_settings callback was given)
+        self._open_settings_button = Gtk.Button(
+            label="Open Settings",
+            halign=Gtk.Align.CENTER,
+            visible=False,
+            css_classes=["suggested-action"],
+            tooltip_text="Open the settings dialog to enter the observing site",
+        )
+        self._open_settings_button.connect("clicked", self._on_open_settings_clicked)
+        placeholder_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            halign=Gtk.Align.CENTER,
+            valign=Gtk.Align.CENTER,
+            hexpand=True,
+            vexpand=True,
+        )
+        placeholder_box.append(self._placeholder_label)
+        placeholder_box.append(self._open_settings_button)
+        self._stack.add_titled(placeholder_box, "empty", "Empty")
         self._stack.set_visible_child_name("empty")
         self.append(self._stack)
 
@@ -239,6 +279,18 @@ class VisibilityView(Gtk.Box):
     def placeholder_label(self) -> Gtk.Label:
         """The empty-state placeholder label."""
         return self._placeholder_label
+
+    @property
+    def open_settings_button(self) -> Gtk.Button:
+        """The placeholder's "Open Settings" button (visibility-planner issue
+        03 — visible only in the unset-site state, and only when the view was
+        constructed with an ``on_open_settings`` callback)."""
+        return self._open_settings_button
+
+    @property
+    def on_open_settings(self) -> Callable[[], None] | None:
+        """The callback the Open Settings button invokes (or ``None``)."""
+        return self._on_open_settings
 
     @property
     def status_label(self) -> Gtk.Label:
@@ -390,14 +442,28 @@ class VisibilityView(Gtk.Box):
         """Recompute the model, render the PNG -> PIL -> texture, and refresh
         the plot, the suggested-order list and the status line. Any failure
         (no site configured, bad settings, ...) lands in the status line and
-        the placeholder — never a crash."""
+        the placeholder — never a crash. An UNSET site (no latitude/longitude
+        yet) is not an error: it gets the actionable placeholder with the
+        Open Settings button (visibility-planner issue 03)."""
         try:
             settings = resolve_settings(self._settings)
-            if settings is None:
-                raise VisibilityError(
-                    "no settings source — the observing site is unknown "
-                    "(set site_latitude/site_longitude in settings.json)"
-                )
+        except Exception as exc:  # noqa: BLE001 - shown inline, never crash the view
+            self._show_placeholder(
+                "Timeline unavailable", f"{type(exc).__name__}: {exc}", error=True
+            )
+            return
+        if settings is None or _site_unset(settings):
+            # the normal fresh-install case: no observing site yet — show an
+            # actionable message + the Open Settings button, not a raw error
+            self._show_placeholder(
+                "Set your observing site to see the night timeline",
+                "the observing site is not set — open Settings and enter the "
+                "site latitude and longitude",
+                error=False,
+                show_open_settings=True,
+            )
+            return
+        try:
             site = Site.from_settings(settings)
             night = self._resolve_night(site)
             entries = self._queue_controller.entries
@@ -427,6 +493,7 @@ class VisibilityView(Gtk.Box):
             self._texture = texture
             self._surface = surface
             self._stack.set_visible_child_name("plot")
+            self._open_settings_button.set_visible(False)
             self._night_label.set_label(f"night of {night.isoformat()} · {site.timezone}")
             self._rebuild_suggested_list(suggested_labels(model))
             identity = tuple(range(len(model.order)))
@@ -438,8 +505,14 @@ class VisibilityView(Gtk.Box):
                 "Timeline unavailable", f"{type(exc).__name__}: {exc}", error=True
             )
 
-    def _show_placeholder(self, placeholder_text: str, status_text: str, *, error: bool) -> None:
-        """Reset the render state and show the placeholder page + status."""
+    def _show_placeholder(
+        self, placeholder_text: str, status_text: str, *, error: bool, show_open_settings: bool = False
+    ) -> None:
+        """Reset the render state and show the placeholder page + status.
+
+        ``show_open_settings`` reveals the placeholder's Open Settings button
+        (only when an ``on_open_settings`` callback was given — otherwise the
+        button stays hidden)."""
         self._model = None
         self._night_used = None
         self._png_bytes = b""
@@ -447,11 +520,21 @@ class VisibilityView(Gtk.Box):
         self._surface = None
         self._stack.set_visible_child_name("empty")
         self._placeholder_label.set_label(placeholder_text)
+        self._open_settings_button.set_visible(
+            show_open_settings and self._on_open_settings is not None
+        )
         self._rebuild_suggested_list(())
         self._apply_button.set_sensitive(False)
         self._night_label.set_label("")
         self._set_status(status_text, error=error)
         self._plot.queue_draw()
+
+    def _on_open_settings_clicked(self, *_args) -> None:
+        """Open Settings button: invoke the ``on_open_settings`` callback (the
+        app's ``win.settings`` action) — the user then edits the ``site_*``
+        rows in the dialog."""
+        if self._on_open_settings is not None:
+            self._on_open_settings()
 
     def _summary(self, model: TimelineModel) -> str:
         """The one-line status summary of a rendered model."""
@@ -518,3 +601,24 @@ class VisibilityView(Gtk.Box):
 class _EmptyQueue(Exception):
     """Internal control-flow exception: the queue is empty (placeholder state,
     not an error)."""
+
+
+def _is_unset_setting(value: Any) -> bool:
+    """Whether one site setting value means "unset": missing/``None`` or an
+    empty/whitespace-only string. A numeric ``0`` (e.g. latitude 0.0 at the
+    equator) is a SET value, not unset."""
+    if value is None:
+        return True
+    return isinstance(value, str) and not value.strip()
+
+
+def _site_unset(settings: Mapping[str, Any]) -> bool:
+    """Whether the observing site is unset in a resolved settings mapping —
+    i.e. latitude or longitude missing/empty (the actionable "open Settings"
+    case, as opposed to a malformed site value, which
+    :meth:`Site.from_settings` reports as a :class:`VisibilityError`)."""
+    if not isinstance(settings, Mapping):
+        return False
+    return _is_unset_setting(settings.get(SITE_LATITUDE_KEY)) or _is_unset_setting(
+        settings.get(SITE_LONGITUDE_KEY)
+    )
