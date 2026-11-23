@@ -100,8 +100,9 @@ Conventions (documented choices):
   target + at least one comp — :func:`~.measure._normalize_picks`) and a bad
   ensemble raises :class:`RunError` BEFORE any frame is measured.
 - **Per-frame failures never kill the run**: a frame that cannot be read, a
-  pick outside the image (also after the WCS reprojection), or a
-  non-positive flux is recorded as a
+  pick outside the image (also after the WCS reprojection), a pick whose sky
+  annulus is not fully inside the image (``kind="annulus-outside-image"``,
+  issue 19), or a non-positive flux is recorded as a
   :class:`~.measure.SkippedFrame` — now with a machine-readable skip
   ``kind`` (issue 09), aggregated on the report as ``skip_reasons`` /
   ``skip_summary`` (the same skip semantics as
@@ -413,8 +414,8 @@ class RunReport:
     def skip_reasons(self) -> dict[str, int]:
         """The aggregated skip reasons (issue 09): ``kind -> count`` over the
         skipped frames — e.g. ``{"non-positive-flux": 479,
-        "outside-image": 2}`` (a skip without a kind counts under
-        ``"error"``)."""
+        "outside-image": 2, "annulus-outside-image": 5}`` (a skip without a
+        kind counts under ``"error"``)."""
         counts: dict[str, int] = {}
         for skipped in self.skipped:
             kind = skipped.kind or "error"
