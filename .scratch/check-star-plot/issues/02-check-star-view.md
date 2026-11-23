@@ -6,10 +6,10 @@
 
 **Status:** implemented in 16a5334 (merged)
 
-- [ ] Star picker: designate one picked star as check (role UI), persisted via store.stars
-- [ ] Results view (photometry/results_view.py + analysis/lightcurve_view.py patterns): second series for the check star, toggle for target-minus-check
-- [ ] Widget tests via the ui harness; full suite green
+- [x] Star picker: designate one picked star as check (role UI), persisted via store.stars
+- [x] Results view (photometry/results_view.py + analysis/lightcurve_view.py patterns): second series for the check star, toggle for target-minus-check
+- [x] Widget tests via the ui harness; full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `16a5334`; test list: tests/test_photometry_widgets.py. Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).

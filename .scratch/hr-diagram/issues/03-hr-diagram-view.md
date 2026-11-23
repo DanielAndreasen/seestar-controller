@@ -6,12 +6,12 @@
 
 **Status:** implemented in 4ae1c0e (merged 7a0f582)
 
-- [ ] Widget `HrDiagramView` following analysis/lightcurve_view.py patterns (DrawingArea + matplotlib Agg render to PNG, PIL texture); CMD and H-R as switchable pages
-- [ ] Zoom/pan (re-render on zoom) + error-bar toggle; click-to-highlight both ways with the image viewer
-- [ ] PNG export of the plot + CSV export of the table (reuse analysis/export.py)
-- [ ] Wired into the app (new tab/section next to the lightcurve view; decide with existing ui-shell patterns)
-- [ ] Widget tests via the ui harness; full suite green
+- [x] Widget `HrDiagramView` following analysis/lightcurve_view.py patterns (DrawingArea + matplotlib Agg render to PNG, PIL texture); CMD and H-R as switchable pages
+- [x] Zoom/pan (re-render on zoom) + error-bar toggle; click-to-highlight both ways with the image viewer
+- [x] PNG export of the plot + CSV export of the table (reuse analysis/export.py)
+- [x] Wired into the app (new tab/section next to the lightcurve view; decide with existing ui-shell patterns)
+- [x] Widget tests via the ui harness; full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `4ae1c0e (merged 7a0f582)`; test list: tests/test_hr_diagram_view.py, tests/test_hr_diagram_view_widgets.py, tests/test_ui_state.py. Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).

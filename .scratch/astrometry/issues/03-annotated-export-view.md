@@ -6,11 +6,11 @@
 
 **Status:** implemented in 4954e2d+599f950 (merged)
 
-- [ ] Annotated PNG export (PIL/matplotlib over tone-mapped image): labels, mags, FOV rectangle, scale bar
-- [ ] "Solve" action in the image viewer (worker thread, clear failure toast)
-- [ ] Drift plot widget in the session/observe views (analysis plotting patterns)
-- [ ] Widget tests via the ui harness; full suite green
+- [x] Annotated PNG export (PIL/matplotlib over tone-mapped image): labels, mags, FOV rectangle, scale bar
+- [x] "Solve" action in the image viewer (worker thread, clear failure toast)
+- [x] Drift plot widget in the session/observe views (analysis plotting patterns)
+- [x] Widget tests via the ui harness; full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `4954e2d+599f950`; test list: tests/test_astrometry_view.py, tests/test_astrometry_view_widgets.py, tests/test_astrometry_boundary.py. Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).

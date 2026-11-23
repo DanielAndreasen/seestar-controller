@@ -6,10 +6,10 @@
 
 **Status:** implemented in 157a1a0 (merged)
 
-- [ ] Dated docs/wiki entry: each candidate 3.14 feature -> adopted (with commit) or rejected (with reason)
-- [ ] Adopted changes are minimal and local; no new dependencies, no new config
-- [ ] Full suite green; `uv tool run ty check` + `uv tool run ruff check` clean
+- [x] Dated docs/wiki entry: each candidate 3.14 feature -> adopted (with commit) or rejected (with reason)
+- [x] Adopted changes are minimal and local; no new dependencies, no new config
+- [x] Full suite green; `uv tool run ty check` + `uv tool run ruff check` clean
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `157a1a0`; test list: docs/wiki/dependency-upgrade.md issue-04 section (adopted vs rejected features); full suite green. Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).

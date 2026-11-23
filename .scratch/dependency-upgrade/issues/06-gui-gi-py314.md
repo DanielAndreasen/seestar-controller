@@ -6,10 +6,10 @@
 
 **Status:** implemented in 2241c6b+f622ba1 (merged)
 
-- [ ] Working `gi` import under the 3.14 venv on the desktop via the simplest option; exact steps documented (dated wiki entry + CLI error message updated)
-- [ ] No hard PyGObject dependency; headless install/test path unchanged
-- [ ] Full suite green; `uv tool run ty check` + `uv tool run ruff check` clean; GUI launches on 3.14
+- [x] Working `gi` import under the 3.14 venv on the desktop via the simplest option; exact steps documented (dated wiki entry + CLI error message updated)
+- [x] No hard PyGObject dependency; headless install/test path unchanged
+- [x] Full suite green; `uv tool run ty check` + `uv tool run ruff check` clean; GUI launches on 3.14
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `2241c6b+f622ba1`; test list: pyproject gui extra (pygobject/pycairo optional, no hard dep), cli.py clean-error message; tests/test_cli_gui_gi_error.py; GUI launch verified on 3.14 (stays up under timeout). Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).

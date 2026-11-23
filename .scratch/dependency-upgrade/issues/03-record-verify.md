@@ -6,10 +6,10 @@
 
 **Status:** implemented in 3af6e31 (merged)
 
-- [ ] docs/wiki dated entry with version table + breakage notes
-- [ ] Clean-venv verification: `uv sync --fresh`, `uv run pytest -q`, `uv tool run ty check`, `uv tool run ruff check`, GUI launch, offline project open
-- [ ] Commit docs as one ticket commit
+- [x] docs/wiki dated entry with version table + breakage notes
+- [x] Clean-venv verification: `uv sync --fresh`, `uv run pytest -q`, `uv tool run ty check`, `uv tool run ruff check`, GUI launch, offline project open
+- [x] Commit docs as one ticket commit
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `3af6e31`; test list: docs/wiki/dependency-upgrade.md dated entry with version table + clean-venv verification record. Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).

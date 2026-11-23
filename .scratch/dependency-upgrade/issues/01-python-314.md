@@ -6,12 +6,12 @@
 
 **Status:** implemented in 3c07d0f (merged)
 
-- [ ] `requires-python = ">=3.14,<3.15"` in pyproject.toml; `uv lock` + `uv sync` green
-- [ ] Any code/test fixes needed for 3.14 (no behavior change)
-- [ ] Full suite `uv run pytest -q` green (known pre-existing headless/gi failures excepted — verify against main), ty + ruff clean
-- [ ] GUI launches: `uv run seestar-controller gui` starts
-- [ ] Commit lock + changes as one ticket commit
+- [x] `requires-python = ">=3.14,<3.15"` in pyproject.toml; `uv lock` + `uv sync` green
+- [x] Any code/test fixes needed for 3.14 (no behavior change)
+- [x] Full suite `uv run pytest -q` green (known pre-existing headless/gi failures excepted — verify against main), ty + ruff clean
+- [x] GUI launches: `uv run seestar-controller gui` starts
+- [x] Commit lock + changes as one ticket commit
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `3c07d0f`; test list: pyproject.toml requires-python + uv.lock (verified: uv lock --check green, uv run python = 3.14.7); tests/test_compat.py plus the full suite. Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).

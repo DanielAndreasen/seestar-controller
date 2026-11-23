@@ -6,12 +6,12 @@
 
 **Status:** implemented in 8f671c1 (merged 4da4d51)
 
-- [ ] Pure `astrometry/` package, no gi (subprocess boundary test)
-- [ ] `solve_frame(fits_path or data+header)` -> WCS; solve-field subprocess if binary found (shutil.which), else Gaia pattern match via gaia-crossmatch; WCS written into the FITS header (astropy) + stored in project DB per frame
-- [ ] `SolveError` with a clear message on failure
-- [ ] Tests: synthetic FITS with known WCS -> recovered within tolerance, header round-trip; failure path; no network (mock Gaia table)
-- [ ] Full suite green
+- [x] Pure `astrometry/` package, no gi (subprocess boundary test)
+- [x] `solve_frame(fits_path or data+header)` -> WCS; solve-field subprocess if binary found (shutil.which), else Gaia pattern match via gaia-crossmatch; WCS written into the FITS header (astropy) + stored in project DB per frame
+- [x] `SolveError` with a clear message on failure
+- [x] Tests: synthetic FITS with known WCS -> recovered within tolerance, header round-trip; failure path; no network (mock Gaia table)
+- [x] Full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `8f671c1 (merged 4da4d51)`; test list: tests/test_astrometry_solve.py, tests/test_astrometry_store.py, tests/test_astrometry_boundary.py. Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).
