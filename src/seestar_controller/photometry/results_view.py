@@ -43,7 +43,9 @@ passes it down via :func:`seestar_controller.ui.views.build_view`):
   (``solving done/total — frame N``), per-frame solve failures recorded and
   skipped (never kill the batch), and afterwards the label shows the WCS
   coverage (``"WCS: 508 of 512 subs solved"``) so a re-Run can reproject the
-  sky picks onto every frame (issue 09);
+  sky picks onto every frame (issue 09); issue 16: the label also surfaces
+  low-confidence solves — ``"WCS: 512 of 512 subs solved (low-confidence:
+  512)"`` with the ``warning`` css class;
 - a **progress bar + label** while running (``done/total — frame N``), and
   after a run the summary ``N measured, N skipped, N excluded`` plus a
   dedicated **exclusion label** (frame-quality ticket 03: how many sub-frames
@@ -325,7 +327,10 @@ class ResultsPanel(Gtk.Box):
     @property
     def wcs_label(self) -> Gtk.Label:
         """The WCS coverage label (issue 10): ``"WCS: 4 of 512 subs solved"``
-        for the chosen session; empty when no session is selected."""
+        for the chosen session — issue 16: with the low-confidence solves
+        appended when there are any, ``"WCS: 512 of 512 subs solved
+        (low-confidence: 512)"`` (plus the ``warning`` css class); empty when
+        no session is selected."""
         return self._wcs_label
 
     @property
@@ -563,17 +568,26 @@ class ResultsPanel(Gtk.Box):
     def _refresh_wcs_label(self) -> None:
         """Re-read the WCS coverage of the chosen session and update the label
         (issue 10: ``"WCS: 508 of 512 subs solved"``); empty when no session is
-        selected or the coverage cannot be read."""
+        selected or the coverage cannot be read. Issue 16: when some solved
+        subs are LOW-confidence, the label says so (``"WCS: 512 of 512 subs
+        solved (low-confidence: 512)"``) and carries the ``warning`` css
+        class so the poor solve quality is visible at a glance."""
         session_id = self.selected_session_id()
         if session_id is None:
             self._wcs_label.set_label("")
+            self._wcs_label.remove_css_class("warning")
             return
         try:
             coverage = self._controller.wcs_coverage(session_id)
         except RunError:
             self._wcs_label.set_label("")
+            self._wcs_label.remove_css_class("warning")
             return
         self._wcs_label.set_label(f"WCS: {coverage.summary}")
+        if coverage.low_confidence:
+            self._wcs_label.add_css_class("warning")
+        else:
+            self._wcs_label.remove_css_class("warning")
 
 
     def _on_refresh_clicked(self, *_args) -> None:

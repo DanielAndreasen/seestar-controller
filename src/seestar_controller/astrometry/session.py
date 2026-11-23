@@ -29,8 +29,20 @@ imports, no :mod:`seestar_controller.link` imports; the pure
   ``GLib.idle_add``-marshalled callable so a worker thread never touches the
   thread-affine sqlite db, while the slow solve itself stays on the caller);
 - :func:`session_wcs_coverage` — the session's WCS coverage
-  (``solved`` / ``total`` subs) as a frozen :class:`SessionWcsCoverage`, for
-  the "508 of 512 frames solved" display.
+  (``solved`` / ``total`` subs, plus the LOW-CONFIDENCE solves) as a frozen
+  :class:`SessionWcsCoverage`, for the "508 of 512 frames solved" display.
+
+Issue 16 — solve QUALITY is surfaced next to the count: a solve is
+**low-confidence** (:func:`is_low_confidence_solve`) when it used fewer than
+:data:`LOW_CONFIDENCE_MIN_STARS` matched stars, or when the match RMS is NULL
+(the solver reported none) or above :data:`LOW_CONFIDENCE_MAX_RMS_ARCSEC`
+arcsec — such solves can reproject hundreds of px off with no other sign.
+:class:`SessionWcsCoverage` counts them (``low_confidence`` /
+``low_confidence_ids``, surfaced in its ``summary`` as
+``"512 of 512 subs solved (low-confidence: 512)"``) and
+:class:`SessionSolveReport` marks the newly solved low-confidence frames
+(``low_confidence_ids``, surfaced in its ``summary`` too), and the batch
+solve logs a warning per low-confidence frame.
 
 Typical flow::
 
@@ -90,6 +102,41 @@ def _direct_call(fn: Callable[[], Any]) -> Any:
 #: the calling thread, so a full batch yields the ``done`` sequence ``1..N``.
 SolveProgressCallback = Callable[[int, int, Frame], None]
 
+#: Issue 16 — a solve is LOW-CONFIDENCE when it used fewer than this many
+#: matched stars. A 1-star "solve" fits a WCS but reprojects the field
+#: hundreds of px off, so it must be surfaced, not silently counted as solved.
+LOW_CONFIDENCE_MIN_STARS = 8
+
+#: Issue 16 — a solve is LOW-CONFIDENCE when its match RMS is NULL (the
+#: solver reported none) or above this many arcsec.
+LOW_CONFIDENCE_MAX_RMS_ARCSEC = 5.0
+
+
+def is_low_confidence_solve(
+    n_stars: int,
+    rms_arcsec: float | None,
+    *,
+    min_stars: int = LOW_CONFIDENCE_MIN_STARS,
+    max_rms_arcsec: float = LOW_CONFIDENCE_MAX_RMS_ARCSEC,
+) -> bool:
+    """True when a solve with ``n_stars`` matched stars and a match RMS of
+    ``rms_arcsec`` arcsec (None = the solver reported no RMS) is
+    **LOW-CONFIDENCE** (issue 16): fewer than ``min_stars`` matched stars
+    (default :data:`LOW_CONFIDENCE_MIN_STARS` = 8), or an RMS that is NULL or
+    above ``max_rms_arcsec`` (default :data:`LOW_CONFIDENCE_MAX_RMS_ARCSEC` =
+    5.0 arcsec). Such solves are counted as solved but must be surfaced —
+    they can reproject the sky positions far off the frame.
+    """
+    if isinstance(min_stars, bool) or not isinstance(min_stars, int):
+        raise TypeError(f"min_stars must be an int, got {min_stars!r}")
+    if min_stars < 0:
+        raise ValueError(f"min_stars must be >= 0, got {min_stars!r}")
+    if isinstance(max_rms_arcsec, bool) or not isinstance(max_rms_arcsec, (int, float)):
+        raise TypeError(f"max_rms_arcsec must be a number, got {max_rms_arcsec!r}")
+    if n_stars < min_stars:
+        return True
+    return rms_arcsec is None or rms_arcsec > max_rms_arcsec
+
 
 @dataclass(frozen=True)
 class SolvedFrame:
@@ -127,6 +174,11 @@ class SessionSolveReport:
     - ``session_id`` — the session that was batch-solved;
     - ``solved`` — the :class:`SolvedFrame`\\ s, in frame order (jd order);
     - ``skipped`` — the :class:`SkippedSolve`\\ s, in frame order.
+
+    Issue 16: the newly solved LOW-CONFIDENCE frames (n_stars below
+    :data:`LOW_CONFIDENCE_MIN_STARS`, or rms_arcsec NULL / above
+    :data:`LOW_CONFIDENCE_MAX_RMS_ARCSEC`) are marked via
+    :attr:`low_confidence_ids` and surfaced in :attr:`summary`.
     """
 
     session_id: str
@@ -144,6 +196,22 @@ class SessionSolveReport:
         return tuple(s.frame_id for s in self.skipped)
 
     @property
+    def low_confidence_ids(self) -> tuple[int, ...]:
+        """The ids of the newly solved sub-frames whose solve is
+        LOW-CONFIDENCE (issue 16: :func:`is_low_confidence_solve` on the
+        frame's :class:`~.solve.SolveResult`), in frame order."""
+        return tuple(
+            s.frame_id
+            for s in self.solved
+            if is_low_confidence_solve(s.result.n_stars, s.result.rms_arcsec)
+        )
+
+    @property
+    def low_confidence(self) -> int:
+        """The number of newly solved LOW-CONFIDENCE sub-frames (issue 16)."""
+        return len(self.low_confidence_ids)
+
+    @property
     def attempted(self) -> int:
         """The number of unsolved sub-frames attempted (solved + skipped)."""
         return len(self.solved) + len(self.skipped)
@@ -151,34 +219,58 @@ class SessionSolveReport:
     @property
     def summary(self) -> str:
         """A human-readable one-line batch summary: ``"4 of 5 unsolved subs
-        solved (1 skipped)"``, or ``"no unsolved subs in session '...'"``."""
+        solved (1 skipped)"``, with the low-confidence solves (issue 16)
+        appended when there are any — e.g. ``"4 of 4 unsolved subs solved
+        (4 low-confidence)"`` or ``"3 of 5 unsolved subs solved (2 skipped,
+        3 low-confidence)"`` — or ``"no unsolved subs in session '...'"``."""
         attempted = self.attempted
         if attempted == 0:
             return f"no unsolved subs in session {self.session_id!r}"
         text = f"{len(self.solved)} of {attempted} unsolved subs solved"
+        notes = []
         if self.skipped:
-            text += f" ({len(self.skipped)} skipped)"
+            notes.append(f"{len(self.skipped)} skipped")
+        low = self.low_confidence
+        if low:
+            notes.append(f"{low} low-confidence")
+        if notes:
+            text += f" ({', '.join(notes)})"
         return text
 
 
 @dataclass(frozen=True)
 class SessionWcsCoverage:
     """The WCS coverage of one session's sub-frames (issue 10): how many subs
-    have a stored ``frame_wcs`` row.
+    have a stored ``frame_wcs`` row — and how many of those solves are
+    LOW-CONFIDENCE (issue 16).
 
     - ``session_id`` — the session;
     - ``solved`` — the subs of the session with a stored WCS record;
-    - ``total`` — all sub-frames of the session (``kind="sub"``).
+    - ``total`` — all sub-frames of the session (``kind="sub"``);
+    - ``low_confidence`` — the solved subs whose stored solve is
+      low-confidence (:func:`is_low_confidence_solve`: n_stars below
+      :data:`LOW_CONFIDENCE_MIN_STARS`, or rms_arcsec NULL / above
+      :data:`LOW_CONFIDENCE_MAX_RMS_ARCSEC`);
+    - ``low_confidence_ids`` — the frame ids of those low-confidence solves,
+      in frame order (jd order).
     """
 
     session_id: str
     solved: int
     total: int
+    low_confidence: int = 0
+    low_confidence_ids: tuple[int, ...] = ()
 
     @property
     def unsolved(self) -> int:
         """The subs of the session without a stored WCS record."""
         return max(self.total - self.solved, 0)
+
+    @property
+    def high_confidence(self) -> int:
+        """The solved subs whose solve is NOT low-confidence
+        (``solved - low_confidence``)."""
+        return max(self.solved - self.low_confidence, 0)
 
     @property
     def fraction(self) -> float:
@@ -188,10 +280,15 @@ class SessionWcsCoverage:
     @property
     def summary(self) -> str:
         """A human-readable one-line coverage: ``"4 of 512 subs solved"``,
-        or ``"no subs in the session"``."""
+        with the low-confidence solves (issue 16) appended when there are
+        any — e.g. ``"512 of 512 subs solved (low-confidence: 512)"`` — or
+        ``"no subs in the session"``."""
         if self.total == 0:
             return "no subs in the session"
-        return f"{self.solved} of {self.total} subs solved"
+        text = f"{self.solved} of {self.total} subs solved"
+        if self.low_confidence:
+            text += f" (low-confidence: {self.low_confidence})"
+        return text
 
 
 def _resolve_frame(project: Project, frame: Frame | int) -> Frame:
@@ -403,6 +500,13 @@ def solve_session_unsolved(
     have a ``frame_wcs`` row (:func:`~seestar_controller.store.wcs.list_solved_frames`)
     are never attempted again.
 
+    Issue 16: a solved frame whose solve is LOW-CONFIDENCE
+    (:func:`is_low_confidence_solve` — n_stars below
+    :data:`LOW_CONFIDENCE_MIN_STARS`, or rms_arcsec NULL / above
+    :data:`LOW_CONFIDENCE_MAX_RMS_ARCSEC`) is still recorded as solved, but
+    it is marked in the report (:attr:`SessionSolveReport.low_confidence_ids`,
+    surfaced in :attr:`SessionSolveReport.summary`) and logged as a warning.
+
     The function is synchronous and GTK-free — safe to call from a worker
     thread when ``call_store`` marshals the store access.
     """
@@ -442,6 +546,18 @@ def solve_session_unsolved(
             skipped.append(SkippedSolve(frame_id=frame.id, reason=str(exc)))
         else:
             solved.append(SolvedFrame(frame_id=frame.id, result=result))
+            if is_low_confidence_solve(result.n_stars, result.rms_arcsec):
+                # issue 16: the solve succeeded but is low-confidence —
+                # surface it (the report's low_confidence_ids + this log)
+                logger.warning(
+                    "low-confidence WCS solve of sub-frame %s of session %s: "
+                    "n_stars=%s, rms_arcsec=%s — reprojected positions may be "
+                    "far off (re-solve with a different solver/index?)",
+                    frame.id,
+                    session_id,
+                    result.n_stars,
+                    result.rms_arcsec,
+                )
         if on_progress is not None:
             on_progress(index + 1, total, frame)
     return SessionSolveReport(
@@ -454,23 +570,43 @@ def session_wcs_coverage(
     session_id: str,
     *,
     call_store: StoreCall | None = None,
+    min_stars: int = LOW_CONFIDENCE_MIN_STARS,
+    max_rms_arcsec: float = LOW_CONFIDENCE_MAX_RMS_ARCSEC,
 ) -> SessionWcsCoverage:
     """The WCS coverage of one session's sub-frames (issue 10): how many of
-    the session's ``kind="sub"`` frames have a stored ``frame_wcs`` record.
-    Returns the frozen :class:`SessionWcsCoverage` (``solved`` / ``total``,
-    e.g. ``"508 of 512 subs solved"``).
+    the session's ``kind="sub"`` frames have a stored ``frame_wcs`` record —
+    and how many of those solves are LOW-CONFIDENCE (issue 16). Returns the
+    frozen :class:`SessionWcsCoverage` (``solved`` / ``total`` /
+    ``low_confidence`` / ``low_confidence_ids``, e.g. ``"508 of 512 subs
+    solved (low-confidence: 3)"``).
 
     - ``session_id`` — an existing session of ``project``; unknown ->
       :class:`~seestar_controller.store.errors.SessionNotFoundError`;
-    - ``call_store`` — see :func:`solve_session_unsolved` (None = direct).
+    - ``call_store`` — see :func:`solve_session_unsolved` (None = direct);
+    - ``min_stars`` / ``max_rms_arcsec`` — the low-confidence thresholds
+      (see :func:`is_low_confidence_solve`; defaults
+      :data:`LOW_CONFIDENCE_MIN_STARS` / :data:`LOW_CONFIDENCE_MAX_RMS_ARCSEC`).
     """
     call = call_store if call_store is not None else _direct_call
     call(lambda: _require_session(project, session_id))
     frames = call(lambda: list_frames(project, session_id=session_id, kind=KIND_SUB))
     sub_ids = {f.id for f in frames}
-    solved = sum(
-        1
+    solved_rows = [
+        w
         for w in call(lambda: list_solved_frames(project, session_id))
         if w.frame_id in sub_ids
+    ]
+    low_confidence_ids = tuple(
+        w.frame_id
+        for w in solved_rows
+        if is_low_confidence_solve(
+            w.n_stars, w.rms_arcsec, min_stars=min_stars, max_rms_arcsec=max_rms_arcsec
+        )
     )
-    return SessionWcsCoverage(session_id=session_id, solved=solved, total=len(frames))
+    return SessionWcsCoverage(
+        session_id=session_id,
+        solved=len(solved_rows),
+        total=len(frames),
+        low_confidence=len(low_confidence_ids),
+        low_confidence_ids=low_confidence_ids,
+    )
