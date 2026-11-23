@@ -105,6 +105,7 @@ from seestar_controller.store import (
     KIND_STACK,
     KIND_SUB,
     StarPick,
+    close_session,
     create_project,
     lightcurve,
     list_frames,
@@ -745,6 +746,22 @@ def test_app_owns_shared_run_controller_and_window_passes_it_down(gtk, tmp_path)
     photometry_page = window.view_stack.get_child_by_name("photometry")
     assert photometry_page.run_controller is app.run_controller
     assert photometry_page.results_panel.controller is app.run_controller
+
+
+def test_results_panel_marks_empty_sessions_in_the_chooser(gtk, project):
+    # issue 20: a session with zero subs is listed but marked "(empty)"
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs(project, n=2)
+    close_session(project, session)
+    empty = start_session(project)
+    close_session(project, empty)
+    rc = RunController(project=project)
+    panel = ResultsPanel(run_controller=rc)
+    model = panel._session_dropdown.get_model()
+    labels = [model.get_string(i) for i in range(model.get_n_items())]
+    assert any(label.endswith(f"{session}") and "(empty)" not in label for label in labels)
+    assert any(label.endswith(f"{empty} (empty)") for label in labels)
 
 
 def test_results_panel_shows_table_and_plot_after_a_run(gtk, project):

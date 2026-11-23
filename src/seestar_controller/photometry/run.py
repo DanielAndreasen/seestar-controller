@@ -215,7 +215,7 @@ from seestar_controller.store.measurements import (
     set_excluded as store_set_excluded,
 )
 from seestar_controller.store.project import utc_now_iso
-from seestar_controller.store.sessions import Session, list_sessions
+from seestar_controller.store.sessions import Session, list_sessions, session_sub_counts
 from seestar_controller.store.stars import load_star_picks
 from seestar_controller.store.wcs import FrameWcs, list_solved_frames
 
@@ -884,6 +884,18 @@ class RunController:
         except ProjectError as exc:
             raise RunError(
                 f"cannot list the sessions of project {project.slug!r}: {exc}"
+            ) from exc
+
+    def session_sub_counts(self) -> dict[str, int]:
+        """The number of stored sub frames per session id (issue 20: a
+        session with zero subs is empty — the Run chooser marks it
+        "(empty)"). Raises :class:`RunError` when no project is set."""
+        project = self._require_project()
+        try:
+            return self._call_store(lambda: session_sub_counts(project))
+        except ProjectError as exc:
+            raise RunError(
+                f"cannot count the subs of project {project.slug!r}: {exc}"
             ) from exc
 
     def lightcurve_points(self, include_excluded: bool = True) -> tuple[Measurement, ...]:
