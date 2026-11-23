@@ -90,13 +90,13 @@ def test_validate_settings_comp_search_radius_invalid(bad):
 
 
 def test_comp_search_radius_deg_helper_reads_and_falls_back():
-    assert comp_search_radius_deg(DEFAULT_SETTINGS) == DEFAULT_COMP_SEARCH_RADIUS_DEG == 1.5
+    assert comp_search_radius_deg(DEFAULT_SETTINGS) == DEFAULT_COMP_SEARCH_RADIUS_DEG == 0.5
     assert comp_search_radius_deg({"photometry_comp_search_radius_deg": "2.5"}) == 2.5
     assert comp_search_radius_deg({"photometry_comp_search_radius_deg": 0.25}) == 0.25
     # missing / invalid -> the default, never raises
-    assert comp_search_radius_deg({}) == 1.5
-    assert comp_search_radius_deg({"photometry_comp_search_radius_deg": "abc"}) == 1.5
-    assert comp_search_radius_deg({"photometry_comp_search_radius_deg": "0"}) == 1.5
+    assert comp_search_radius_deg({}) == 0.5
+    assert comp_search_radius_deg({"photometry_comp_search_radius_deg": "abc"}) == 0.5
+    assert comp_search_radius_deg({"photometry_comp_search_radius_deg": "0"}) == 0.5
 
 
 def test_update_comp_search_radius_persists_and_reloads(settings_file, controller, root_dir):
@@ -240,7 +240,7 @@ def test_update_valid_persists_and_reloads(settings_file, controller, root_dir, 
         "scope_ip": "192.168.1.50",
         "key_path": str(key_path),
         "project_root": str(root_dir),
-        "photometry_comp_search_radius_deg": "1.5",
+        "photometry_comp_search_radius_deg": "0.5",
         "last_project": "",
         "site_latitude": "",
         "site_longitude": "",
@@ -265,7 +265,7 @@ def test_update_partial_keeps_other_fields(controller, root_dir):
         "scope_ip": "10.0.0.9",
         "key_path": "/tmp/k.pem",
         "project_root": str(root_dir),
-        "photometry_comp_search_radius_deg": "1.5",
+        "photometry_comp_search_radius_deg": "0.5",
         "last_project": "",
         "site_latitude": "",
         "site_longitude": "",

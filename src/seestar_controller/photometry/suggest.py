@@ -56,6 +56,17 @@ Conventions (documented choices):
   active sort mode (:data:`SORT_DISTANCE` — nearest-first — by default;
   :data:`SORT_MAGNITUDE` / :data:`SORT_CLOSEST_MAG`, issue 07) — so a
   mocked/foreign ``lookup`` cannot leak out-of-radius stars.
+- **Issue 08 — suggestions are limited to the open frame's FOV:** the default
+  radius is :data:`DEFAULT_COMP_SEARCH_RADIUS_DEG` = 0.5 deg (the S50 FOV is
+  well under 1.5 deg across), and when the pick controller's current image
+  has a celestial WCS, every suggestion is marked
+  :attr:`CompSuggestion.in_frame` via
+  :func:`~seestar_controller.photometry.picking.frame_contains_sky` (the
+  ``sky_to_pixel`` pixel must lie inside the frame). Out-of-frame suggestions
+  stay listed but are greyed out in the panel and
+  :meth:`~SuggestionController.add_suggestion` refuses them; the snapshot
+  carries :attr:`SuggestionSnapshot.frame_fov_deg` (the WCS-derived FOV
+  radius of the open frame) and :attr:`SuggestionSnapshot.out_of_frame_count`.
 - **Catalog failures are a snapshot error state, not an exception:**
   :meth:`~SuggestionController.refresh` catches ANY exception from the
   ``lookup`` callable (e.g. :class:`~seestar_controller.catalog.facade.CatalogUnavailableError`
@@ -104,6 +115,8 @@ from .picking import (
     PickController,
     PickSession,
     StarPickSpec,
+    frame_contains_sky,
+    frame_fov_radius_deg,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,8 +131,12 @@ class SuggestionError(PhotometryError):
 
 #: Default comp-search radius, in degrees (mirrors the settings default,
 #: ``ui.state.DEFAULT_COMP_SEARCH_RADIUS_DEG`` — the app injects the configured
-#: value; this is the fallback for standalone use).
-DEFAULT_COMP_SEARCH_RADIUS_DEG = 1.5
+#: value; this is the fallback for standalone use). Issue 08: 0.5 deg, not
+#: 1.5 — the Seestar S50 FOV is well under 1.5 deg across, so the historical
+#: 1.5 deg default searched far outside the open frame; when the open frame
+#: has a celestial WCS, suggestions are additionally limited to the frame
+#: footprint anyway (see :attr:`CompSuggestion.in_frame`).
+DEFAULT_COMP_SEARCH_RADIUS_DEG = 0.5
 
 #: Largest comp-search radius accepted, in degrees (mirrors the catalog's cone
 #: limit, ``catalog.standards.MAX_RADIUS_DEG``).
@@ -268,7 +285,14 @@ class CompSuggestion:
     - ``coord`` — the J2000 position;
     - ``magnitude`` — the star's magnitude in ``band`` (None when unknown);
     - ``band`` — the photometric band of ``magnitude`` (e.g. ``"V"``);
-    - ``distance_deg`` — the great-circle distance from the target, in degrees.
+    - ``distance_deg`` — the great-circle distance from the target, in degrees;
+    - ``in_frame`` — whether the star's sky position falls inside the open
+      frame's footprint (issue 08, via
+      :func:`~seestar_controller.photometry.picking.frame_contains_sky` against
+      the pick controller's current image WCS). True when the footprint is
+      undeterminable (no image / no WCS) — appended with a default, so
+      positional construction stays compatible. Out-of-frame suggestions are
+      listed (the panel greys them out) but can never be added as comps.
     """
 
     name: str
@@ -276,11 +300,14 @@ class CompSuggestion:
     magnitude: float | None
     band: str
     distance_deg: float
+    in_frame: bool = True
 
     def describe(self) -> str:
-        """The one-line label: ``"APASS 12345678 — V 12.34 — 0.042° away"``."""
+        """The one-line label: ``"APASS 12345678 — V 12.34 — 0.042° away"``
+        (plus ``" — outside the frame"`` when :attr:`in_frame` is False)."""
         mag = f"{self.band} {self.magnitude:.2f}" if self.magnitude is not None else f"{self.band} ?"
-        return f"{self.name} — {mag} — {self.distance_deg:.4f}° away"
+        suffix = " — outside the frame" if not self.in_frame else ""
+        return f"{self.name} — {mag} — {self.distance_deg:.4f}° away{suffix}"
 
 
 @dataclass(frozen=True)
@@ -300,7 +327,15 @@ class SuggestionSnapshot:
       healthy — never a traceback;
     - ``sort_mode`` — the active sort mode (one of :data:`SORT_MODES`;
       default :data:`SORT_DISTANCE`, the historical nearest-first order) —
-      appended with a default, so positional construction stays compatible.
+      appended with a default, so positional construction stays compatible;
+    - ``frame_fov_deg`` — the open frame's FOV radius in degrees (issue 08,
+      via :func:`~seestar_controller.photometry.picking.frame_fov_radius_deg`
+      on the pick controller's current image); None when the frame has no
+      usable WCS / no image — appended with a default;
+    - ``out_of_frame_count`` — how many of the ``suggestions`` fall outside
+      the open frame's footprint (``in_frame=False``; greyed out and not
+      addable in the panel); 0 when the footprint is undeterminable —
+      appended with a default.
     """
 
     target: J2000Coord | None
@@ -308,6 +343,8 @@ class SuggestionSnapshot:
     suggestions: tuple[CompSuggestion, ...]
     error: str | None
     sort_mode: str = SORT_DISTANCE
+    frame_fov_deg: float | None = None
+    out_of_frame_count: int = 0
 
 
 #: A suggestion listener: called with a frozen :class:`SuggestionSnapshot` on
@@ -398,6 +435,7 @@ class SuggestionController:
         self._target: J2000Coord | None = None
         self._has_target: bool = False
         self._suggestions: tuple[CompSuggestion, ...] = ()
+        self._out_of_frame_count: int = 0
         self._error: str | None = None
         self._listeners: list[SuggestListener] = []
         if picker_controller is not None:
@@ -487,6 +525,23 @@ class SuggestionController:
         return self._error
 
     @property
+    def frame_fov_radius_deg(self) -> float | None:
+        """The open frame's FOV radius in degrees (issue 08) — the
+        half-diagonal of the pick controller's current image on the sky, via
+        :func:`~seestar_controller.photometry.picking.frame_fov_radius_deg`;
+        None when there is no image or it has no usable celestial WCS (a raw
+        Seestar sub) — never raises."""
+        image = self._picker.image if self._picker is not None else None
+        return frame_fov_radius_deg(image)
+
+    @property
+    def out_of_frame_count(self) -> int:
+        """How many of the current :attr:`suggestions` fall outside the open
+        frame's footprint (issue 08; ``in_frame=False``) — 0 when the
+        footprint is undeterminable."""
+        return self._out_of_frame_count
+
+    @property
     def snapshot(self) -> SuggestionSnapshot:
         """The frozen :class:`SuggestionSnapshot` of the current state."""
         return SuggestionSnapshot(
@@ -495,6 +550,8 @@ class SuggestionController:
             suggestions=self._suggestions,
             error=self._error,
             sort_mode=self._sort_mode,
+            frame_fov_deg=self.frame_fov_radius_deg,
+            out_of_frame_count=self._out_of_frame_count,
         )
 
     # -- listeners ---------------------------------------------------------------
@@ -625,7 +682,16 @@ class SuggestionController:
           sorted by the active :attr:`sort_mode` (:data:`SORT_DISTANCE`
           nearest-first by default; :data:`SORT_MAGNITUDE` /
           :data:`SORT_CLOSEST_MAG`, issue 07, sort client-side by magnitude);
-          malformed entries (no usable coord) are skipped.
+          malformed entries (no usable coord) are skipped;
+        - issue 08: each suggestion is marked with
+          :attr:`CompSuggestion.in_frame` — whether its sky position falls
+          inside the open frame's footprint
+          (:func:`~seestar_controller.photometry.picking.frame_contains_sky`
+          against the pick controller's current image). Out-of-frame stars
+          stay listed (the panel greys them out) but are never addable, and
+          :attr:`SuggestionSnapshot.out_of_frame_count` counts them; when the
+          current frame has no usable WCS the footprint is undeterminable and
+          every suggestion is marked in-frame (True).
 
         Notifies the listeners. NOTE: blocks on the catalog lookup — call off
         the main loop.
@@ -635,6 +701,7 @@ class SuggestionController:
         self._target = coord
         if coord is None:
             self._suggestions = ()
+            self._out_of_frame_count = 0
             # a pixel-only target (no WCS on the frame) gets the plate-solve
             # hint; no target at all stays a clean empty state (ticket 05)
             self._error = NO_WCS_HINT if has_target else None
@@ -646,9 +713,11 @@ class SuggestionController:
         except Exception as exc:  # catalog taxonomy included; never BaseException  # noqa: BLE001
             logger.warning("catalog comp lookup failed: %s", exc)
             self._suggestions = ()
+            self._out_of_frame_count = 0
             self._error = f"catalog lookup failed: {exc}"
             self._notify()
             return self.snapshot
+        image = self._picker.image if self._picker is not None else None
         suggestions: list[CompSuggestion] = []
         for star in stars or ():
             coord = _star_coord(star)
@@ -668,6 +737,10 @@ class SuggestionController:
                 except (TypeError, ValueError):
                     magnitude = None
             band = getattr(star, "band", None) or "V"
+            # issue 08: mark whether the star is inside the open frame's
+            # footprint (None = undeterminable, no WCS on the current frame
+            # -> treated as in-frame, the radius filter still applies)
+            in_frame = frame_contains_sky(image, coord)
             suggestions.append(
                 CompSuggestion(
                     name=str(name),
@@ -675,12 +748,14 @@ class SuggestionController:
                     magnitude=magnitude,
                     band=str(band),
                     distance_deg=distance,
+                    in_frame=in_frame if in_frame is not None else True,
                 )
             )
         suggestions.sort(
             key=lambda s: _suggestion_sort_key(s, self._sort_mode, self._target_magnitude)
         )
         self._suggestions = tuple(suggestions)
+        self._out_of_frame_count = sum(1 for s in suggestions if not s.in_frame)
         self._error = None
         self._notify()
         return self.snapshot
@@ -711,9 +786,10 @@ class SuggestionController:
         the star's name as label; comps accumulate (ticket-01 semantics).
 
         Raises :class:`SuggestionError` when there is no pick controller, no
-        image, the position maps outside the frame, the index is bad, or the
-        star is already a comp pick (the underlying
-        :class:`~.picking.PickingError` is chained).
+        image, the position maps outside the frame (issue 08: the suggestion
+        is marked ``in_frame=False``), the index is bad, or the star is
+        already a comp pick (the underlying :class:`~.picking.PickingError`
+        is chained).
         """
         idx = self._normalize_index(index)
         suggestion = self._suggestions[idx]
@@ -721,6 +797,12 @@ class SuggestionController:
             raise SuggestionError(
                 "no pick controller attached — attach_picker() first (the app "
                 "wires the shared PickController)"
+            )
+        if not suggestion.in_frame:
+            raise SuggestionError(
+                f"cannot add suggestion {suggestion.name!r} as a comp: its sky "
+                "position maps outside the open frame's footprint (FOV) — only "
+                "in-frame stars are addable"
             )
         for pick in self._picker.comps:
             if pick.coord is not None and pick.coord.separation(suggestion.coord) < _SAME_STAR_EPSILON_DEG:

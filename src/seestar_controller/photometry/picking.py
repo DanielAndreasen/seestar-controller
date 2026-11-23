@@ -19,7 +19,10 @@ What lives here:
   conversion (:mod:`astropy.wcs`, lazy), plus the lenient variants
   :func:`try_pixel_to_sky` / :func:`try_sky_to_pixel` (None instead of
   raising) and :func:`has_celestial_wcs` (bool) used by the picking/suggest
-  paths and by the photometry run's per-frame WCS reprojection (issue 09);
+  paths and by the photometry run's per-frame WCS reprojection (issue 09),
+  and the frame-footprint helpers :func:`frame_contains_sky` /
+  :func:`frame_fov_radius_deg` (issue 08 — is a sky position inside the open
+  frame, and how wide the frame's FOV is on the sky);
 - :func:`parse_goto_target` / :class:`GotoTarget` (issue 06) — parse a
   "go to RA/Dec or name" entry: an ``(RA, Dec)`` pair (RA in hours, Dec in
   degrees, sexagesimal ok) becomes a coordinate, anything else an object name
@@ -98,7 +101,12 @@ from typing import Any
 
 import numpy as np
 
-from seestar_controller.catalog.coords import CoordinateError, J2000Coord, parse_coords
+from seestar_controller.catalog.coords import (
+    CoordinateError,
+    J2000Coord,
+    angular_distance,
+    parse_coords,
+)
 from seestar_controller.store.errors import ProjectError, StarPickError
 from seestar_controller.store.frames import header_to_dict
 from seestar_controller.store.stars import (
@@ -320,6 +328,85 @@ def has_celestial_wcs(header: Mapping[str, Any] | None) -> bool:
     except PickingError:
         return False
     return True
+
+
+def _image_shape(image: Any) -> tuple[int, int] | None:
+    """The ``(width, height)`` of a FitsImage-like ``image`` (``.width`` /
+    ``.height``, falling back to the ``data`` array shape), or None when
+    neither is available — never raises."""
+    if image is None:
+        return None
+    width = getattr(image, "width", None)
+    height = getattr(image, "height", None)
+    if width is not None and height is not None:
+        try:
+            return int(width), int(height)
+        except (TypeError, ValueError):
+            return None
+    data = getattr(image, "data", None)
+    if data is not None:
+        try:
+            array = np.asarray(data)
+        except Exception:  # noqa: BLE001 — a broken data attribute  # nosec B110
+            return None
+        if array.ndim >= 2:
+            return int(array.shape[1]), int(array.shape[0])
+    return None
+
+
+def frame_contains_sky(image: Any, coord: Any) -> bool | None:
+    """Whether the sky position ``coord`` falls INSIDE the frame footprint of
+    ``image`` (issue 08): the 0-based WCS pixel of ``coord``
+    (:func:`try_sky_to_pixel` against the image header) must lie within
+    ``[0, width) x [0, height)``.
+
+    Returns **None** when the footprint cannot be determined — no image, or
+    no usable celestial WCS on it (a raw Seestar sub: plate-solve first) —
+    never raises. This is what limits catalog comp suggestions to the open
+    frame's FOV.
+    """
+    shape = _image_shape(image)
+    if shape is None:
+        return None
+    header = getattr(image, "header", None)
+    pixel = try_sky_to_pixel(header, coord)
+    if pixel is None:
+        return None
+    x, y = pixel
+    width, height = shape
+    return 0.0 <= x < width and 0.0 <= y < height
+
+
+def frame_fov_radius_deg(image: Any) -> float | None:
+    """The field-of-view radius of ``image`` in degrees (issue 08): the
+    largest great-circle distance from the frame center to any of its four
+    corners, via the WCS (:func:`try_pixel_to_sky`) — the half-diagonal of
+    the frame footprint on the sky.
+
+    Returns None when the image is missing or has no usable celestial WCS
+    (a raw Seestar sub) — never raises. Used to auto-derive the actual FOV
+    of the open frame (e.g. to size the comp search radius) when solved.
+    """
+    shape = _image_shape(image)
+    if shape is None:
+        return None
+    header = getattr(image, "header", None)
+    width, height = shape
+    center = try_pixel_to_sky(header, (width - 1) / 2.0, (height - 1) / 2.0)
+    if center is None:
+        return None
+    radius = 0.0
+    for px, py in (
+        (0.0, 0.0),
+        (width - 1.0, 0.0),
+        (0.0, height - 1.0),
+        (width - 1.0, height - 1.0),
+    ):
+        corner = try_pixel_to_sky(header, px, py)
+        if corner is None:
+            return None
+        radius = max(radius, angular_distance(center, corner))
+    return radius
 
 
 def try_pixel_to_sky(
