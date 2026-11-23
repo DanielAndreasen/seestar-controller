@@ -1,6 +1,6 @@
 # Issue 03: observing site (site_latitude/longitude/elevation/timezone) is settings-file only — no GUI field, Observe view errors with VisibilityError
 
-**Status:** needs-triage
+**Status:** completed (fixed in 4a72b64 on main: site_* rows editable in Settings dialog + actionable unset-site Open Settings affordance; reviewed APPROVE)
 
 ## Found while
 Live session 2026-11-22: the Observe view shows
