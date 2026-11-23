@@ -12,7 +12,9 @@ explicit ``path`` overrides it.
 
 API (takes the open :class:`~.project.Project` handle first):
 
-- :func:`export_csv` — write the lightcurve CSV atomically, returns the path.
+- :func:`export_csv` — write the lightcurve CSV atomically, returns the path;
+- :func:`target_name` — the ``target`` column value of a project (config
+  target, falling back to the saved target star pick's label).
 
 File format (documented choices):
 
@@ -24,8 +26,10 @@ File format (documented choices):
   order (by ``jd``, ties by row id): ``jd`` as ``repr(float)`` (round-trips
   exactly through ``float()``), ``utc`` as the stored ISO-8601 string,
   ``mag`` as ``repr(float)``, ``mag_err`` as ``repr(float)`` or EMPTY when
-  NULL, ``session`` as the session id, ``target`` as the project config's
-  target name (empty string when unset). Fields containing commas/quotes are
+  NULL, ``session`` as the session id, ``target`` as :func:`target_name` —
+  the project config's target name, falling back to the saved target star
+  pick's label when the config target is null (issue 18), empty string when
+  neither is set. Fields containing commas/quotes are
   quoted by the :mod:`csv` module, so re-parsing with :class:`csv.reader`
   yields the exact original values. Issue 13: :func:`~.measurements.lightcurve`
   returns at most ONE row per frame (the newest), so the exported ``jd``
@@ -54,6 +58,7 @@ from pathlib import Path
 
 from .measurements import Measurement, lightcurve
 from .project import Project
+from .stars import ROLE_TARGET, load_star_picks
 
 #: File name of the default export inside a project directory.
 CSV_FILE = "lightcurve.csv"
@@ -62,17 +67,27 @@ CSV_FILE = "lightcurve.csv"
 CSV_HEADER = ("jd", "utc", "mag", "mag_err", "session", "target")
 
 
-def _target_name(project: Project) -> str:
-    """The target name from the project config (``config['target']``): a
-    mapping's ``name`` entry, a plain string as-is, else ``""`` (unset)."""
+def target_name(project: Project) -> str:
+    """The ``target`` column value of ``project``.
+
+    The project config's ``target`` (``config['target']``) when set: a
+    mapping's ``name`` entry, a plain string as-is, else ``""``. When the
+    config target is null, the saved target star pick's label
+    (:func:`~.stars.load_star_picks`, role :data:`~.stars.ROLE_TARGET`)
+    falls back (issue 18) — ``""`` when the pick is unnamed or no target
+    pick is saved.
+    """
     target = project.config.get("target")
-    if target is None:
+    if target is not None:
+        if isinstance(target, str):
+            return target
+        if isinstance(target, Mapping):
+            name = target.get("name")
+            return "" if name is None else str(name)
         return ""
-    if isinstance(target, str):
-        return target
-    if isinstance(target, Mapping):
-        name = target.get("name")
-        return "" if name is None else str(name)
+    for pick in load_star_picks(project):
+        if pick.role == ROLE_TARGET:
+            return pick.label if pick.label is not None else ""
     return ""
 
 
@@ -113,7 +128,9 @@ def export_csv(
     ``jd,utc,mag,mag_err,session,target``; ``jd``/``mag``/``mag_err`` are
     written as ``repr(float)`` (re-parseable with ``float()`` to the exact db
     value), ``mag_err`` NULL as an empty field, ``session`` as the session id,
-    ``target`` as the project config's target name (empty string when unset).
+    ``target`` as :func:`target_name` — the project config's target name,
+    falling back to the saved target star pick's label when the config
+    target is null (issue 18), empty string when neither is set.
 
     The file is written ATOMICALLY: temp file in the same directory + flush +
     fsync + :func:`os.replace`, temp removed on any failure incl.
@@ -133,7 +150,7 @@ def export_csv(
         if not isinstance(path, (str, Path)):
             raise TypeError(f"path must be a string, a Path, or None, got {path!r}")
         dest = Path(path)
-    target_name = _target_name(project)
+    name = target_name(project)
     rows = lightcurve(project, include_excluded=include_excluded)
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=dest.name + ".", suffix=".tmp")
@@ -143,7 +160,7 @@ def export_csv(
             writer = csv.writer(fh, lineterminator="\n")
             writer.writerow(CSV_HEADER)
             for measurement in rows:
-                writer.writerow(_format_row(measurement, target_name))
+                writer.writerow(_format_row(measurement, name))
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, dest)

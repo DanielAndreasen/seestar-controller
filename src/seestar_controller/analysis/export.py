@@ -84,11 +84,12 @@ from __future__ import annotations
 import csv
 import os
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from seestar_controller.store.csv_export import export_csv as _store_export_csv
+from seestar_controller.store.csv_export import target_name as _store_target_name
 from seestar_controller.store.measurements import lightcurve as _store_lightcurve
 
 from .fold import FoldError, fold_points
@@ -111,21 +112,15 @@ FOLDED_CSV_HEADER = ("jd", "utc", "mag", "mag_err", "session", "target", "phase"
 
 def _target_name(project: Any, override: str | None) -> str:
     """The ``target`` column value: the explicit ``override`` when given,
-    else the project config's target name (a mapping's ``name`` entry, a
-    plain string as-is, else ``""`` — the same rule as the store exporter)."""
+    else the store exporter's :func:`~seestar_controller.store.csv_export.target_name`
+    (the project config's target name — a mapping's ``name`` entry, a plain
+    string as-is — falling back to the saved target star pick's label when
+    the config target is null, issue 18, else ``""``)."""
     if override is not None:
         if not isinstance(override, str):
             raise TypeError(f"target must be a string or None, got {override!r}")
         return override
-    target = project.config.get("target")
-    if target is None:
-        return ""
-    if isinstance(target, str):
-        return target
-    if isinstance(target, Mapping):
-        name = target.get("name")
-        return "" if name is None else str(name)
-    return ""
+    return _store_target_name(project)
 
 
 def _is_project(obj: Any) -> bool:
@@ -276,8 +271,11 @@ def export_folded_csv(
     - ``include_excluded`` — when False (default), points flagged
       ``excluded`` are OMITTED (the store policy); when True they are
       written too;
-    - ``target`` — an explicit ``target`` column value (default: the project
-      config's target name, or ``""`` for a points-only export).
+    - ``target`` — an explicit ``target`` column value (default: the
+      project's target name via
+      :func:`~seestar_controller.store.csv_export.target_name` — config
+      target, falling back to the saved target pick's label, issue 18 —
+      or ``""`` for a points-only export).
 
     The header is exactly :data:`FOLDED_CSV_HEADER`
     (``jd,utc,mag,mag_err,session,target,phase``); the rows are sorted by
