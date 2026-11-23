@@ -41,10 +41,12 @@ What lives here:
 
   - :meth:`~RunController.run_session` — run aperture photometry over ALL
     **sub-frames** of one session (``store.frames`` ``kind="sub"`` filtered by
-    ``session_id`` — stacks/enhanced are NEVER measured), appending each result
+    ``session_id`` — stacks/enhanced are NEVER measured), storing each result
     via :func:`seestar_controller.store.measurements.add_measurement` (jd, mag,
-    mag_err from the :class:`~.measure.FrameMeasurement`), collecting skipped
-    frames, reporting progress via the ``on_progress(done, total, frame)``
+    mag_err from the :class:`~.measure.FrameMeasurement`; a per-frame UPSERT,
+    issue 13 — a re-run replaces the session's previous rows, which are
+    cleared at run start, instead of appending duplicates),
+    collecting skipped frames, reporting progress via the ``on_progress(done, total, frame)``
     callback (called after each frame, so a full run yields the sequence
     ``1..N``), and returning the frozen :class:`RunReport`. It is a plain
     synchronous, GTK-free method — **safe to call from a worker thread** (the
@@ -149,6 +151,17 @@ Conventions (documented choices):
   a config write failure never fails the run. The CSV export is unchanged:
   excluded frames have no measurement rows, and the export's OMIT policy for
   ``excluded`` points already keeps the file the clean lightcurve.
+- **Re-runs are idempotent (issue 13)**: at run start the session's previous
+  measurement rows are cleared
+  (:func:`seestar_controller.store.measurements.clear_session_measurements`,
+  marshalled to the db-owning thread like every store call), and every stored
+  measurement is a per-frame UPSERT
+  (:func:`seestar_controller.store.measurements.add_measurement`), so a
+  re-run REPLACES the previous run's rows instead of appending duplicates —
+  the lightcurve / CSV export never show duplicate jd rows. The number of
+  cleared previous rows is recorded on the report
+  (``RunReport.cleared_measurements``) and in the ``project.json``
+  ``last_run`` record.
 - **One run at a time**: calling :meth:`~RunController.run_session` while a
   run is in progress raises :class:`RunError`.
 - **Unknown session**: a ``session_id`` not in
@@ -185,6 +198,7 @@ from seestar_controller.store.frames import KIND_SUB, Frame, list_frames
 from seestar_controller.store.measurements import (
     Measurement,
     add_measurement,
+    clear_session_measurements,
     lightcurve,
 )
 from seestar_controller.store.measurements import (
@@ -334,6 +348,9 @@ class RunReport:
       frame data is aggregated as ``refined_frames`` (from the
       ``frame_results``'s ``wcs_refined`` counts; the per-star offsets ride
       on the ``StarMeasurement.pick_offset``\\ s).
+    - issue 13: ``cleared_measurements`` — how many of the session's
+      PREVIOUS run rows were cleared at run start (the re-run reset), so a
+      re-run replaces the previous rows instead of appending duplicates.
     """
 
     measurements: tuple[Measurement, ...]
@@ -341,6 +358,7 @@ class RunReport:
     session_id: str
     frame_results: tuple[FrameMeasurement, ...] = ()
     excluded: tuple[ExcludedFrame, ...] = ()
+    cleared_measurements: int = 0  # issue 13: previous run rows cleared at start
 
     @property
     def frames(self) -> int:
@@ -380,6 +398,16 @@ class RunReport:
         if reasons:
             text += f" ({reasons})"
         return text
+
+    @property
+    def cleared_summary(self) -> str:
+        """A human-readable one-line re-run note (issue 13): ``"3 previous
+        measurements cleared"``, ``"1 previous measurement cleared"``, or
+        ``"no previous measurements cleared"``."""
+        count = self.cleared_measurements
+        if count == 0:
+            return "no previous measurements cleared"
+        return f"{count} previous measurement{'s' if count != 1 else ''} cleared"
 
     @property
     def skip_reasons(self) -> dict[str, int]:
@@ -962,6 +990,7 @@ class RunController:
         frame_results: list[FrameMeasurement],
         skipped: list[SkippedFrame],
         excluded: list[ExcludedFrame],
+        cleared: int = 0,
     ) -> Callable[[Measurement, FrameMeasurement], None]:
         """The ``on_stored`` hook of :meth:`_measure_one` while a run is in
         progress: rebuild the :class:`RunReport` from the run's bookkeeping so
@@ -969,7 +998,11 @@ class RunController:
         snapshot's ``report`` right away — on the db-owning thread, inside the
         insert dispatch, so the report is visible as soon as the measurement
         is stored (the worker thread is blocked in :meth:`_call_store` while
-        the hook runs, which keeps the lists stable)."""
+        the hook runs, which keeps the lists stable).
+
+        - ``cleared`` — the count of the session's previous run rows cleared
+          at run start (issue 13), recorded on every published report.
+        """
 
         def on_stored(measurement: Measurement, fm: FrameMeasurement) -> None:
             report = RunReport(
@@ -978,6 +1011,7 @@ class RunController:
                 session_id=session_id,
                 frame_results=tuple(frame_results) + (fm,),
                 excluded=tuple(excluded),
+                cleared_measurements=cleared,
             )
             with self._lock:
                 self._report = report
@@ -1003,6 +1037,7 @@ class RunController:
                           "skipped": N, "skip_reasons": {...},
                           "wcs_frames": N, "pixel_frames": N,
                           "wcs_refined_frames": N,
+                          "cleared_measurements": N,
                           "excluded_count": N,
                           "excluded": [{"frame_id": ..., "reasons": [...]}]}}
 
@@ -1027,6 +1062,7 @@ class RunController:
                     "wcs_frames": report.wcs_frames,  # issue 09
                     "pixel_frames": report.pixel_frames,  # issue 09
                     "wcs_refined_frames": report.refined_frames,  # issue 12
+                    "cleared_measurements": report.cleared_measurements,  # issue 13
                     "excluded_count": report.excluded_count,
                     "excluded": [
                         {"frame_id": e.frame_id, "reasons": list(e.reasons)}
@@ -1069,9 +1105,18 @@ class RunController:
           and still advance the progress;
         - every non-excluded sub-frame (``kind="sub"`` only — stacks/enhanced
           are never measured) is measured with the resolved picks and its
-          result appended via
+          result stored via
           :func:`seestar_controller.store.measurements.add_measurement`
-          (jd, mag, mag_err); issue 09: when the frame has a stored WCS
+          (jd, mag, mag_err — a per-frame UPSERT, issue 13);
+        - issue 13 (re-run idempotence): BEFORE any frame is measured, the
+          session's previous run rows are cleared via
+          :func:`seestar_controller.store.measurements.clear_session_measurements`
+          (on the db-owning thread), and each result is stored as a per-frame
+          upsert — so a re-run REPLACES the previous run's rows instead of
+          appending duplicates and the lightcurve/CSV export never show
+          duplicate jd rows; the cleared count is recorded on the report
+          (``cleared_measurements`` / ``cleared_summary``) and in the
+          ``project.json`` ``last_run`` record; issue 09: when the frame has a stored WCS
           (:func:`seestar_controller.store.wcs.list_solved_frames`), picks
           that carry a sky coordinate are reprojected onto that frame's pixel
           coordinates before measuring (fixed pixel picks otherwise — the
@@ -1146,6 +1191,27 @@ class RunController:
                 )
             else:
                 excluded_map = _normalize_excluded_frames(excluded_frames)
+            # issue 13: re-run idempotence — clear the session's previous run
+            # rows BEFORE measuring anything, so this run REPLACES them instead
+            # of appending duplicates (the count is recorded on the report).
+            # Done after the picks/frames resolution, so a run that cannot
+            # start at all (bad ensemble, unknown session) leaves the previous
+            # measurements untouched.
+            try:
+                cleared = self._call_store(
+                    lambda: clear_session_measurements(project, session_id)
+                )
+            except ProjectError as exc:
+                raise RunError(
+                    f"cannot clear the previous measurements of session "
+                    f"{session_id!r} of project {project.slug!r}: {exc}"
+                ) from exc
+            if cleared:
+                logger.info(
+                    "cleared %d previous measurement(s) of session %s (re-run)",
+                    cleared,
+                    session_id,
+                )
             total = len(frames)
             measurements: list[Measurement] = []
             frame_results: list[FrameMeasurement] = []
@@ -1172,7 +1238,7 @@ class RunController:
                             aperture,
                             frame_wcs=solved_map.get(frame.id),
                             on_stored=self._make_report_publisher(
-                                session_id, measurements, frame_results, skipped, excluded
+                                session_id, measurements, frame_results, skipped, excluded, cleared
                             ),
                         )
                     except MeasurementError as exc:
@@ -1200,6 +1266,7 @@ class RunController:
                 session_id=session_id,
                 frame_results=tuple(frame_results),
                 excluded=tuple(excluded),
+                cleared_measurements=cleared,  # issue 13
             )
             # publish the report BEFORE the post-run store calls below (the
             # exclusion record + the lightcurve refresh marshal to the

@@ -73,8 +73,9 @@ Strict two-layer split (the sandbox has no GTK, see docs/wiki/assumptions.md):
   shared :class:`~.picking.PickController`: :meth:`~.run.RunController.run_session`
   measures ALL sub-frames of one session (stacks/enhanced never) on the
   calling thread — safe from a worker thread, with store writes marshalled to
-  the db-owning thread — appending each result via the store's
-  ``add_measurement`` (jd, mag, mag_err), collecting skipped frames, reporting
+  the db-owning thread — storing each result via the store's
+  ``add_measurement`` (jd, mag, mag_err — a per-frame upsert, so a re-run
+  replaces the session's previous rows instead of duplicating them), collecting skipped frames, reporting
   progress via an ``on_progress(done, total, frame)`` callback, and returning
   a frozen :class:`~.run.RunReport`; the results accessor
   (:meth:`~.run.RunController.sessions` /

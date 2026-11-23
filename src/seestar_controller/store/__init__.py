@@ -47,13 +47,16 @@ Pure Python, no GTK, no link (module boundary per
   :data:`~.stars.ROLE_CHECK` / :data:`~.stars.ROLES`,
   :func:`~.stars.normalize_role`, and :class:`~.errors.StarPickError`
 - :mod:`.measurements` — measurements + lightcurve query:
-  :func:`~.measurements.add_measurement` (append one point for a frame, jd
-  defaults to the frame's jd), :func:`~.measurements.lightcurve` (all
-  measurements across all sessions ordered by jd, excluded filtered unless
-  ``include_excluded=True``), :func:`~.measurements.set_excluded` (flag/unflag
-  an outlier), :func:`~.measurements.measurements_for_frame` (one frame's
-  points), the :class:`~.measurements.Measurement` record (frame FK +
-  joined session_id/utc, jd, mag, mag_err, excluded), and
+  :func:`~.measurements.add_measurement` (upsert one point for a frame —
+  re-adding a frame replaces its previous row; jd defaults to the frame's
+  jd), :func:`~.measurements.lightcurve` (all measurements across all
+  sessions ordered by jd, at most one — the newest — row per frame, excluded
+  filtered unless ``include_excluded=True``),
+  :func:`~.measurements.set_excluded` (flag/unflag an outlier),
+  :func:`~.measurements.measurements_for_frame` (one frame's newest point),
+  :func:`~.measurements.clear_session_measurements` (delete a whole session's
+  measurement rows — the re-run reset), the :class:`~.measurements.Measurement`
+  record (frame FK + joined session_id/utc, jd, mag, mag_err, excluded), and
   :class:`~.errors.MeasurementError`
 - :mod:`.presets` — per-image enhancement presets (image-enhance ticket 04):
   :func:`~.presets.save_preset` (upsert one frame's pipeline JSON in one db
@@ -148,6 +151,7 @@ from .isochrone import IsochroneParams, isochrone_params, set_isochrone_params
 from .measurements import (
     Measurement,
     add_measurement,
+    clear_session_measurements,
     lightcurve,
     measurements_for_frame,
     set_excluded,
@@ -262,6 +266,7 @@ __all__ = [
     "StarPickError",
     "WcsStoreError",
     "add_measurement",
+    "clear_session_measurements",
     "close_session",
     "create_project",
     "default_project_root",

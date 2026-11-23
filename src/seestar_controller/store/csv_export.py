@@ -27,7 +27,9 @@ File format (documented choices):
   NULL, ``session`` as the session id, ``target`` as the project config's
   target name (empty string when unset). Fields containing commas/quotes are
   quoted by the :mod:`csv` module, so re-parsing with :class:`csv.reader`
-  yields the exact original values.
+  yields the exact original values. Issue 13: :func:`~.measurements.lightcurve`
+  returns at most ONE row per frame (the newest), so the exported ``jd``
+  column never contains duplicate rows from a re-run of photometry.
 - **Exclusion policy: OMIT.** Points flagged ``excluded`` are NOT written by
   default — the exported file is the clean lightcurve; pass
   ``include_excluded=True`` to write them too (the same semantics as
@@ -105,7 +107,9 @@ def export_csv(
 
     The rows come from :func:`~.measurements.lightcurve` with the same
     ``include_excluded`` value, so the file order is by ``jd`` (ties by row
-    id) across all sessions. The header is exactly
+    id) across all sessions; since that function returns at most one row per
+    frame (issue 13), the ``jd`` column never contains duplicate rows from a
+    re-run of photometry. The header is exactly
     ``jd,utc,mag,mag_err,session,target``; ``jd``/``mag``/``mag_err`` are
     written as ``repr(float)`` (re-parseable with ``float()`` to the exact db
     value), ``mag_err`` NULL as an empty field, ``session`` as the session id,

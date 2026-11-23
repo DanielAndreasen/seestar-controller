@@ -18,6 +18,7 @@ from seestar_controller.store import (
     MeasurementError,
     ProjectError,
     add_measurement,
+    clear_session_measurements,
     close_session,
     create_project,
     lightcurve,
@@ -159,6 +160,101 @@ def test_add_measurement_int_values_coerced_to_float(project, three_frames):
     assert m.mag_err == 0.0 and isinstance(m.mag_err, float)
 
 
+# --- issue 13: add_measurement is a per-frame UPSERT (a re-measure replaces, never duplicates) -------
+
+
+def test_add_measurement_replaces_the_frames_previous_row(project, three_frames):
+    f1, f2, _f3 = three_frames
+    m1 = add_measurement(project, f1, 12.1, mag_err=0.01)
+    m2 = add_measurement(project, f2, 12.2)
+    m1b = add_measurement(project, f1, 12.9, jd=JD1 + 0.001, mag_err=0.02)  # re-measure f1
+    # still exactly one row per frame — no duplicate rows, no duplicate jd
+    assert project.db.execute("SELECT COUNT(*) FROM measurements").fetchone()[0] == 2
+    assert (
+        project.db.execute(
+            "SELECT COUNT(*) FROM measurements WHERE frame_id = ?", (f1,)
+        ).fetchone()[0]
+        == 1
+    )
+    assert m1b.id != m1.id  # the replacement is a NEW row
+    assert measurements_for_frame(project, f1) == [m1b]
+    assert measurements_for_frame(project, f2) == [m2]  # other frames untouched
+    curve = lightcurve(project, include_excluded=True)
+    assert [m.id for m in curve] == [m1b.id, m2.id]  # m1's row is gone; jd order kept
+    assert [m.mag for m in curve] == [12.9, 12.2]
+    assert m1.id not in [m.id for m in curve]
+
+
+def test_add_measurement_upsert_resets_the_excluded_flag(project, three_frames):
+    f1, _f2, _f3 = three_frames
+    m1 = add_measurement(project, f1, 99.0, excluded=True)
+    assert m1.excluded is True
+    m2 = add_measurement(project, f1, 12.5)  # re-measure: the replacement row carries the NEW flag
+    assert m2.excluded is False
+    assert m2.id != m1.id
+    assert lightcurve(project) == [m2]  # not filtered out
+    assert lightcurve(project, include_excluded=True) == [m2]
+
+
+def test_lightcurve_dedups_legacy_duplicate_rows_per_frame(project, three_frames):
+    """Issue 13 read-side guarantee: even a db that already holds duplicate
+    rows for one frame (a legacy pre-13 project) never shows them — only the
+    NEWEST row per frame is returned by lightcurve()/measurements_for_frame()."""
+    f1, f2, _f3 = three_frames
+    add_measurement(project, f1, 12.1)
+    m2 = add_measurement(project, f2, 12.2)
+    # simulate a legacy duplicate: a raw second row for f1 with a conflicting mag
+    with project.db:
+        project.db.execute(
+            "INSERT INTO measurements (frame_id, jd, mag, mag_err, excluded) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (f1, JD1, 3.29, 0.5, 0),
+        )
+    assert project.db.execute("SELECT COUNT(*) FROM measurements").fetchone()[0] == 3
+    curve = lightcurve(project, include_excluded=True)
+    assert len(curve) == 2  # deduped on read: one row per frame
+    assert [m.frame_id for m in curve] == [f1, f2]
+    assert curve[0].mag == 3.29  # the NEWEST row of f1 wins
+    assert curve[1] == m2
+    got = measurements_for_frame(project, f1)
+    assert len(got) == 1 and got[0].mag == 3.29
+
+
+# --- issue 13: clear_session_measurements — the re-run reset -------------------------------------------
+
+
+def test_clear_session_measurements_deletes_only_that_sessions_rows(project, two_sessions, three_frames):
+    s1, s2 = two_sessions
+    f1, f2, f3 = three_frames
+    add_measurement(project, f1, 12.1)
+    m2 = add_measurement(project, f2, 12.2)
+    add_measurement(project, f3, 12.3)
+    cleared = clear_session_measurements(project, s1)
+    assert cleared == 2  # f1 and f3 belong to s1
+    assert measurements_for_frame(project, f1) == []
+    assert measurements_for_frame(project, f3) == []
+    assert measurements_for_frame(project, f2) == [m2]  # the other session's row survives
+    assert lightcurve(project, include_excluded=True) == [m2]
+    # clearing again is a no-op returning 0; clearing s2 removes its row
+    assert clear_session_measurements(project, s1) == 0
+    assert clear_session_measurements(project, s2) == 1
+    assert lightcurve(project, include_excluded=True) == []
+
+
+def test_clear_session_measurements_unknown_session_is_a_noop_filter(project, two_sessions, three_frames):
+    _s1, _s2 = two_sessions
+    f1, _f2, _f3 = three_frames
+    add_measurement(project, f1, 12.1)
+    assert clear_session_measurements(project, "no-such-session") == 0
+    assert len(lightcurve(project, include_excluded=True)) == 1  # nothing was deleted
+
+
+@pytest.mark.parametrize("bad", [123, True, None, 1.5, ["s1"]])
+def test_clear_session_measurements_bad_session_id_raises_type_error(project, bad):
+    with pytest.raises(TypeError):
+        clear_session_measurements(project, bad)
+
+
 # --- add_measurement: failure paths ------------------------------------------------------
 
 
@@ -250,12 +346,15 @@ def test_lightcurve_merges_sessions_ordered_by_jd(project, two_sessions, three_f
     assert all(isinstance(m, Measurement) for m in curve)
 
 
-def test_lightcurve_ties_break_by_id(project, three_frames):
+def test_lightcurve_ties_break_by_id(project, two_sessions, three_frames):
+    s1, _s2 = two_sessions
     f1, _f2, _f3 = three_frames
+    f4 = add_frame_row(project, s1, JD1, UTC1)  # a second frame at the SAME jd
     first = add_measurement(project, f1, 12.0, jd=JD1)
-    second = add_measurement(project, f1, 12.1, jd=JD1)  # same jd
+    second = add_measurement(project, f4, 12.1, jd=JD1)  # same jd, later row id
     curve = lightcurve(project)
-    assert [m.id for m in curve] == [first.id, second.id]
+    assert [m.id for m in curve] == [first.id, second.id]  # tie broken by insertion order
+    assert [m.frame_id for m in curve] == [f1, f4]  # distinct frames, one row each
 
 
 def test_lightcurve_filters_excluded_unless_included(project, three_frames):
@@ -341,9 +440,8 @@ def test_measurements_for_frame_returns_only_that_frames_points(project, three_f
     m1 = add_measurement(project, f1, 12.1)
     m2 = add_measurement(project, f2, 12.2)
     m3 = add_measurement(project, f3, 12.3)
-    m1b = add_measurement(project, f1, 12.15, jd=JD1 + 0.001)  # same frame, later jd
     got = measurements_for_frame(project, f1)
-    assert [m.id for m in got] == [m1.id, m1b.id]  # ordered by jd
+    assert got == [m1]  # exactly one row per frame (issue 13 upsert)
     assert measurements_for_frame(project, f2) == [m2]
     assert measurements_for_frame(project, f3) == [m3]
     assert all(m.frame_id == f1 for m in got)
@@ -382,17 +480,18 @@ def test_measurements_persist_across_reopen(root, project, two_sessions, three_f
         flagged = set_excluded(p, m1.id, True)
         assert flagged.excluded is True
         assert lightcurve(p) == [m3]
-        # appending still works on the reopened project
+        # re-measuring a frame on the reopened project REPLACES its row (issue 13)
         m4 = add_measurement(p, f2, 12.25)
         assert m4.session_id == s2 and m4.utc == UTC2
-        # jd order: m1 (JD1) < m3 (JD3+0.0001) < m2 = m4 (JD2, tie by id)
+        assert m4.id != m2.id
+        # jd order: m1 (JD1) < m3 (JD3+0.0001) < m4 (JD2) — one row per frame
         assert [m.id for m in lightcurve(p, include_excluded=True)] == [
             m1.id,
             m3.id,
-            m2.id,
             m4.id,
         ]
-        assert measurements_for_frame(p, f2) == [m2, m4]
+        assert measurements_for_frame(p, f2) == [m4]  # m2's row was replaced, not duplicated
+        assert p.db.execute("SELECT COUNT(*) FROM measurements").fetchone()[0] == 3
 
 
 # --- public API + module boundary --------------------------------------------------------------
@@ -405,6 +504,7 @@ def test_measurement_api_is_exported_from_package():
         "Measurement",
         "MeasurementError",
         "add_measurement",
+        "clear_session_measurements",
         "lightcurve",
         "set_excluded",
         "measurements_for_frame",
@@ -413,6 +513,7 @@ def test_measurement_api_is_exported_from_package():
         assert hasattr(store, name), name
     assert issubclass(store.MeasurementError, store.ProjectError)
     assert callable(store.add_measurement)
+    assert callable(store.clear_session_measurements)
     assert callable(store.lightcurve)
     assert callable(store.set_excluded)
     assert callable(store.measurements_for_frame)

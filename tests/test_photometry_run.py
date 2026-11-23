@@ -23,6 +23,7 @@ outlier flagging reflected in the lightcurve), and the package boundary
 (subprocess + source-scan, mirroring tests/test_photometry_picking.py).
 """
 
+import csv
 import io
 import json
 import math
@@ -63,6 +64,7 @@ from seestar_controller.store import (
     StarPick,
     close_session,
     create_project,
+    export_csv,
     lightcurve,
     list_frames,
     list_sessions,
@@ -361,9 +363,85 @@ def test_run_session_empty_session_is_a_valid_empty_run(project):
     report = ctrl.run_session(session, on_progress=lambda d, t, f: progress.append(d))
     assert report.measurements == () and report.skipped == ()
     assert report.session_id == session and report.frames == 0
+    assert report.cleared_measurements == 0
     assert progress == []
     assert lightcurve(project) == []
     assert ctrl.report is report
+
+
+# --- issue 13: re-running a session is idempotent — no duplicate measurements, unique jd in CSV --------
+
+
+def _read_csv_jds(path) -> list[float]:
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == ["jd", "utc", "mag", "mag_err", "session", "target"]
+    return [float(r[0]) for r in rows[1:]]
+
+
+def test_run_session_twice_keeps_the_same_row_count_and_unique_jd_in_csv(project, tmp_path):
+    session, frames, injected = make_session(project, n=6)
+    store_picks(project)
+    ctrl = RunController(project=project)
+
+    first = ctrl.run_session(session)
+    assert len(first.measurements) == 6
+    assert first.cleared_measurements == 0  # nothing to clear on the first run
+    assert first.cleared_summary == "no previous measurements cleared"
+    rows_after_first = project.db.execute("SELECT COUNT(*) FROM measurements").fetchone()[0]
+    assert rows_after_first == 6
+
+    second = ctrl.run_session(session)  # the re-run
+    assert len(second.measurements) == 6 and second.skipped == ()
+    assert second.cleared_measurements == 6  # the previous run's rows were cleared at start
+    assert second.cleared_summary == "6 previous measurements cleared"
+    rows_after_second = project.db.execute("SELECT COUNT(*) FROM measurements").fetchone()[0]
+    assert rows_after_second == rows_after_first == 6  # SAME row count — no duplicates appended
+
+    lc = lightcurve(project, include_excluded=True)
+    assert len(lc) == 6
+    assert len({m.jd for m in lc}) == 6  # unique jd
+    assert len({m.frame_id for m in lc}) == 6  # one row per frame
+    assert [m.frame_id for m in lc] == [f.id for f in frames]
+    for meas, m_inj in zip(lc, injected):
+        assert meas.mag == pytest.approx(m_inj, abs=0.02)  # the re-run recovered the same mags
+    # the cleared count is recorded in the project.json last_run record
+    assert project.config["photometry"]["last_run"]["cleared_measurements"] == 6
+
+    # the CSV export never shows duplicate jd rows
+    jds = _read_csv_jds(export_csv(project, tmp_path / "lightcurve.csv"))
+    assert len(jds) == 6
+    assert len(set(jds)) == len(jds)  # unique jd per frame
+
+    # a THIRD run is still idempotent, and the re-exported CSV still unique
+    third = ctrl.run_session(session)
+    assert third.cleared_measurements == 6
+    assert project.db.execute("SELECT COUNT(*) FROM measurements").fetchone()[0] == 6
+    jds3 = _read_csv_jds(export_csv(project, tmp_path / "lightcurve3.csv"))
+    assert len(jds3) == 6 and len(set(jds3)) == 6
+
+
+def test_rerun_after_excluding_a_frame_drops_its_stale_measurement(project):
+    """A frame measured in run 1 but excluded in run 2 must not keep its stale
+    row: the run-start clear removes the whole previous run (issue 13)."""
+    session, frames, _inj = make_session(project, n=4)
+    store_picks(project)
+    ctrl = RunController(project=project)
+    first = ctrl.run_session(session, excluded_frames=set())  # measure ALL 4 frames
+    assert len(first.measurements) == 4
+    assert first.cleared_measurements == 0
+    assert len(lightcurve(project, include_excluded=True)) == 4
+
+    _flag_frame(project, frames[1].id, ("fwhm",))  # now flagged -> excluded by default
+    second = ctrl.run_session(session)
+    assert [e.frame_id for e in second.excluded] == [frames[1].id]
+    assert second.cleared_measurements == 4  # the previous run's 4 rows were cleared
+    assert len(second.measurements) == 3
+    lc = lightcurve(project, include_excluded=True)
+    assert len(lc) == 3  # the excluded frame's stale row is gone
+    assert measurements_for_frame(project, frames[1].id) == []
+    assert {m.frame_id for m in lc} == {frames[i].id for i in (0, 2, 3)}
+    assert project.config["photometry"]["last_run"]["cleared_measurements"] == 4
 
 
 # --- picks resolution: picker controller first, stored picks as fallback -----------------------------
@@ -876,21 +954,26 @@ def test_excluded_frame_is_frozen_and_report_defaults():
     assert ExcludedFrame(frame_id=8).reasons == ()
     with pytest.raises(Exception):  # noqa: B017
         e.frame_id = 9  # type: ignore[misc]  # ty: ignore[invalid-assignment]
-    # RunReport defaults: no exclusion
+    # RunReport defaults: no exclusion, no cleared previous run (issue 13)
     report = RunReport(measurements=(), skipped=(), session_id="s1")
     assert report.excluded == ()
     assert report.excluded_count == 0
     assert report.excluded_reasons == {}
     assert report.exclusion_summary == "no frames excluded"
     assert report.frames == 0
+    assert report.cleared_measurements == 0
+    assert report.cleared_summary == "no previous measurements cleared"
     report2 = RunReport(
         measurements=(), skipped=(), session_id="s1",
         excluded=(ExcludedFrame(frame_id=1), ExcludedFrame(frame_id=2, reasons=("fwhm",))),
+        cleared_measurements=3,
     )
     assert report2.frames == 2
     assert report2.excluded_count == 2
     assert report2.excluded_reasons == {"flagged": 1, "fwhm": 1}
     assert report2.exclusion_summary == "2 frames excluded (flagged×1, fwhm×1)"
+    assert report2.cleared_measurements == 3
+    assert report2.cleared_summary == "3 previous measurements cleared"
 
 
 # --- package boundary (subprocess + source scan) + public API ---------------------------------------------

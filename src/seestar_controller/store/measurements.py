@@ -12,14 +12,17 @@ measurement belongs to one stored frame (the ``frames`` FK) and lives in the
 
 API (all take the open :class:`~.project.Project` handle first):
 
-- :func:`add_measurement` — append one measurement for a frame, returns the
-  :class:`Measurement`;
+- :func:`add_measurement` — UPSERT one measurement for a frame (re-adding a
+  frame replaces its previous row), returns the :class:`Measurement`;
 - :func:`lightcurve` — all measurements across all sessions, ordered by
-  ``jd``, excluded points filtered unless ``include_excluded=True``;
+  ``jd``, excluded points filtered unless ``include_excluded=True``; at most
+  ONE row per frame (the newest) is ever returned;
 - :func:`set_excluded` — flag/unflag an outlier point, returns the updated
   :class:`Measurement`;
-- :func:`measurements_for_frame` — the measurements of one frame, ordered by
-  ``jd``.
+- :func:`measurements_for_frame` — the (newest) measurement of one frame;
+- :func:`clear_session_measurements` — delete ALL measurement rows of one
+  session's frames in one transaction, returns the deleted count (the re-run
+  reset, issue 13).
 
 Documented choices:
 
@@ -44,6 +47,17 @@ Documented choices:
 - **Ordering.** :func:`lightcurve` and :func:`measurements_for_frame` order by
   ``jd`` (ties broken by the row ``id`` = insertion order), across ALL
   sessions — nights accumulate into one merged curve.
+- **Upsert per frame + read-side dedup (issue 13).** :func:`add_measurement`
+  is an UPSERT keyed on ``frame_id``: the frame-exists check, the delete of
+  the frame's previous measurement row(s) and the insert all run in ONE
+  transaction, so re-measuring a frame (e.g. a re-run of photometry)
+  REPLACES the previous row instead of appending a duplicate. The read side
+  dedups as well: :func:`lightcurve` and :func:`measurements_for_frame`
+  return only the NEWEST row per frame (``MAX(id)`` per ``frame_id``), so
+  even a legacy db that already holds duplicate rows for one frame never
+  yields duplicate jd points — the CSV export inherits this via
+  :func:`lightcurve`. :func:`clear_session_measurements` removes a whole
+  session's rows at once (the run-start reset of a re-run).
 - **Exclusion.** ``excluded`` points are filtered out of :func:`lightcurve`
   unless ``include_excluded=True``; :func:`set_excluded` flags/unflags in one
   transaction and raises :class:`~.errors.MeasurementError` for an unknown
@@ -51,7 +65,7 @@ Documented choices:
   a filter, not an error — it returns ``[]`` (same semantics as
   :func:`.frames.list_frames` with an unknown session).
 - **Writes** — every mutation runs in one transaction (``with project.db:``),
-  so a rejected append/update leaves no partial row behind.
+  so a rejected upsert/update/delete leaves no partial row behind.
 """
 
 from __future__ import annotations
@@ -75,6 +89,12 @@ _SELECT_SQL = (
     f"SELECT {_MEASUREMENT_COLUMNS} FROM measurements m "
     "JOIN frames f ON f.id = m.frame_id"
 )
+
+#: Read-side dedup (issue 13): only the NEWEST measurement row per frame is
+#: returned by :func:`lightcurve` / :func:`measurements_for_frame`, so a db
+#: that (legacy) holds duplicate rows for one frame never yields duplicate
+#: jd points.
+_DEDUP_CLAUSE = "m.id IN (SELECT MAX(id) FROM measurements GROUP BY frame_id)"
 
 
 @dataclass(frozen=True)
@@ -164,7 +184,7 @@ def add_measurement(
     mag_err: float | None = None,
     excluded: bool = False,
 ) -> Measurement:
-    """Append one measurement for the frame ``frame_id`` in ``project`` and
+    """Upsert one measurement for the frame ``frame_id`` in ``project`` and
     return it as a :class:`Measurement`.
 
     - ``frame_id`` — the frame the point was measured on; must exist, else
@@ -178,16 +198,22 @@ def add_measurement(
       number ``>= 0``;
     - ``excluded`` — the outlier flag (default False).
 
-    The frame-exists check and the insert run in ONE transaction
-    (``with project.db:``), so a rejected append leaves no partial row. The
-    returned record carries ``session_id``/``utc`` joined from the frame.
+    Issue 13 — **upsert per frame**: re-adding a measurement for a frame
+    REPLACES the frame's previous row(s) instead of appending a duplicate
+    (a re-run of photometry therefore never produces conflicting same-jd
+    rows). The replacement row carries the NEW call's values (an
+    ``excluded`` flag of a replaced row does not carry over). The frame-exists
+    check, the delete of the previous row(s) and the insert run in ONE
+    transaction (``with project.db:``), so a rejected upsert leaves no
+    partial row behind. The returned record carries ``session_id``/``utc``
+    joined from the frame.
     """
     frame_id = _check_id(frame_id, what="frame_id")
     excluded = _check_bool(excluded, what="excluded")
     mag_value = _finite_float(mag, what="mag")
     mag_err_value = _mag_err(mag_err)
     jd_value = None if jd is None else _finite_float(jd, what="jd")
-    with project.db:  # one transaction: the frame check and the insert together
+    with project.db:  # one transaction: the frame check, the delete and the insert together
         frame_row = project.db.execute(
             "SELECT id, session_id, jd, utc FROM frames WHERE id = ?", (frame_id,)
         ).fetchone()
@@ -198,6 +224,11 @@ def add_measurement(
             )
         if jd_value is None:
             jd_value = float(frame_row[2])  # default: the frame's jd
+        # issue 13: upsert per frame — delete the frame's previous row(s)
+        # before inserting, so a re-measure replaces instead of duplicating
+        project.db.execute(
+            "DELETE FROM measurements WHERE frame_id = ?", (frame_id,)
+        )
         cur = project.db.execute(
             "INSERT INTO measurements (frame_id, jd, mag, mag_err, excluded) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -223,13 +254,19 @@ def lightcurve(project: Project, include_excluded: bool = False) -> list[Measure
     - ``include_excluded`` — when False (default), points flagged
       ``excluded`` are filtered out; when True, they are included.
 
+    Issue 13 — at most ONE row per frame is returned (the NEWEST row per
+    ``frame_id``, see :data:`_DEDUP_CLAUSE`), so the lightcurve never shows
+    duplicate jd rows even when the db (legacy) holds duplicate rows for a
+    frame; :func:`add_measurement`'s per-frame upsert keeps new writes from
+    creating such duplicates in the first place.
+
     ``session_id`` and ``utc`` are joined from each point's frame. An empty
     project yields ``[]``.
     """
     include_excluded = _check_bool(include_excluded, what="include_excluded")
-    query = _SELECT_SQL
+    query = f"{_SELECT_SQL} WHERE {_DEDUP_CLAUSE}"
     if not include_excluded:
-        query += " WHERE m.excluded = 0"
+        query += " AND m.excluded = 0"
     query += " ORDER BY m.jd, m.id"
     rows = project.db.execute(query).fetchall()
     return [_row_to_measurement(row) for row in rows]
@@ -268,11 +305,44 @@ def measurements_for_frame(project: Project, frame_id: int) -> list[Measurement]
     """The measurements of the frame ``frame_id`` in ``project`` as
     :class:`Measurement` records, ordered by ``jd`` (ties broken by ``id``).
 
+    Issue 13 — at most ONE row is returned: the NEWEST measurement row of the
+    frame (see :data:`_DEDUP_CLAUSE`); :func:`add_measurement`'s per-frame
+    upsert replaces the frame's previous row on re-measure, so the list has
+    exactly one point per (measured) frame.
+
     An unknown frame id is a filter, not an error — it yields ``[]`` (same
     semantics as :func:`.frames.list_frames` with an unknown session).
     """
     frame_id = _check_id(frame_id, what="frame_id")
     rows = project.db.execute(
-        f"{_SELECT_SQL} WHERE m.frame_id = ? ORDER BY m.jd, m.id", (frame_id,)
+        f"{_SELECT_SQL} WHERE {_DEDUP_CLAUSE} AND m.frame_id = ? ORDER BY m.jd, m.id",
+        (frame_id,),
     ).fetchall()
     return [_row_to_measurement(row) for row in rows]
+
+
+def clear_session_measurements(project: Project, session_id: str) -> int:
+    """Delete ALL measurement rows of the frames of ``session_id`` in
+    ``project`` and return the number of deleted rows.
+
+    Issue 13 — the re-run reset: a photometry re-run of a session starts by
+    clearing the session's previous run rows, so the new run replaces them
+    instead of appending duplicates (on top of the per-frame upsert of
+    :func:`add_measurement`, which already keeps a re-measured frame at one
+    row). Measurements of OTHER sessions are never touched.
+
+    - ``session_id`` — must be a string (else :class:`TypeError`); an unknown
+      session id is a filter, not an error — it deletes nothing and returns 0
+      (same semantics as :func:`.frames.list_frames` with an unknown session).
+
+    The delete runs in ONE transaction (``with project.db:``).
+    """
+    if isinstance(session_id, bool) or not isinstance(session_id, str):
+        raise TypeError(f"session_id must be a string, got {session_id!r}")
+    with project.db:  # one transaction
+        cur = project.db.execute(
+            "DELETE FROM measurements WHERE frame_id IN "
+            "(SELECT id FROM frames WHERE session_id = ?)",
+            (session_id,),
+        )
+        return int(cur.rowcount)
