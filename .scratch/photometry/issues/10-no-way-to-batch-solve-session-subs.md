@@ -1,6 +1,6 @@
 # Issue 10: no way to batch plate-solve a session's subs — WCS reprojection (issue 09) only helps the few solved frames
 
-**Status:** completed (fixed in 00ca04f on branch wt/photometry-10: pure `solve_session_unsolved()` + `session_wcs_coverage()` in astrometry/session.py with `call_store` marshalling of `solve_project_frame`, RunController wrappers with the run-or-solve busy guard, and a "Solve unsolved subs" button + "WCS: N of M subs solved" coverage label in the photometry Run tab; not merged to main yet)
+**Status:** completed (fixed in 00ca04f + review fix d713174, merged to main as f1ca291: pure `solve_session_unsolved()` + `session_wcs_coverage()` in astrometry/session.py with `call_store` marshalling of `solve_project_frame`, RunController wrappers with the run-or-solve busy guard, and a "Solve unsolved subs" button + "WCS: N of M subs solved" coverage label in the photometry Run tab; reviewed APPROVE)
 
 ## Found while
 Live session 2026-11-22, project `vw-cep`, session `20261122T192149035964Z` (512 subs). After issue 09 (per-frame WCS reprojection of sky picks, merged in 14ce236) the photometry run can only reproject frames that HAVE a stored WCS — `frame_wcs` has 4 rows out of 512, so a re-run would still measure only a handful. The only solve UI is the Enhance view's Solve panel, one open frame at a time; there is no "solve all subs of this session".
