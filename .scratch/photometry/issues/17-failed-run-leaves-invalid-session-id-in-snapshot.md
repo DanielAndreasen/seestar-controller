@@ -1,6 +1,6 @@
 # Issue 17: run_session leaves snapshot.session_id set to an invalid id after a failed run
 
-**Status:** needs-triage
+**Status:** completed (merged to main; reviewed APPROVE)
 
 ## Found while
 Headless lightcurve run 2026-11-22: after `run_session("no-such-session")` raised `RunError`, `snapshot.session_id == "no-such-session"` with `report=None` — `_session_id` is assigned before the known-sessions validation in `RunController.run_session`.

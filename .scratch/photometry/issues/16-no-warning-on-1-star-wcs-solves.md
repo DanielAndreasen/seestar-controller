@@ -1,6 +1,6 @@
 # Issue 16: WCS solve quality not gated — all 512 frame_wcs rows have n_stars=1, rms_arcsec NULL; reprojection errors reach hundreds of px, only the ≤10 px issue-12 refinement rescues frames
 
-**Status:** needs-triage
+**Status:** completed (merged to main; reviewed APPROVE)
 
 ## Found while
 Headless lightcurve run 2026-11-22 (vw-cep): every one of the 512 batch-solved subs has `n_stars=1` and `rms_arcsec IS NULL` in frame_wcs; reprojection error for the target reached ~268 px on frame 1 (rescued only because the star was within the 10 px refinement window on most frames; 146 frames lost a pick entirely). Nothing warns the user that these solves are low-confidence.
