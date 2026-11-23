@@ -149,7 +149,7 @@ def test_defaults(state):
     # unset on a fresh state — the project controller falls back to the
     # store default root (projects-view ticket 02)
     assert state.get_setting("project_root") == ""
-    assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"
+    assert state.get_setting("photometry_comp_search_radius_deg") == "0.5"
     assert state.get_setting("last_project") == ""
     # observing site (visibility planner 01): unset on a fresh state, UTC tz
     assert state.get_setting("site_latitude") == ""
@@ -470,7 +470,7 @@ def test_path_settings_accept_paths_and_round_trip(settings_file, state):
 
 
 def test_comp_search_radius_default_and_normalization(state):
-    assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"
+    assert state.get_setting("photometry_comp_search_radius_deg") == "0.5"
     assert state.set_setting("photometry_comp_search_radius_deg", "2") == "2"
     assert state.set_setting("photometry_comp_search_radius_deg", 0.25) == "0.25"
     assert state.set_setting("photometry_comp_search_radius_deg", " 1.50 ") == "1.5"
@@ -483,7 +483,7 @@ def test_comp_search_radius_default_and_normalization(state):
 def test_comp_search_radius_invalid(state, bad):
     with pytest.raises(SettingsValidationError):
         state.set_setting("photometry_comp_search_radius_deg", bad)
-    assert state.get_setting("photometry_comp_search_radius_deg") == "1.5"  # unchanged
+    assert state.get_setting("photometry_comp_search_radius_deg") == "0.5"  # unchanged
 
 
 def test_comp_search_radius_round_trip(settings_file, state):
@@ -502,7 +502,7 @@ def test_comp_search_radius_round_trip(settings_file, state):
         encoding="utf-8",
     )
     loaded = AppState(settings_file).load()
-    assert loaded.get_setting("photometry_comp_search_radius_deg") == "1.5"
+    assert loaded.get_setting("photometry_comp_search_radius_deg") == "0.5"
     assert loaded.get_setting("scope_ip") == "seestar.local"
 
 

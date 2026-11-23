@@ -459,7 +459,7 @@ def test_app_owns_shared_suggest_controller_and_window_passes_it_down(gtk, tmp_p
     app = SeestarApplication(settings_path=str(tmp_path / "settings.json"))
     assert isinstance(app.suggest_controller, SuggestionController)
     assert app.suggest_controller.picker_controller is app.picker_controller
-    assert app.suggest_controller.radius_deg == pytest.approx(1.5)  # settings default
+    assert app.suggest_controller.radius_deg == pytest.approx(0.5)  # settings default (issue 08: ~S50 FOV)
     window = SeestarWindow(app, app.state)
     assert window.suggest_controller is app.suggest_controller
     photometry_page = window.view_stack.get_child_by_name("photometry")
@@ -468,8 +468,8 @@ def test_app_owns_shared_suggest_controller_and_window_passes_it_down(gtk, tmp_p
     # a settings change updates the shared controller's radius live (listener);
     # point project_root at an existing dir first (validation requires it)
     app.settings_controller.update(project_root=str(tmp_path))
-    app.settings_controller.update(photometry_comp_search_radius_deg="0.5")
-    assert app.suggest_controller.radius_deg == pytest.approx(0.5)
+    app.settings_controller.update(photometry_comp_search_radius_deg="0.25")
+    assert app.suggest_controller.radius_deg == pytest.approx(0.25)
 
 
 def test_suggestions_panel_lists_suggestions_and_add_button_adds_comp(
@@ -531,6 +531,63 @@ def test_suggestions_panel_shows_clean_error_on_catalog_failure(
     assert panel.suggestion_rows() == []
     status = panel.status_label
     assert "offline" in status.get_label()
+
+
+def test_suggestions_panel_greys_out_and_disables_out_of_frame_rows(
+    picker, viewer_controller, suggest_controller
+):
+    """Issue 08: suggestions whose sky position falls outside the open frame's
+    footprint are listed greyed with the Add button disabled (never offered as
+    addable comps); in-frame rows stay normal and addable; the status line
+    reports the out-of-frame count and the radius label the frame FOV."""
+    # ~2 deg from the target (82.992, 21.998) — far outside the 64x64 frame
+    far = StandardStar(
+        name="APASS FAR",
+        coord=J2000Coord(ra_deg=82.992, dec_deg=24.0),
+        magnitude=10.0,
+        band="V",
+        distance_deg=0.0,
+    )
+    panel = picker.suggestions_panel
+    viewer_controller.open_stack(viewer_controller.stacks[0].frame_id)
+    pump_main()
+    suggest_controller._lookup = _mock_lookup([WIDGET_STAR_A, WIDGET_STAR_B, far])
+    suggest_controller.set_radius(2.5)  # wide enough to list the far star
+    picker.controller.pick_at(40, 30, "target", label="Target", snap=False)
+    snapshot = panel.run_search()
+    _join_search(panel)
+    pump_main()
+    # nearest-first: B, A (on-frame), then FAR (off-frame)
+    assert [s.name for s in snapshot.suggestions] == ["APASS B", "APASS A", "APASS FAR"]
+    assert [s.in_frame for s in snapshot.suggestions] == [True, True, False]
+    assert snapshot.out_of_frame_count == 1
+    assert snapshot.frame_fov_deg is not None and snapshot.frame_fov_deg < 0.1
+    rows = panel.suggestion_rows()
+    assert len(rows) == 3
+    assert [r.in_frame for r in rows] == [True, True, False]
+    # the out-of-frame row is greyed and its Add button disabled
+    far_row = rows[2]
+    assert far_row.add_button.get_sensitive() is False
+    assert "outside the frame" in far_row.get_child().get_first_child().get_label()
+    label = far_row.get_child().get_first_child()
+    assert label.has_css_class("dim-label")
+    assert "APASS FAR" in label.get_label()
+    # the in-frame rows keep an enabled Add button
+    assert rows[0].add_button.get_sensitive() is True
+    assert rows[1].add_button.get_sensitive() is True
+    # the status line reports the out-of-frame count; the radius label the FOV
+    assert "(1 outside the frame)" in panel.status_label.get_label()
+    assert "frame FOV" in panel.radius_label.get_label()
+    # clicking the disabled row's Add does nothing; the pure layer refuses too
+    from seestar_controller.photometry import SuggestionError
+
+    with pytest.raises(SuggestionError, match="outside the open frame"):
+        suggest_controller.add_suggestion(2)
+    assert picker.controller.comps == ()
+    # an in-frame row still adds its comp
+    rows[0].add_button.emit("clicked")
+    pump_main()
+    assert [p.label for p in picker.controller.comps] == ["APASS B"]
 
 
 def test_suggestions_panel_sort_dropdown_resorts_the_rows(

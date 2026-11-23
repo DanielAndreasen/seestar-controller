@@ -225,9 +225,10 @@ def target_coord(picker):
 
 
 #: Standard stars around the target (83.01, 21.98). The 64x64 frame at
-#: 0.001 deg/px spans ra 82.987..83.05 / dec 21.95..22.013, so A and B are
-#: ON-frame (addable as comps), C (~2 deg) and D (on the 1.5 deg edge) are
-#: only listed (radius filtering), never added.
+#: 0.001 deg/px spans ra 82.987..83.05 / dec 21.987..22.05, so A, B and E are
+#: ON-frame (in_frame=True, addable as comps), while C (~2 deg) and D (on the
+#: 1.5 deg edge) are off-frame: still listed (radius permitting) but marked
+#: in_frame=False (issue 08) and never added.
 STAR_A = star("APASS A", 83.01, 22.00, mag=11.2, band="V")  # 0.02 deg away, on-frame
 STAR_B = star("APASS B", 83.005, 21.98, mag=13.4, band="R")  # ~0.0046 deg, on-frame
 STAR_C = star("APASS C", 83.01, 24.0, mag=9.9, band="V")  # ~2 deg away
@@ -263,7 +264,8 @@ def test_radius_validation_accepts_good_values(good):
 
 
 def test_default_radius_constant():
-    assert SuggestionController().radius_deg == suggest_module.DEFAULT_COMP_SEARCH_RADIUS_DEG == 1.5
+    # issue 08: the default reflects the S50 FOV (~0.5 deg), not the old 1.5 deg
+    assert SuggestionController().radius_deg == suggest_module.DEFAULT_COMP_SEARCH_RADIUS_DEG == 0.5
     assert suggest_module.MAX_COMP_SEARCH_RADIUS_DEG == 180.0
 
 
@@ -653,14 +655,15 @@ def test_add_suggestion_errors(picker, image):
     with pytest.raises(SuggestionError, match="no image"):
         ctrl.add_suggestion(0)
     picker.set_image(image)
-    # a star mapping outside the frame cannot be added — the PickingError is
-    # wrapped (chained) into a SuggestionError
+    # a star mapping outside the frame cannot be added — issue 08: it is
+    # marked in_frame=False at refresh and refused with a clear SuggestionError
     far_but_in_radius = star("EDGE", 83.01, 21.98 + 1.4)  # ~1.4 deg -> far off-frame
     ctrl._lookup = make_lookup([far_but_in_radius])
-    ctrl.refresh()
-    with pytest.raises(SuggestionError, match="outside") as excinfo:
+    snap = ctrl.refresh()
+    assert snap.suggestions[0].in_frame is False
+    assert snap.out_of_frame_count == 1
+    with pytest.raises(SuggestionError, match="outside the open frame"):
         ctrl.add_suggestion(0)
-    assert isinstance(excinfo.value.__cause__, PickingError)
     assert picker.comps == ()
 
 

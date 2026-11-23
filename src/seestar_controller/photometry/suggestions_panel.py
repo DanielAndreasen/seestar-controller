@@ -38,9 +38,13 @@ with the comp-search radius from the settings; the window passes it down via
   :meth:`~seestar_controller.photometry.suggest.SuggestionController.add_suggestion`,
   which converts the star's sky position to a pixel via the current frame's
   WCS and adds it as a comp pick (the star picker re-renders through the
-  shared pick controller);
+  shared pick controller). Issue 08: a suggestion whose sky position falls
+  OUTSIDE the open frame's footprint (``in_frame=False``) is rendered greyed
+  with its Add button disabled — never offered as an addable comp;
 - a status label: the clean catalog error (e.g. offline with no cache) in the
-  ``error`` style, or the suggestion count / "pick a target first" hint.
+  ``error`` style, or the suggestion count (plus how many fall outside the
+  frame's FOV) / "pick a target first" hint; the radius label also shows the
+  WCS-derived FOV radius of the open frame when solved.
 
 The panel re-renders on every frozen
 :class:`~seestar_controller.photometry.suggest.SuggestionSnapshot`.
@@ -217,8 +221,18 @@ class SuggestionsPanel(Gtk.Box):
 
     # -- internals ---------------------------------------------------------------------
 
-    def _radius_text(self) -> str:
-        return f"radius {self._controller.radius_deg:g}°"
+    def _radius_text(self, snapshot: SuggestionSnapshot | None = None) -> str:
+        """The radius label text: the configured comp-search radius, plus the
+        open frame's WCS-derived FOV radius when solved (issue 08)."""
+        text = f"radius {self._controller.radius_deg:g}°"
+        fov = (
+            snapshot.frame_fov_deg
+            if snapshot is not None
+            else self._controller.frame_fov_radius_deg
+        )
+        if fov is not None:
+            text += f" · frame FOV {fov:.3g}°"
+        return text
 
     def _on_search_clicked(self, *_args) -> None:
         self._set_status("searching the catalog…", error=False)
@@ -259,7 +273,7 @@ class SuggestionsPanel(Gtk.Box):
     def _render(self, snapshot: SuggestionSnapshot) -> bool:
         """Render a frozen snapshot: rebuild the suggestion rows and the
         status label. Returns ``GLib.SOURCE_REMOVE`` (one-shot idle callback)."""
-        self._radius_label.set_label(self._radius_text())
+        self._radius_label.set_label(self._radius_text(snapshot))
         # keep the sort dropdown in sync with the controller's sort mode
         # (e.g. when it was changed elsewhere); setting the same value is a
         # no-op for the notify::selected handler
@@ -277,32 +291,44 @@ class SuggestionsPanel(Gtk.Box):
             self._set_status("pick a target first — then search for comps", error=False)
         else:
             n = len(snapshot.suggestions)
-            self._set_status(
-                f"{n} standard(s) within {snapshot.radius_deg:g}° of the target",
-                error=False,
-            )
+            text = f"{n} standard(s) within {snapshot.radius_deg:g}° of the target"
+            if snapshot.out_of_frame_count:
+                text += f" ({snapshot.out_of_frame_count} outside the frame)"
+            self._set_status(text, error=False)
         return GLib.SOURCE_REMOVE
 
     def _make_row(self, index: int, suggestion: CompSuggestion) -> Gtk.ListBoxRow:
-        """One suggestion row: the description label + an Add button."""
+        """One suggestion row: the description label + an Add button. Issue
+        08: an out-of-frame suggestion (``in_frame=False``) is greyed and its
+        Add button disabled — it is listed for context but never addable."""
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         box.set_margin_top(4)
         box.set_margin_bottom(4)
         box.set_margin_start(8)
         box.set_margin_end(8)
         label = Gtk.Label(label=suggestion.describe(), xalign=0.0, hexpand=True, wrap=True)
+        if not suggestion.in_frame:
+            label.add_css_class("dim-label")
         box.append(label)
         add_button = Gtk.Button(
             label="Add",
             tooltip_text="Add this standard star as a comparison-star pick",
         )
         add_button.set_valign(Gtk.Align.CENTER)
+        if not suggestion.in_frame:
+            # issue 08: outside the open frame's FOV — not offered as an
+            # addable comp (the pure layer refuses it too)
+            add_button.set_sensitive(False)
+            add_button.set_tooltip_text(
+                "Outside the open frame's footprint (FOV) — not addable as a comp"
+            )
         add_button.suggestion_index = index  # type: ignore[attr-defined]
         add_button.connect("clicked", self._on_add_clicked)
         box.append(add_button)
         row = Gtk.ListBoxRow(child=box)
         row.suggestion_index = index  # type: ignore[attr-defined]
         row.add_button = add_button  # type: ignore[attr-defined]
+        row.in_frame = suggestion.in_frame  # type: ignore[attr-defined]
         return row
 
     def _set_status(self, text: str, *, error: bool) -> None:

@@ -50,7 +50,7 @@ On-disk shape (``schema_version`` :data:`SETTINGS_SCHEMA_VERSION`)::
         "key_path": "/home/.../.config/seestar-controller/key.pem",
         "project_root": "",                              # unset -> store default (projects-view 02)
         "last_project": "",                              # unset placeholder (projects-view 01)
-        "photometry_comp_search_radius_deg": "1.5",      # catalog-assist cone radius
+        "photometry_comp_search_radius_deg": "0.5",      # catalog-assist cone radius (issue 08: ~S50 FOV)
         "site_latitude": "",                             # unset -> no default location (visibility 01)
         "site_longitude": "",                            # unset -> no default location (visibility 01)
         "site_elevation_m": "",                          # unset -> 0 m (visibility 01)
@@ -200,8 +200,12 @@ SITE_SETTINGS_KEYS: tuple[str, ...] = (
 )
 
 #: Default catalog-assist comp-search radius, in degrees (photometry ticket
-#: 02) — a sane cone around the target for standard-star suggestions.
-DEFAULT_COMP_SEARCH_RADIUS_DEG = 1.5
+#: 02) — a sane cone around the target for standard-star suggestions. Issue
+#: 08: 0.5 deg, not 1.5 — the Seestar S50 FOV is well under 1.5 deg across, so
+#: the old default searched far outside the open frame; when the open frame
+#: is plate-solved, suggestions are additionally limited to the frame
+#: footprint (see photometry.suggest).
+DEFAULT_COMP_SEARCH_RADIUS_DEG = 0.5
 
 #: Largest comp-search radius accepted, in degrees (mirrors the catalog's
 #: cone-search limit, ``catalog.standards.MAX_RADIUS_DEG``).
