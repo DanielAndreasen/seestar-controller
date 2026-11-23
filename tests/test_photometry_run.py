@@ -353,6 +353,44 @@ def test_run_session_collects_skipped_frames_without_crashing(project):
     assert len(lightcurve(project)) == 2
 
 
+def test_run_session_aggregates_annulus_outside_image_skips(project):
+    """Issue 19 at the run.py level: a comp whose sky annulus crosses the
+    image border (10 px from the edge, sky_out=12) makes every frame skip
+    with kind ``"annulus-outside-image"``, aggregated on the report — no
+    silently biased measurements."""
+    session = start_session(project, clock=frozen(T0))
+    store_frame(
+        project, session, KIND_SUB,
+        fits_bytes(frame_data(F0, seed=11), date_obs=date_obs_str(0)),
+    )
+    store_frame(
+        project, session, KIND_SUB,
+        fits_bytes(frame_data(F0, seed=12), date_obs=date_obs_str(1)),
+    )
+    # a comp 10 px from the left edge (the stored picks carry 4/8/12)
+    stored = [
+        StarPick(
+            role=p.role, label=p.label, x=p.x, y=p.y, ra_deg=None, dec_deg=None,
+            aperture_radius=4.0, sky_annulus_inner=8.0, sky_annulus_outer=12.0,
+        )
+        for p in make_picks()
+    ]
+    stored[1] = StarPick(
+        role="comp", label="Comp edge", x=10.0, y=16.0, ra_deg=None, dec_deg=None,
+        aperture_radius=4.0, sky_annulus_inner=8.0, sky_annulus_outer=12.0,
+    )
+    save_star_picks(project, stored)
+    ctrl = RunController(project=project)
+    report = ctrl.run_session(session)
+    assert isinstance(report, RunReport)
+    assert report.measurements == ()
+    assert len(report.skipped) == 2
+    assert all(s.kind == "annulus-outside-image" and "annulus" in s.reason for s in report.skipped)
+    assert report.skip_reasons == {"annulus-outside-image": 2}
+    assert "annulus-outside-image×2" in report.skip_summary
+    assert lightcurve(project) == []  # no silent truncated-annulus bias
+
+
 def test_run_session_empty_session_is_a_valid_empty_run(project):
     session = start_session(project, clock=frozen(T0))
     store_picks(project)

@@ -557,23 +557,45 @@ def test_real_seestar_sub_fixture_picks_pixel_only_and_measures():
     assert spec.coord is None
     assert spec.x == pytest.approx(float(ix), abs=1.5)
     assert spec.y == pytest.approx(float(iy), abs=1.5)
-    # a comp on the second-brightest pixel away from the target (another star)
+    # a comp on the brightest pixel away from the target that still keeps a
+    # small sky annulus fully inside the image (>= 7 px from every edge) —
+    # issue 19 skips edge picks whose (default 12 px) annulus is truncated,
+    # and this real crop's second-brightest pixel is a corner hot pixel
     masked = np.array(data, dtype=np.float64)
+    margin = 7
+    masked[:margin, :] = -np.inf
+    masked[-margin:, :] = -np.inf
+    masked[:, :margin] = -np.inf
+    masked[:, -margin:] = -np.inf
     masked[max(0, iy - 12) : iy + 13, max(0, ix - 12) : ix + 13] = -np.inf
     jy, jx = np.unravel_index(int(np.argmax(masked)), masked.shape)
     comp = ctrl.pick_at(float(jx), float(jy), "comp", label="Comp A", snap=False)
     assert comp.coord is None
 
-    # the pixel-only picks are measurable (measure needs no WCS)
+    # the pixel-only picks are measurable (measure needs no WCS) — with a
+    # small annulus (sky_out=6) that fits inside the 96x96 crop for both
+    # picks
     from seestar_controller.photometry import measure_frame_data
 
     fm = measure_frame_data(
         np.asarray(image.data, dtype=np.float64),
         header,
         ctrl.picks,
+        ApertureParams(radius_px=3.0, sky_in_px=4.0, sky_out_px=6.0),
         jd=2461365.0,
     )
     assert fm.mag is not None and np.isfinite(fm.mag)
+
+    # issue 19: the corner hot pixel of this real crop (0, 0) — its sky
+    # annulus is truncated by the image border — is now skipped at pick
+    # level with a distinct kind, not silently measured with a biased
+    # background
+    from seestar_controller.photometry import measure_star
+    from seestar_controller.photometry.measure import FrameSkippedError
+
+    with pytest.raises(FrameSkippedError, match="annulus") as excinfo:
+        measure_star(np.asarray(image.data, dtype=np.float64), 0.0, 0.0, ApertureParams())
+    assert excinfo.value.kind == "annulus-outside-image"
 
 
 def test_pixel_only_picks_save_load_and_measure_on_tmp_project(root):

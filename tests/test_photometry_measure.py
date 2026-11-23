@@ -250,6 +250,84 @@ def test_measure_star_non_positive_flux_skipped():
         measure_star(zeros, 32.0, 32.0, APERTURE)
 
 
+def test_measure_star_annulus_outside_image_skipped():
+    """Issue 19: a pick whose sky annulus is not fully inside the image is
+    skipped at PICK level with the distinct kind ``"annulus-outside-image"``
+    — never a silently truncated (biased) annulus background."""
+    data = frame_data(F0, seed=23)
+    # 10 px from any edge/corner with sky_out=12: the center is inside, the
+    # annulus crosses the border
+    for x, y in (
+        (10.0, 32.0),
+        (SIZE - 10.0, 32.0),
+        (32.0, 10.0),
+        (32.0, SIZE - 10.0),
+        (10.0, 10.0),
+        (5.0, 32.0),
+    ):
+        with pytest.raises(FrameSkippedError, match="annulus") as excinfo:
+            measure_star(data, x, y, APERTURE)
+        assert excinfo.value.kind == "annulus-outside-image"
+    # distinct from the center-outside-image kind (the center IS inside here)
+    with pytest.raises(FrameSkippedError) as excinfo:
+        measure_star(data, -1.0, 32.0, APERTURE)
+    assert excinfo.value.kind == "outside-image"
+    # exactly at the limit the annulus still fits: comp A at (16, 16) with
+    # sky_out=16 (16-16=0 >= 0, 16+16=32 <= 63) measures fine ...
+    edge = ApertureParams(radius_px=4.0, sky_in_px=12.0, sky_out_px=16.0)
+    sm = measure_star(data, 16.0, 16.0, edge)
+    assert sm.flux > 0.0
+    # ... but one px more annulus (sky_out=17) skips the same star
+    with pytest.raises(FrameSkippedError) as excinfo:
+        measure_star(data, 16.0, 16.0, ApertureParams(radius_px=4.0, sky_in_px=13.0, sky_out_px=17.0))
+    assert excinfo.value.kind == "annulus-outside-image"
+
+
+def test_measure_star_ten_px_from_edge_skip_depends_on_annulus():
+    """The issue-19 headline: a star 10 px from the edge gets a pick-level
+    skip with the default annulus (sky_out=12), but measures normally with a
+    smaller annulus that fits (sky_out=8) — no silent bias either way."""
+    cy, cx = 32, 10  # the star sits 10 px from the left edge
+    rng = np.random.default_rng(77)
+    yy, xx = np.mgrid[0:SIZE, 0:SIZE]
+    data = np.full((SIZE, SIZE), BACKGROUND) + F0 * np.exp(
+        -(((yy - cy) ** 2 + (xx - cx) ** 2) / 8.0)
+    )
+    data = np.ascontiguousarray(data + rng.normal(0.0, NOISE, size=(SIZE, SIZE)), dtype=np.float32)
+    # default annulus: truncated at the border -> pick-level skip
+    with pytest.raises(FrameSkippedError) as excinfo:
+        measure_star(data, float(cx), float(cy), APERTURE)
+    assert excinfo.value.kind == "annulus-outside-image"
+    # small annulus (10-8=2 >= 0): fully inside -> measured, flux recovered
+    small = ApertureParams(radius_px=4.0, sky_in_px=5.0, sky_out_px=8.0)
+    sm = measure_star(data, float(cx), float(cy), small)
+    r2 = (yy - cy) ** 2 + (xx - cx) ** 2
+    expected = F0 * float(np.exp(-r2 / 8.0)[r2 <= 16.0].sum())
+    assert sm.flux == pytest.approx(expected, rel=0.03)
+    assert sm.mag == pytest.approx(flux_to_mag(sm.flux))
+
+
+def test_measure_frame_data_annulus_outside_image_skips_frame():
+    """Issue 19 at the frame level: any pick (target or comp) whose sky
+    annulus crosses the image border skips the whole frame with kind
+    ``"annulus-outside-image"``."""
+    data = frame_data(F0, seed=24)
+    header = {"DATE-OBS": date_obs_str(0)}
+    # a comp 10 px from the left edge: center inside, annulus truncated
+    picks = make_picks()
+    picks[1] = StarPickSpec(role="comp", x=10.0, y=16.0, label="Comp edge")
+    with pytest.raises(FrameSkippedError, match="annulus") as excinfo:
+        measure_frame_data(data, header, picks, APERTURE)
+    assert excinfo.value.kind == "annulus-outside-image"
+    # the target near the edge skips the frame the same way
+    with pytest.raises(FrameSkippedError) as excinfo:
+        measure_frame_data(data, header, make_picks(target_xy=(SIZE - 10.0, 30.0)), APERTURE)
+    assert excinfo.value.kind == "annulus-outside-image"
+    # the unchanged good picks still measure
+    fm = measure_frame_data(data, header, make_picks(), APERTURE)
+    assert fm.mag == pytest.approx(0.0, abs=0.02)
+
+
 # --- measure_frame_data: the pure core on a raw array -------------------------------------------
 
 
@@ -539,6 +617,37 @@ def test_measure_project_skips_out_of_frame_picks_without_crashing(project):
     assert len(report.skipped) == 3
     assert all(isinstance(s, SkippedFrame) and "outside" in s.reason for s in report.skipped)
     assert lightcurve(project) == []
+
+
+def test_measure_project_skips_annulus_outside_image_without_crashing(project):
+    """Issue 19 at the run level: frames whose pick's sky annulus crosses the
+    image border are skipped with kind ``"annulus-outside-image"`` and
+    aggregated on ``skip_reasons`` — no silently biased measurement lands in
+    the lightcurve."""
+    session = start_session(project, clock=frozen(T0))
+    for i in range(3):
+        store_frame(
+            project,
+            session,
+            KIND_SUB,
+            fits_bytes(frame_data(F0, seed=60 + i), date_obs=date_obs_str(i)),
+        )
+    # a comp 10 px from the left edge: center inside, annulus truncated
+    picks = make_picks()
+    picks[1] = StarPickSpec(role="comp", x=10.0, y=16.0, label="Comp edge")
+    report = measure_project(project, picks, APERTURE)
+    assert report.measurements == ()
+    assert report.frames == 3
+    assert len(report.skipped) == 3
+    assert all(
+        isinstance(s, SkippedFrame)
+        and s.kind == "annulus-outside-image"
+        and "annulus" in s.reason
+        for s in report.skipped
+    )
+    assert report.skip_reasons == {"annulus-outside-image": 3}
+    assert "annulus-outside-image×3" in report.skip_summary
+    assert lightcurve(project) == []  # no silent truncated-annulus bias
 
 
 def test_measure_project_skips_non_positive_flux_frame(project):

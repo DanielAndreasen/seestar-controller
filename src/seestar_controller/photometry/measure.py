@@ -111,22 +111,27 @@ Conventions (documented choices):
   is found near the predicted pixel, the predicted pixel is kept and the
   normal skip logic applies downstream (a no-star frame still skips with
   ``kind="non-positive-flux"``; a reprojected pick outside the image still
-  skips with ``kind="outside-image"``). Fixed-pixel picks (no WCS, or a
-  failed conversion) are NEVER refined — the fallback path is unchanged.
+  skips with ``kind="outside-image"``, one whose sky annulus crosses the
+  image border with ``kind="annulus-outside-image"`` — issue 19).
+  Fixed-pixel picks (no WCS, or a failed conversion) are NEVER refined —
+  the fallback path is unchanged.
 - **Pixel convention: 0-based, ``x`` = column, ``y`` = row** (same as
   :mod:`.picking` and the numpy ``data[y, x]`` array). photutils apertures take
   0-based ``(x, y)`` positions directly.
 - **Skip conditions** (per frame, recorded by :func:`measure_project`, raised
   as :class:`FrameSkippedError` by :func:`measure_frame` /
-  :func:`measure_frame_data`): a pick center outside the image, or a
-  background-subtracted flux that is non-positive or non-finite — including a
-  WCS-reprojected pick that lands outside the image (issue 09). A frame
-  that cannot be read/parsed at all raises :class:`MeasurementError` (which
-  :func:`measure_project` also records as skipped — a bad frame never kills
-  the run). Every skip carries a short machine-readable ``kind`` (e.g.
-  ``"outside-image"``, ``"non-positive-flux"``, ``"unreadable-frame"`` — the
-  ``kind`` attribute of the raised error), which the reports aggregate into
-  skip-reason counts.
+  :func:`measure_frame_data`): a pick center outside the image, a pick whose
+  sky annulus is not fully inside the image (issue 19 — a truncated annulus
+  biases the background, so edge stars are skipped rather than silently
+  mis-measured), or a background-subtracted flux that is non-positive or
+  non-finite — including a WCS-reprojected pick that lands outside the image
+  (issue 09). A frame that cannot be read/parsed at all raises
+  :class:`MeasurementError` (which :func:`measure_project` also records as
+  skipped — a bad frame never kills the run). Every skip carries a short
+  machine-readable ``kind`` (e.g. ``"outside-image"``,
+  ``"annulus-outside-image"``, ``"non-positive-flux"``,
+  ``"unreadable-frame"`` — the ``kind`` attribute of the raised error), which
+  the reports aggregate into skip-reason counts.
 - **JD** comes from the FITS header ``DATE-OBS`` (parsed with
   :mod:`astropy.time` via
   :func:`seestar_controller.store.frames._date_obs_jd_utc`); when the header
@@ -199,10 +204,12 @@ class MeasurementError(PhotometryError):
 
 
 class FrameSkippedError(MeasurementError):
-    """A frame was skipped: a pick falls outside the image, or the
+    """A frame was skipped: a pick falls outside the image, a pick's sky
+    annulus is not fully inside the image (issue 19), or the
     background-subtracted flux is non-positive/non-finite. Carries the
     human-readable ``reason`` and a ``kind`` (``"outside-image"``,
-    ``"non-positive-flux"``, ``"invalid-flux-error"``);
+    ``"annulus-outside-image"``, ``"non-positive-flux"``,
+    ``"invalid-flux-error"``);
     :func:`measure_project` records these as :class:`SkippedFrame` entries
     instead of crashing."""
 
@@ -372,7 +379,12 @@ def measure_star(
     sky-annulus photometry (photutils, ``method="exact"``).
 
     - the pick center must lie inside the image, else
-      :class:`FrameSkippedError`;
+      :class:`FrameSkippedError` (kind ``"outside-image"``);
+    - issue 19: the sky annulus must ALSO be fully inside the image (the
+      outer annulus circle within the pixel-center hull ``0..width-1`` ×
+      ``0..height-1``), else :class:`FrameSkippedError` with kind
+      ``"annulus-outside-image"`` — a truncated annulus would silently bias
+      the background and the flux of edge stars;
     - the background is the annulus mean (``aperture_sum / annulus.area``)
       times the aperture area, subtracted from the aperture sum;
     - ``flux_err`` = ``sqrt(aperture_sum_err^2 + (ap_area * annulus_sum_err /
@@ -410,6 +422,20 @@ def measure_star(
         raise FrameSkippedError(
             f"pick ({px}, {py}) falls outside the {width}x{height} image",
             kind="outside-image",
+        )
+    # issue 19: the sky annulus must be FULLY inside the image too — a
+    # truncated annulus silently biases the background (and with it the
+    # flux), which showed up as comp scatter / >1 mag outliers for edge
+    # stars. The check uses the pixel-center hull of the image
+    # (columns 0..width-1, rows 0..height-1): the outer annulus circle must
+    # fit within it. The aperture (radius < sky_in < sky_out) is covered by
+    # this check.
+    r_out = aperture.sky_out_px
+    if not (r_out <= px <= width - 1 - r_out and r_out <= py <= height - 1 - r_out):
+        raise FrameSkippedError(
+            f"sky annulus (outer radius {r_out} px) of pick ({px}, {py}) is not "
+            f"fully inside the {width}x{height} image",
+            kind="annulus-outside-image",
         )
 
     from photutils.aperture import (
@@ -715,7 +741,8 @@ def resolve_pick_pixels(
     count 0). The reprojected position is NOT range-checked here — a
     reprojected pick outside the image is a normal per-frame skip
     (:class:`FrameSkippedError`, kind ``"outside-image"``) downstream in
-    :func:`measure_star`.
+    :func:`measure_star`, and so is a reprojected pick whose sky annulus
+    crosses the image border (kind ``"annulus-outside-image"``, issue 19).
     """
     norm = tuple(picks)
     cards = _wcs_cards(wcs)
@@ -894,7 +921,9 @@ def measure_frame_data(
     the target) and the target-minus-check curve (``target_minus_check`` /
     ``target_minus_check_err``) when a check pick is present. Raises
     :class:`FrameSkippedError` when a (possibly reprojected/refined) pick
-    falls outside the image or a flux is non-positive.
+    falls outside the image, when its sky annulus is not fully inside the
+    image (kind ``"annulus-outside-image"``, issue 19), or when a flux is
+    non-positive.
     """
     norm = _normalize_picks(picks, aperture)
     norm, wcs_reprojected = resolve_pick_pixels(norm, wcs)
@@ -976,7 +1005,8 @@ class SkippedFrame:
     ``frame_id`` + the human-readable ``reason`` + a short machine-readable
     ``kind`` (issue 09) aggregating the skip cause — the ``kind`` attribute of
     the raised :class:`MeasurementError` (e.g. ``"outside-image"``,
-    ``"non-positive-flux"``, ``"unreadable-frame"``, ``"store-failed"``), or
+    ``"annulus-outside-image"`` (issue 19), ``"non-positive-flux"``,
+    ``"unreadable-frame"``, ``"store-failed"``), or
     ``"error"`` when the error carried no kind."""
 
     frame_id: int
@@ -1196,7 +1226,9 @@ def measure_frame(
       errors wrapped into :class:`MeasurementError`).
 
     Raises :class:`FrameSkippedError` when a (possibly reprojected/refined)
-    pick falls outside the image or a flux is non-positive.
+    pick falls outside the image, when its sky annulus is not fully inside
+    the image (kind ``"annulus-outside-image"``, issue 19), or when a flux
+    is non-positive.
     """
     if isinstance(frame_id, bool) or not isinstance(frame_id, int):
         raise MeasurementError(f"frame_id must be an int, got {frame_id!r}")
@@ -1237,9 +1269,11 @@ def measure_project(
       ``frame_results`` and the report aggregates refined frames
       (``refined_frames``);
     - every sub-frame is measured via :func:`measure_frame`; a frame whose
-      target/comp falls outside the image or whose flux is non-positive (or
-      that cannot be read at all) is recorded as a :class:`SkippedFrame` (with
-      the skip ``kind``, aggregated on ``skip_reasons``) — never a crash.
+      target/comp falls outside the image, whose sky annulus is not fully
+      inside the image (kind ``"annulus-outside-image"``, issue 19), or whose
+      flux is non-positive (or that cannot be read at all) is recorded as a
+      :class:`SkippedFrame` (with the skip ``kind``, aggregated on
+      ``skip_reasons``) — never a crash.
     """
     picks = list(picks)  # materialize: validated once, then measured per frame
     _normalize_picks(picks, aperture)  # validate the ensemble up front (raises)
