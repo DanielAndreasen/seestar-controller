@@ -1,6 +1,6 @@
 # Issue 06: a VizieR asu-tsv mirror answering with a non-TSV page aborts the whole standards lookup instead of trying the next mirror
 
-**Status:** needs-triage
+**Status:** completed (fixed in d2b1447, merged to main: malformed asu-tsv/TAP responses fall through to the next mirror; aggregate error only when all endpoints fail, naming each with a response snippet; reviewed APPROVE)
 
 ## Found while
 Live session 2026-11-22 (project vw-cep): the Catalog comps **Search** failed with
