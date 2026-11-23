@@ -1,6 +1,6 @@
 # Issue 08: catalog comp suggestions are not limited to the open frame's FOV (default radius 1.5° >> S50 FOV)
 
-**Status:** needs-triage
+**Status:** completed (fixed in d4f9389, merged to main as 483d8d9: suggestions marked/filtered to the open frame footprint via WCS, out-of-frame rows greyed and not addable, default radius 0.5 deg + WCS-derived FOV display; reviewed APPROVE)
 
 ## Found while
 Live session 2026-11-22 (project vw-cep, solved 10 s sub open in the Photometry picker): comps sorted by distance to the target were all outside the visible frame — the S50 FOV is well under 1.5° across, but `DEFAULT_COMP_SEARCH_RADIUS_DEG = 1.5` and nothing filters suggestions to the open image.
