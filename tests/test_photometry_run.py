@@ -44,10 +44,13 @@ from astropy.time import Time
 from seestar_controller import photometry
 from seestar_controller.photometry import (
     ApertureParams,
+    DroppedPick,
     PickController,
+    SkippedFrame,
     StarPickSpec,
 )
 from seestar_controller.photometry import run as run_module
+from seestar_controller.photometry.measure import FrameMeasurement, StarMeasurement
 from seestar_controller.photometry.run import (
     DB_CALL_TIMEOUT_S,
     ExcludedFrame,
@@ -355,11 +358,14 @@ def test_run_session_collects_skipped_frames_without_crashing(project):
     assert len(lightcurve(project)) == 2
 
 
-def test_run_session_aggregates_annulus_outside_image_skips(project):
-    """Issue 19 at the run.py level: a comp whose sky annulus crosses the
-    image border (10 px from the edge, sky_out=12) makes every frame skip
-    with kind ``"annulus-outside-image"``, aggregated on the report — no
-    silently biased measurements."""
+def test_run_session_annulus_outside_image_never_silently_measured(project):
+    """Issue 19 at the run.py level (under issue 14 per-PICK skip semantics):
+    a comp whose sky annulus crosses the image border (10 px from the edge,
+    sky_out=12) is dropped PER-PICK with kind ``"annulus-outside-image"``
+    (aggregated as ``pick-annulus-outside-image``) and the frames are still
+    measured on the remaining picks; when the TARGET's annulus crosses the
+    border the frames skip frame-level with kind ``"annulus-outside-image"``.
+    Either way no silently biased measurement lands in the lightcurve."""
     session = start_session(project, clock=frozen(T0))
     store_frame(
         project, session, KIND_SUB,
@@ -385,12 +391,165 @@ def test_run_session_aggregates_annulus_outside_image_skips(project):
     ctrl = RunController(project=project)
     report = ctrl.run_session(session)
     assert isinstance(report, RunReport)
-    assert report.measurements == ()
-    assert len(report.skipped) == 2
-    assert all(s.kind == "annulus-outside-image" and "annulus" in s.reason for s in report.skipped)
-    assert report.skip_reasons == {"annulus-outside-image": 2}
-    assert "annulus-outside-image×2" in report.skip_summary
+    # per-PICK drop: the frames are measured without the truncated-annulus comp
+    assert len(report.measurements) == 2 and report.skipped == ()
+    assert report.skip_reasons == {}
+    assert report.pick_skip_reasons == {"pick-annulus-outside-image": 2}
+    assert report.pick_skip_reasons_by_label == {
+        "Comp edge": {"pick-annulus-outside-image": 2}
+    }
+    assert "pick-annulus-outside-image×2" in report.pick_skip_summary
+    assert all(
+        len(fm.dropped_picks) == 1
+        and fm.dropped_picks[0].kind == "annulus-outside-image"
+        and len(fm.comps) == 2
+        for fm in report.frame_results
+    )
+    assert len(lightcurve(project)) == 2  # measured WITHOUT the biased pick
+    # the TARGET 10 px from the right edge -> frame-level skip, kind carried
+    # from the target's drop (issue 14)
+    stored[0] = StarPick(
+        role="target", label="Target", x=float(SIZE - 10), y=30.0, ra_deg=None, dec_deg=None,
+        aperture_radius=4.0, sky_annulus_inner=8.0, sky_annulus_outer=12.0,
+    )
+    stored[1] = StarPick(
+        role="comp", label="Comp A", x=16.0, y=16.0, ra_deg=None, dec_deg=None,
+        aperture_radius=4.0, sky_annulus_inner=8.0, sky_annulus_outer=12.0,
+    )
+    save_star_picks(project, stored)
+    report2 = ctrl.run_session(session)  # issue 13: the re-run clears the previous rows
+    assert report2.measurements == ()
+    assert len(report2.skipped) == 2
+    assert all(
+        s.kind == "annulus-outside-image"
+        and "annulus" in s.reason
+        and len(s.dropped_picks) == 1
+        and s.dropped_picks[0].role == "target"
+        for s in report2.skipped
+    )
+    assert report2.skip_reasons == {"annulus-outside-image": 2}
+    assert "annulus-outside-image×2" in report2.skip_summary
+    assert report2.pick_skip_reasons == {"pick-annulus-outside-image": 2}
     assert lightcurve(project) == []  # no silent truncated-annulus bias
+
+
+def test_run_session_reports_pick_level_drops_apart_from_frame_skips(project):
+    """Issue 14 (per-PICK skip semantics): one comp pick off-edge on every
+    frame -> the frames are STILL measured (target + 2 comps) with the drop
+    recorded per pick; an all-zero frame -> the target pick is unusable ->
+    frame-level skip. The RunReport aggregates the two separately."""
+    session, frames, injected = make_session(project, n=3)
+    # one extra all-zero sub -> frame-level skip (every pick's flux is 0)
+    zero = store_frame(
+        project,
+        session,
+        KIND_SUB,
+        fits_bytes(np.zeros((SIZE, SIZE), dtype=np.float32), date_obs=date_obs_str(50)),
+    )
+    # stored picks with Comp C off the right edge of the image
+    stored = [
+        StarPick(
+            role=p.role, label=p.label, x=p.x, y=p.y, ra_deg=None, dec_deg=None,
+            aperture_radius=4.0, sky_annulus_inner=8.0, sky_annulus_outer=12.0,
+        )
+        for p in make_picks()
+    ]
+    stored[3] = StarPick(
+        role="comp", label="Comp C", x=float(SIZE), y=50.0, ra_deg=None, dec_deg=None,
+        aperture_radius=4.0, sky_annulus_inner=8.0, sky_annulus_outer=12.0,
+    )
+    save_star_picks(project, stored)
+    ctrl = RunController(project=project)
+    report = ctrl.run_session(session)
+    # the 3 good frames were measured (Comp C dropped per frame); the zero
+    # frame is the single frame-level skip
+    assert [m.frame_id for m in report.measurements] == [f.id for f in frames]
+    assert len(report.skipped) == 1 and report.skipped[0].frame_id == zero.id
+    assert report.skipped[0].kind == "non-positive-flux"
+    assert "non-positive" in report.skipped[0].reason
+    # frame-level aggregation (unchanged): skip_reasons / skip_summary
+    assert report.skip_reasons == {"non-positive-flux": 1}
+    assert report.skip_summary == "1 frame skipped (non-positive-flux×1)"
+    # pick-level aggregation (issue 14): Comp C outside-image on the 3
+    # measured frames AND on the zero frame; the other 3 picks non-positive
+    # on the zero frame
+    assert report.pick_skip_reasons == {
+        "pick-outside-image": 4,
+        "pick-non-positive-flux": 3,
+    }
+    assert report.pick_skip_reasons_by_label == {
+        "Comp C": {"pick-outside-image": 4},
+        "Target": {"pick-non-positive-flux": 1},
+        "Comp A": {"pick-non-positive-flux": 1},
+        "Comp B": {"pick-non-positive-flux": 1},
+    }
+    assert "pick-outside-image×4" in report.pick_skip_summary
+    assert "Comp C×4" in report.pick_skip_summary
+    # the measured frames carry the one dropped pick and used 2 comps
+    assert all(len(fm.dropped_picks) == 1 for fm in report.frame_results)
+    assert all(
+        fm.dropped_picks[0].label == "Comp C"
+        and fm.dropped_picks[0].role == "comp"
+        and fm.dropped_picks[0].kind == "outside-image"
+        for fm in report.frame_results
+    )
+    assert all(len(fm.comps) == 2 for fm in report.frame_results)
+    for meas, m_inj in zip(report.measurements, injected):
+        assert meas.mag == pytest.approx(m_inj, abs=0.02)
+    # the skipped frame carries all 4 of its per-pick drops
+    assert len(report.skipped[0].dropped_picks) == 4
+    assert report.frames == 4
+    # persisted into the last_run record — pick-level apart from frame-level
+    last = project.config["photometry"]["last_run"]
+    assert last["measured"] == 3 and last["skipped"] == 1
+    assert last["skip_reasons"] == {"non-positive-flux": 1}
+    assert last["pick_skip_reasons"] == {
+        "pick-outside-image": 4,
+        "pick-non-positive-flux": 3,
+    }
+    assert len(lightcurve(project)) == 3
+
+
+def test_run_report_pick_skip_aggregation_pure():
+    """The pure RunReport aggregation (issue 14): frame-level ``skip_reasons``
+    vs pick-level ``pick_skip_reasons`` (``pick-`` prefixed, per label)."""
+    drop_c = DroppedPick(role="comp", label="Comp C", reason="outside", kind="outside-image")
+    drop_t = DroppedPick(role="target", label="Target", reason="zero flux", kind="non-positive-flux")
+    star = StarMeasurement(
+        role="target", label="Target", x=1.0, y=1.0, flux=100.0, flux_err=1.0,
+        mag=-5.0, mag_err=0.01,
+    )
+    fm = FrameMeasurement(
+        jd=2460000.5, target=star, comps=(star,), ensemble_mag=-5.0, mag=0.0,
+        mag_err=0.02, dropped_picks=(drop_c,),
+    )
+    report = RunReport(
+        measurements=(),
+        skipped=(SkippedFrame(frame_id=9, reason="r", kind="non-positive-flux",
+                              dropped_picks=(drop_t, drop_c)),),
+        session_id="s1",
+        frame_results=(fm,),
+    )
+    # frame-level: only the skipped frame counts
+    assert report.skip_reasons == {"non-positive-flux": 1}
+    assert report.skip_summary == "1 frame skipped (non-positive-flux×1)"
+    # pick-level: drops from measured AND skipped frames, pick- prefixed
+    assert report.dropped_picks == (drop_c, drop_t, drop_c)
+    assert report.pick_skip_reasons == {"pick-outside-image": 2, "pick-non-positive-flux": 1}
+    assert report.pick_skip_reasons_by_label == {
+        "Comp C": {"pick-outside-image": 2},
+        "Target": {"pick-non-positive-flux": 1},
+    }
+    assert report.pick_skip_summary == (
+        "3 pick drops (pick-non-positive-flux×1, pick-outside-image×2 — "
+        "Comp C×2, Target×1)"
+    )
+    # an empty report: no frame-level skips, no pick-level drops
+    empty = RunReport(measurements=(), skipped=(), session_id="s1")
+    assert empty.dropped_picks == ()
+    assert empty.pick_skip_reasons == {}
+    assert empty.pick_skip_reasons_by_label == {}
+    assert empty.pick_skip_summary == "no pick drops"
 
 
 def test_run_session_empty_session_is_a_valid_empty_run(project):

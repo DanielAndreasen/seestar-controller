@@ -307,22 +307,29 @@ def test_measure_star_ten_px_from_edge_skip_depends_on_annulus():
     assert sm.mag == pytest.approx(flux_to_mag(sm.flux))
 
 
-def test_measure_frame_data_annulus_outside_image_skips_frame():
-    """Issue 19 at the frame level: any pick (target or comp) whose sky
-    annulus crosses the image border skips the whole frame with kind
-    ``"annulus-outside-image"``."""
+def test_measure_frame_data_annulus_outside_image_per_pick_semantics():
+    """Issue 19 + issue 14 combined at the frame level: a pick whose sky
+    annulus crosses the image border is dropped PER-PICK with kind
+    ``"annulus-outside-image"`` — a comp drop still leaves the frame measured
+    (target + remaining comps); only a TARGET with a truncated annulus skips
+    the whole frame (the raise carries the target's drop kind + drops)."""
     data = frame_data(F0, seed=24)
     header = {"DATE-OBS": date_obs_str(0)}
-    # a comp 10 px from the left edge: center inside, annulus truncated
+    # a comp 10 px from the left edge: center inside, annulus truncated ->
+    # per-PICK drop, the frame is still measured on target + the other comps
     picks = make_picks()
     picks[1] = StarPickSpec(role="comp", x=10.0, y=16.0, label="Comp edge")
+    fm = measure_frame_data(data, header, picks, APERTURE)
+    assert len(fm.comps) == 2 and fm.mag == pytest.approx(0.0, abs=0.02)
+    assert len(fm.dropped_picks) == 1
+    drop = fm.dropped_picks[0]
+    assert drop.role == "comp" and drop.label == "Comp edge"
+    assert drop.kind == "annulus-outside-image" and "annulus" in drop.reason
+    # the target near the edge skips the frame with the target's drop kind
     with pytest.raises(FrameSkippedError, match="annulus") as excinfo:
-        measure_frame_data(data, header, picks, APERTURE)
-    assert excinfo.value.kind == "annulus-outside-image"
-    # the target near the edge skips the frame the same way
-    with pytest.raises(FrameSkippedError) as excinfo:
         measure_frame_data(data, header, make_picks(target_xy=(SIZE - 10.0, 30.0)), APERTURE)
     assert excinfo.value.kind == "annulus-outside-image"
+    assert any(d.role == "target" for d in excinfo.value.dropped_picks)
     # the unchanged good picks still measure
     fm = measure_frame_data(data, header, make_picks(), APERTURE)
     assert fm.mag == pytest.approx(0.0, abs=0.02)
@@ -385,14 +392,13 @@ def test_measure_frame_data_jd_fallback_and_missing():
 def test_measure_frame_data_out_of_image_and_bad_ensemble():
     data = frame_data(F0, seed=8)
     header = {"DATE-OBS": date_obs_str(0)}
-    # target outside the image -> FrameSkippedError
-    with pytest.raises(FrameSkippedError, match="outside"):
+    # target outside the image -> FrameSkippedError (issue 14: the frame is
+    # skipped only when the TARGET pick is unusable; the raise carries the
+    # target's drop kind + the per-pick drops)
+    with pytest.raises(FrameSkippedError, match="outside") as excinfo:
         measure_frame_data(data, header, make_picks(target_xy=(-5.0, 30.0)), APERTURE)
-    # a comp outside the image -> skipped too
-    picks = make_picks()
-    picks[1] = StarPickSpec(role="comp", x=float(SIZE), y=16.0)
-    with pytest.raises(FrameSkippedError, match="outside"):
-        measure_frame_data(data, header, picks, APERTURE)
+    assert excinfo.value.kind == "outside-image"
+    assert any(d.role == "target" for d in excinfo.value.dropped_picks)
     # bad ensembles raise MeasurementError before any photometry
     with pytest.raises(MeasurementError, match="exactly one"):
         measure_frame_data(data, header, [StarPickSpec(role="comp", x=16.0, y=16.0)], APERTURE)
@@ -415,6 +421,68 @@ def test_measure_frame_data_out_of_image_and_bad_ensemble():
     # non-2D data
     with pytest.raises(MeasurementError, match="2-D"):
         measure_frame_data(np.zeros((4, 4, 4, 4)), header, make_picks(), APERTURE)
+
+
+def test_measure_frame_data_drops_one_out_of_image_comp_but_still_measures():
+    """Issue 14 (per-PICK skip semantics): one comp off-edge is dropped for
+    that frame with a recorded reason — the frame is STILL measured on the
+    target + the remaining comps."""
+    data = frame_data(F0, seed=8)
+    header = {"DATE-OBS": date_obs_str(0)}
+    picks = make_picks()
+    picks[3] = StarPickSpec(role="comp", x=float(SIZE), y=50.0, label="Comp C")  # off-edge
+    fm = measure_frame_data(data, header, picks, APERTURE)
+    assert isinstance(fm, FrameMeasurement)
+    # the frame was measured: target + the 2 remaining comps, correct mag
+    assert len(fm.comps) == 2
+    assert {c.label for c in fm.comps} == {"Comp A", "Comp B"}
+    assert fm.mag == pytest.approx(0.0, abs=0.02)
+    assert fm.ensemble_mag == pytest.approx(ensemble_mag([c.mag for c in fm.comps]))
+    # the dropped pick is recorded with role/label/reason/kind
+    assert len(fm.dropped_picks) == 1
+    drop = fm.dropped_picks[0]
+    assert drop.role == "comp" and drop.label == "Comp C"
+    assert drop.kind == "outside-image" and "outside" in drop.reason
+    # a dropped pick is not among the measured stars
+    assert all(s.label != "Comp C" for s in (fm.target, *fm.comps))
+
+
+def test_measure_frame_data_frame_skipped_only_when_target_unusable():
+    """Issue 14: the frame is skipped only when the target pick is unusable
+    (or no comp remains) — a bad comp/check pick alone never skips it."""
+    data = frame_data(F0, seed=9)
+    header = {"DATE-OBS": date_obs_str(0)}
+    # target off-edge -> the frame is skipped, kind carried from the target's drop
+    with pytest.raises(FrameSkippedError, match="outside") as excinfo:
+        measure_frame_data(data, header, make_picks(target_xy=(-5.0, 30.0)), APERTURE)
+    assert excinfo.value.kind == "outside-image"
+    drops = excinfo.value.dropped_picks
+    assert len(drops) == 1 and drops[0].role == "target" and drops[0].kind == "outside-image"
+    # ALL comps off-edge (target fine) -> no comp remains -> frame skipped
+    picks = make_picks()
+    for i in (1, 2, 3):
+        picks[i] = StarPickSpec(role="comp", x=-10.0, y=float(i), label=f"Comp {i}")
+    with pytest.raises(FrameSkippedError, match="no usable comp") as excinfo2:
+        measure_frame_data(data, header, picks, APERTURE)
+    assert excinfo2.value.kind == "no-comps"
+    assert len(excinfo2.value.dropped_picks) == 3
+    assert all(d.role == "comp" for d in excinfo2.value.dropped_picks)
+    # only the CHECK pick off-edge -> still measured, check is None, drop recorded
+    picks = make_picks() + [StarPickSpec(role="check", x=float(SIZE), y=50.0, label="Check")]
+    fm = measure_frame_data(data, header, picks, APERTURE)
+    assert fm.check is None
+    assert fm.check_mag is None and fm.target_minus_check is None
+    assert len(fm.comps) == 3 and fm.mag == pytest.approx(0.0, abs=0.02)
+    assert len(fm.dropped_picks) == 1
+    assert fm.dropped_picks[0].role == "check" and fm.dropped_picks[0].kind == "outside-image"
+    # a comp with non-positive flux (an all-zero region) is dropped the same
+    # way: zero the comp's neighbourhood only
+    data2 = frame_data(F0, seed=9).copy()
+    data2[44:57, 6:19] = 0.0  # Comp C at (12, 50) sits in a dark patch
+    picks2 = make_picks()
+    fm2 = measure_frame_data(data2, header, picks2, APERTURE)
+    assert len(fm2.comps) == 2
+    assert len(fm2.dropped_picks) == 1 and fm2.dropped_picks[0].kind == "non-positive-flux"
 
 
 # --- measure_frame: one stored frame -> store Measurement -----------------------------------------
@@ -616,13 +684,25 @@ def test_measure_project_skips_out_of_frame_picks_without_crashing(project):
     assert report.frames == 3
     assert len(report.skipped) == 3
     assert all(isinstance(s, SkippedFrame) and "outside" in s.reason for s in report.skipped)
+    assert all(s.kind == "outside-image" for s in report.skipped)
+    # issue 14: the skipped frames carry their per-pick drops (the target's),
+    # aggregated separately from the frame-level skip reasons
+    assert all(len(s.dropped_picks) == 1 and s.dropped_picks[0].role == "target" for s in report.skipped)
+    assert report.skip_reasons == {"outside-image": 3}  # frame-level
+    assert report.pick_skip_reasons == {"pick-outside-image": 3}  # pick-level
+    assert report.pick_skip_reasons_by_label == {"Target": {"pick-outside-image": 3}}
+    assert "pick-outside-image×3" in report.pick_skip_summary
     assert lightcurve(project) == []
 
 
-def test_measure_project_skips_annulus_outside_image_without_crashing(project):
-    """Issue 19 at the run level: frames whose pick's sky annulus crosses the
-    image border are skipped with kind ``"annulus-outside-image"`` and
-    aggregated on ``skip_reasons`` — no silently biased measurement lands in
+def test_measure_project_annulus_outside_image_never_silently_measured(project):
+    """Issue 19 at the run level (under issue 14 per-PICK skip semantics): a
+    pick whose sky annulus crosses the image border is never measured with a
+    truncated (biased) annulus — as a COMP it is dropped per-pick with kind
+    ``"annulus-outside-image"`` (aggregated as ``pick-annulus-outside-image``,
+    the frame still measured on the remaining picks); as the TARGET the
+    whole frame is skipped with the frame-level kind
+    ``"annulus-outside-image"``. Either way no biased measurement lands in
     the lightcurve."""
     session = start_session(project, clock=frozen(T0))
     for i in range(3):
@@ -632,22 +712,86 @@ def test_measure_project_skips_annulus_outside_image_without_crashing(project):
             KIND_SUB,
             fits_bytes(frame_data(F0, seed=60 + i), date_obs=date_obs_str(i)),
         )
-    # a comp 10 px from the left edge: center inside, annulus truncated
+    # a comp 10 px from the left edge: center inside, annulus truncated ->
+    # per-PICK drop (issue 14); the frame is still measured on target + 2 comps
     picks = make_picks()
     picks[1] = StarPickSpec(role="comp", x=10.0, y=16.0, label="Comp edge")
     report = measure_project(project, picks, APERTURE)
-    assert report.measurements == ()
-    assert report.frames == 3
-    assert len(report.skipped) == 3
+    assert len(report.measurements) == 3 and report.skipped == ()
+    assert report.skip_reasons == {} and report.skip_summary == "no frames skipped"
+    assert all(
+        len(fm.dropped_picks) == 1
+        and fm.dropped_picks[0].role == "comp"
+        and fm.dropped_picks[0].label == "Comp edge"
+        and fm.dropped_picks[0].kind == "annulus-outside-image"
+        and "annulus" in fm.dropped_picks[0].reason
+        and len(fm.comps) == 2
+        for fm in report.frame_results
+    )
+    assert report.pick_skip_reasons == {"pick-annulus-outside-image": 3}
+    assert report.pick_skip_reasons_by_label == {
+        "Comp edge": {"pick-annulus-outside-image": 3}
+    }
+    assert "pick-annulus-outside-image×3" in report.pick_skip_summary
+    assert len(lightcurve(project)) == 3  # measured WITHOUT the biased pick
+    # the TARGET near the edge -> the whole frame is skipped, the frame-level
+    # skip carries the target's drop kind (issue 14)
+    report2 = measure_project(project, make_picks(target_xy=(SIZE - 10.0, 30.0)), APERTURE)
+    assert report2.measurements == ()
+    assert report2.frames == 3
+    assert len(report2.skipped) == 3
     assert all(
         isinstance(s, SkippedFrame)
         and s.kind == "annulus-outside-image"
         and "annulus" in s.reason
-        for s in report.skipped
+        and len(s.dropped_picks) == 1
+        and s.dropped_picks[0].role == "target"
+        for s in report2.skipped
     )
-    assert report.skip_reasons == {"annulus-outside-image": 3}
-    assert "annulus-outside-image×3" in report.skip_summary
-    assert lightcurve(project) == []  # no silent truncated-annulus bias
+    assert report2.skip_reasons == {"annulus-outside-image": 3}
+    assert "annulus-outside-image×3" in report2.skip_summary
+    assert report2.pick_skip_reasons == {"pick-annulus-outside-image": 3}
+
+
+def test_measure_project_records_pick_level_drops_on_measured_frames(project):
+    """Issue 14: one comp off-edge on every frame -> every frame is STILL
+    measured (target + 2 comps) and the dropped pick is recorded per frame;
+    the report aggregates the pick-level drops apart from frame-level skips."""
+    session = start_session(project, clock=frozen(T0))
+    n = 3
+    for i in range(n):
+        store_frame(
+            project,
+            session,
+            KIND_SUB,
+            fits_bytes(frame_data(F0, seed=70 + i), date_obs=date_obs_str(i)),
+        )
+    picks = make_picks()
+    picks[3] = StarPickSpec(role="comp", x=float(SIZE), y=50.0, label="Comp C")  # off-edge
+    report = measure_project(project, picks, APERTURE)
+    # every frame measured — no frame-level skip at all
+    assert len(report.measurements) == n and report.skipped == ()
+    assert report.skip_reasons == {} and report.skip_summary == "no frames skipped"
+    # each measured frame carries the one dropped pick and used 2 comps
+    assert all(len(fm.dropped_picks) == 1 for fm in report.frame_results)
+    assert all(
+        fm.dropped_picks[0].role == "comp"
+        and fm.dropped_picks[0].label == "Comp C"
+        and fm.dropped_picks[0].kind == "outside-image"
+        for fm in report.frame_results
+    )
+    assert all(len(fm.comps) == 2 for fm in report.frame_results)
+    assert all(abs(fm.mag) < 0.02 for fm in report.frame_results)
+    # the pick-level aggregation on the report (frame-level vs pick-level)
+    assert report.dropped_picks == tuple(
+        d for fm in report.frame_results for d in fm.dropped_picks
+    )
+    assert report.pick_skip_reasons == {"pick-outside-image": n}
+    assert report.pick_skip_reasons_by_label == {"Comp C": {"pick-outside-image": n}}
+    assert report.pick_skip_summary == (
+        f"{n} pick drops (pick-outside-image×{n} — Comp C×{n})"
+    )
+    assert len(lightcurve(project)) == n
 
 
 def test_measure_project_skips_non_positive_flux_frame(project):
@@ -765,6 +909,7 @@ def test_measure_module_source_scan_no_gi_and_package_module_set():
 def test_measure_public_api_is_exported_from_package():
     for name in (
         "MAG_ERR_COEFF",
+        "DroppedPick",
         "FrameMeasurement",
         "FrameSkippedError",
         "MeasureReport",

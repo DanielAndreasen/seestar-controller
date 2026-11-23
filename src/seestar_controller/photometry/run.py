@@ -106,7 +106,16 @@ Conventions (documented choices):
   :class:`~.measure.SkippedFrame` — now with a machine-readable skip
   ``kind`` (issue 09), aggregated on the report as ``skip_reasons`` /
   ``skip_summary`` (the same skip semantics as
-  :func:`~.measure.measure_project`).
+  :func:`~.measure.measure_project`). Issue 14 (per-PICK skip semantics):
+  a pick that falls outside the image or whose flux is non-positive is
+  dropped for that frame ONLY (recorded as a
+  :class:`~.measure.DroppedPick` on the frame result's ``dropped_picks``)
+  and the frame is still measured when the target + at least one comp
+  remain; the frame itself is skipped only when the target is unusable or
+  no comp remains. The report aggregates the pick-level drops SEPARATELY
+  from the frame-level skips: ``dropped_picks`` / ``pick_skip_reasons``
+  (``"pick-<kind>" -> count``, e.g. ``{"pick-outside-image": 146}``) /
+  ``pick_skip_reasons_by_label`` / ``pick_skip_summary``.
 - **Per-frame WCS reprojection (issue 09)**: every frame of the session that
   has a stored WCS record
   (:func:`seestar_controller.store.wcs.list_solved_frames`, loaded once via
@@ -211,12 +220,17 @@ from seestar_controller.store.stars import load_star_picks
 from seestar_controller.store.wcs import FrameWcs, list_solved_frames
 
 from .measure import (
+    DroppedPick,
     FrameMeasurement,
     MeasurementError,
     SkippedFrame,
     _normalize_picks,
     _read_frame_fits,
+    _skip_drops,
     _skip_kind,
+    aggregate_pick_skips,
+    aggregate_pick_skips_by_label,
+    format_pick_skip_summary,
     measure_frame_data,
 )
 from .picking import ApertureParams, PhotometryError, PickController, PickSession
@@ -352,6 +366,13 @@ class RunReport:
     - issue 13: ``cleared_measurements`` — how many of the session's
       PREVIOUS run rows were cleared at run start (the re-run reset), so a
       re-run replaces the previous rows instead of appending duplicates.
+    - issue 14 (per-PICK skip semantics): ``dropped_picks`` /
+      ``pick_skip_reasons`` / ``pick_skip_reasons_by_label`` /
+      ``pick_skip_summary`` aggregate the per-pick drops (over the measured
+      frames' ``frame_results`` and the skipped frames' ``dropped_picks``)
+      DISTINCTLY from the frame-level ``skip_reasons`` — the pick-level keys
+      are prefixed ``pick-`` (e.g. ``{"pick-outside-image": 146}``, broken
+      down per pick label).
     """
 
     measurements: tuple[Measurement, ...]
@@ -453,6 +474,35 @@ class RunReport:
         """The measured frames with at least one WCS-reprojected pick
         centroid-refined on the frame data (issue 12)."""
         return sum(1 for fm in self.frame_results if fm.wcs_refined > 0)
+
+    @property
+    def dropped_picks(self) -> tuple[DroppedPick, ...]:
+        """All per-pick drops of the run (issue 14): over the measured frames'
+        ``frame_results`` and the skipped frames' ``dropped_picks``."""
+        return tuple(
+            drop for fm in self.frame_results for drop in fm.dropped_picks
+        ) + tuple(drop for s in self.skipped for drop in s.dropped_picks)
+
+    @property
+    def pick_skip_reasons(self) -> dict[str, int]:
+        """The aggregated per-PICK drop reasons (issue 14), DISTINCT from the
+        frame-level ``skip_reasons``: ``"pick-<kind>" -> count`` over all
+        dropped picks — e.g. ``{"pick-outside-image": 146}``."""
+        return aggregate_pick_skips(self.dropped_picks)
+
+    @property
+    def pick_skip_reasons_by_label(self) -> dict[str, dict[str, int]]:
+        """The per-pick drop reasons broken down per pick label (issue 14):
+        ``{label-or-role: {"pick-<kind>": count}}`` — e.g.
+        ``{"Comp C": {"pick-outside-image": 138}}``."""
+        return aggregate_pick_skips_by_label(self.dropped_picks)
+
+    @property
+    def pick_skip_summary(self) -> str:
+        """A human-readable one-line pick-drop summary (issue 14):
+        ``"146 pick drops (pick-outside-image×146 — Comp C×138, Comp D×8)"``,
+        or ``"no pick drops"``."""
+        return format_pick_skip_summary(self.dropped_picks)
 
     @property
     def wcs_summary(self) -> str:
@@ -1036,6 +1086,7 @@ class RunController:
             {"exclude_flagged_frames": true,
              "last_run": {"session_id": ..., "at": ..., "measured": N,
                           "skipped": N, "skip_reasons": {...},
+                          "pick_skip_reasons": {...},   # issue 14 (pick-level drops)
                           "wcs_frames": N, "pixel_frames": N,
                           "wcs_refined_frames": N,
                           "cleared_measurements": N,
@@ -1059,7 +1110,8 @@ class RunController:
                     "at": utc_now_iso(),
                     "measured": len(report.measurements),
                     "skipped": len(report.skipped),
-                    "skip_reasons": report.skip_reasons,  # issue 09
+                    "skip_reasons": report.skip_reasons,  # issue 09 (frame-level)
+                    "pick_skip_reasons": report.pick_skip_reasons,  # issue 14 (pick-level)
                     "wcs_frames": report.wcs_frames,  # issue 09
                     "pixel_frames": report.pixel_frames,  # issue 09
                     "wcs_refined_frames": report.refined_frames,  # issue 12
@@ -1126,7 +1178,12 @@ class RunController:
           centroid-refined on the frame data before measuring (aggregated as
           ``refined_frames``); a per-frame failure is recorded as a
           :class:`~.measure.SkippedFrame` (with its skip ``kind``, aggregated
-          on ``skip_reasons``), never a crash;
+          on ``skip_reasons``), never a crash; issue 14 (per-PICK skip
+          semantics): a pick that falls outside the image or whose flux is
+          non-positive is dropped for that frame only (aggregated on the
+          report as ``pick_skip_reasons``) and the frame is still measured
+          when the target + at least one comp remain — the frame is skipped
+          only when the target pick is unusable or no comp pick remains;
         - the picks come from the shared picker controller, falling back to the
           project's stored picks (see :meth:`_resolve_picks`);
         - one run at a time: a concurrent call raises :class:`RunError`.
@@ -1248,7 +1305,10 @@ class RunController:
                         )
                         skipped.append(
                             SkippedFrame(
-                                frame_id=frame.id, reason=str(exc), kind=_skip_kind(exc)
+                                frame_id=frame.id,
+                                reason=str(exc),
+                                kind=_skip_kind(exc),
+                                dropped_picks=_skip_drops(exc),  # issue 14
                             )
                         )
                     else:

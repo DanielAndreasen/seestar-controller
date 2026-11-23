@@ -118,20 +118,32 @@ Conventions (documented choices):
 - **Pixel convention: 0-based, ``x`` = column, ``y`` = row** (same as
   :mod:`.picking` and the numpy ``data[y, x]`` array). photutils apertures take
   0-based ``(x, y)`` positions directly.
-- **Skip conditions** (per frame, recorded by :func:`measure_project`, raised
-  as :class:`FrameSkippedError` by :func:`measure_frame` /
-  :func:`measure_frame_data`): a pick center outside the image, a pick whose
-  sky annulus is not fully inside the image (issue 19 — a truncated annulus
-  biases the background, so edge stars are skipped rather than silently
-  mis-measured), or a background-subtracted flux that is non-positive or
-  non-finite — including a WCS-reprojected pick that lands outside the image
-  (issue 09). A frame that cannot be read/parsed at all raises
-  :class:`MeasurementError` (which :func:`measure_project` also records as
-  skipped — a bad frame never kills the run). Every skip carries a short
-  machine-readable ``kind`` (e.g. ``"outside-image"``,
-  ``"annulus-outside-image"``, ``"non-positive-flux"``,
+- **Skip conditions** — PER-PICK first, per frame only as a last resort
+  (issue 14): a pick center outside the image, a pick whose sky annulus is
+  not fully inside the image (issue 19 — a truncated annulus biases the
+  background, so edge stars are dropped rather than silently mis-measured),
+  or a background-subtracted flux that is non-positive or non-finite —
+  including a WCS-reprojected pick that lands outside the image (issue 09) —
+  drops THAT PICK for that frame only, recorded as a :class:`DroppedPick`
+  (role/label/reason/``kind``) on the :class:`FrameMeasurement`
+  (``dropped_picks``); the frame is still measured when the target + at
+  least one comp remain. The frame itself is skipped (a
+  :class:`FrameSkippedError` raised by :func:`measure_frame` /
+  :func:`measure_frame_data`, recorded by :func:`measure_project`) only when
+  the TARGET pick is unusable (the frame skip then carries the target's drop
+  ``kind``, e.g. ``"outside-image"``) or when NO comp pick remains (kind
+  ``"no-comps"``); the frame-level raise also carries the per-pick drops on
+  the error's ``dropped_picks`` attribute. A frame that cannot be
+  read/parsed at all raises :class:`MeasurementError` (which
+  :func:`measure_project` also records as skipped — a bad frame never kills
+  the run). Every skip carries a short machine-readable ``kind`` (e.g.
+  ``"outside-image"``, ``"annulus-outside-image"``, ``"non-positive-flux"``,
   ``"unreadable-frame"`` — the ``kind`` attribute of the raised error), which
-  the reports aggregate into skip-reason counts.
+  the reports aggregate into frame-level skip-reason counts
+  (``skip_reasons``) — the per-pick drops are aggregated SEPARATELY, prefixed
+  ``pick-`` (``pick_skip_reasons``, e.g. ``{"pick-outside-image": 146}``,
+  broken down per pick label in ``pick_skip_reasons_by_label``), so
+  frame-level and pick-level drops stay distinguishable.
 - **JD** comes from the FITS header ``DATE-OBS`` (parsed with
   :mod:`astropy.time` via
   :func:`seestar_controller.store.frames._date_obs_jd_utc`); when the header
@@ -181,6 +193,29 @@ from .picking import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class DroppedPick:
+    """One pick DROPPED for ONE frame (issue 14 — per-PICK skip semantics):
+    the pick landed outside the image, or its (possibly WCS-reprojected and
+    centroid-refined) position gave a non-positive/non-finite flux — so it
+    does not contribute to that frame, but the frame itself may still be
+    measured (target + at least one comp remain).
+
+    - ``role`` / ``label`` — copied from the pick (``label or role`` names
+      the pick in the aggregated reports);
+    - ``reason`` — the human-readable failure (the message of the raised
+      :class:`FrameSkippedError`);
+    - ``kind`` — the machine-readable drop kind (``"outside-image"``,
+      ``"non-positive-flux"``, ``"invalid-flux-error"``), aggregated on the
+      reports as ``pick-<kind>``.
+    """
+
+    role: str
+    label: str | None
+    reason: str
+    kind: str = ""
+
+
 class MeasurementError(PhotometryError):
     """Any photometry-measurement failure — a :class:`~.picking.PhotometryError`
     (a :class:`ValueError`) with a clear message: a bad pick ensemble (not
@@ -193,23 +228,35 @@ class MeasurementError(PhotometryError):
     Every error carries a short machine-readable ``kind`` (a class attribute,
     overridable per raise with the ``kind=`` keyword) used to aggregate skip
     reasons on the reports — e.g. ``"unreadable-frame"``, ``"no-jd"``,
-    ``"store-failed"``."""
+    ``"store-failed"``. Issue 14: a frame-level skip raised after per-pick
+    drops also carries the :class:`DroppedPick`\\ s of that frame on
+    ``dropped_picks`` (empty by default)."""
 
     kind = "measurement-error"
 
-    def __init__(self, message: str, *, kind: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str | None = None,
+        dropped_picks: Iterable[DroppedPick] = (),
+    ) -> None:
         super().__init__(message)
         if kind is not None:
             self.kind = kind
+        self.dropped_picks: tuple[DroppedPick, ...] = tuple(dropped_picks)
 
 
 class FrameSkippedError(MeasurementError):
-    """A frame was skipped: a pick falls outside the image, a pick's sky
-    annulus is not fully inside the image (issue 19), or the
-    background-subtracted flux is non-positive/non-finite. Carries the
+    """A frame was skipped: the target pick is unusable (it falls outside the
+    image, its sky annulus is not fully inside the image (issue 19), or its
+    flux is non-positive/non-finite — possibly after the WCS reprojection +
+    refinement), or no comp pick remains (issue 14). Carries the
     human-readable ``reason`` and a ``kind`` (``"outside-image"``,
     ``"annulus-outside-image"``, ``"non-positive-flux"``,
-    ``"invalid-flux-error"``);
+    ``"invalid-flux-error"``, ``"no-comps"`` — the target's drop kind when
+    the target is the problem) plus the frame's per-pick drops on
+    ``dropped_picks``;
     :func:`measure_project` records these as :class:`SkippedFrame` entries
     instead of crashing."""
 
@@ -844,6 +891,11 @@ class FrameMeasurement:
       solve WCS has a ~few-px pointing error); the per-star refinement
       offsets ride on the :class:`StarMeasurement`\\ s (``pick_offset``).
       0 when nothing was reprojected/refined (fixed-pixel path unchanged).
+    - ``dropped_picks`` — issue 14 (per-PICK skip semantics): the
+      :class:`DroppedPick`\\ s of THIS frame — picks that landed outside the
+      image or gave a non-positive/non-finite flux and were dropped for this
+      frame only (the frame was still measured on the remaining picks).
+      Empty when every pick was measured.
     """
 
     jd: float
@@ -859,6 +911,7 @@ class FrameMeasurement:
     target_minus_check_err: float | None = None
     wcs_reprojected: int = 0
     wcs_refined: int = 0
+    dropped_picks: tuple[DroppedPick, ...] = ()
 
 
 def _header_jd(header: Mapping[str, Any] | None) -> float | None:
@@ -919,11 +972,17 @@ def measure_frame_data(
     Returns the :class:`FrameMeasurement` — with the check star's differential
     mag + error (``check_mag`` / ``check_mag_err``, same error propagation as
     the target) and the target-minus-check curve (``target_minus_check`` /
-    ``target_minus_check_err``) when a check pick is present. Raises
-    :class:`FrameSkippedError` when a (possibly reprojected/refined) pick
-    falls outside the image, when its sky annulus is not fully inside the
-    image (kind ``"annulus-outside-image"``, issue 19), or when a flux is
-    non-positive.
+    ``target_minus_check_err``) when a check pick is present. Issue 14
+    (per-PICK skip semantics): a pick that falls outside the image, whose
+    sky annulus is not fully inside the image (kind
+    ``"annulus-outside-image"``, issue 19), or whose flux is non-positive
+    (possibly after the WCS reprojection/refinement) is DROPPED for this
+    frame only — recorded as a :class:`DroppedPick` on the result's
+    ``dropped_picks`` — and the frame is still measured when the target +
+    at least one comp remain. Raises :class:`FrameSkippedError` only when
+    the TARGET pick is unusable (the raise carries the target's drop
+    ``kind`` plus all per-pick drops on ``dropped_picks``) or when no comp
+    pick remains (``kind="no-comps"``).
     """
     norm = _normalize_picks(picks, aperture)
     norm, wcs_reprojected = resolve_pick_pixels(norm, wcs)
@@ -932,25 +991,62 @@ def measure_frame_data(
     if wcs_reprojected:
         # issue 12: centroid-refine the reprojected picks on the frame data
         norm, wcs_refined = _refine_reprojected_picks(norm, plane)
-    stars = [
-        measure_star(
-            plane,
-            p.x,
-            p.y,
-            p.aperture,
-            role=p.role,
-            label=p.label,
-            pick_offset=(
-                None
-                if p.refined_from is None
-                else (p.x - p.refined_from[0], p.y - p.refined_from[1])
-            ),
-        )
-        for p in norm
-    ]
-    target = next(s for s in stars if s.role == ROLE_TARGET)
+    stars: list[StarMeasurement] = []
+    drops: list[DroppedPick] = []
+    for p in norm:
+        try:
+            stars.append(
+                measure_star(
+                    plane,
+                    p.x,
+                    p.y,
+                    p.aperture,
+                    role=p.role,
+                    label=p.label,
+                    pick_offset=(
+                        None
+                        if p.refined_from is None
+                        else (p.x - p.refined_from[0], p.y - p.refined_from[1])
+                    ),
+                )
+            )
+        except FrameSkippedError as exc:
+            # issue 14: a per-pick failure drops ONLY this pick for this
+            # frame (recorded with its reason + kind) — the frame may still
+            # be measured on the remaining picks
+            logger.info(
+                "dropping pick %s (%s) at (%.2f, %.2f) for this frame: %s",
+                p.label or p.role,
+                p.role,
+                p.x,
+                p.y,
+                exc,
+            )
+            drops.append(
+                DroppedPick(role=p.role, label=p.label, reason=str(exc), kind=_skip_kind(exc))
+            )
+    target = next((s for s in stars if s.role == ROLE_TARGET), None)
     comps = tuple(s for s in stars if s.role == ROLE_COMP)
     check = next((s for s in stars if s.role == ROLE_CHECK), None)
+    if target is None:
+        # issue 14: the frame is skipped only when the TARGET pick is
+        # unusable — the frame skip carries the target's drop kind + reason
+        drop = next(d for d in drops if d.role == ROLE_TARGET)
+        raise FrameSkippedError(
+            f"the target pick {drop.label or drop.role!r} is unusable on this "
+            f"frame: {drop.reason}",
+            kind=drop.kind,
+            dropped_picks=drops,
+        )
+    if not comps:
+        # issue 14: no comp left -> no comp ensemble -> the frame is skipped
+        raise FrameSkippedError(
+            "no usable comp pick remains on this frame (the comp ensemble "
+            "needs at least one comp): "
+            + "; ".join(f"{d.label or d.role} [{d.kind}]" for d in drops),
+            kind="no-comps",
+            dropped_picks=drops,
+        )
     # the comp ensemble: the mean of the COMPS only — the check star is
     # excluded (check-star-plot ticket 01)
     ens = ensemble_mag([s.mag for s in comps])
@@ -992,6 +1088,7 @@ def measure_frame_data(
         target_minus_check_err=target_minus_check_err,
         wcs_reprojected=wcs_reprojected,
         wcs_refined=wcs_refined,
+        dropped_picks=tuple(drops),
     )
 
 
@@ -1007,11 +1104,15 @@ class SkippedFrame:
     the raised :class:`MeasurementError` (e.g. ``"outside-image"``,
     ``"annulus-outside-image"`` (issue 19), ``"non-positive-flux"``,
     ``"unreadable-frame"``, ``"store-failed"``), or
-    ``"error"`` when the error carried no kind."""
+    ``"error"`` when the error carried no kind. Issue 14: ``dropped_picks``
+    carries the frame's per-pick drops (the ``dropped_picks`` attribute of the
+    raised error) — empty when the failure happened before any pick was
+    measured (e.g. an unreadable frame)."""
 
     frame_id: int
     reason: str
     kind: str = ""
+    dropped_picks: tuple[DroppedPick, ...] = ()
 
 
 def _skip_kind(exc: BaseException) -> str:
@@ -1019,6 +1120,70 @@ def _skip_kind(exc: BaseException) -> str:
     attribute when present, else ``"error"``."""
     kind = getattr(exc, "kind", "")
     return kind if isinstance(kind, str) and kind else "error"
+
+
+def _skip_drops(exc: BaseException) -> tuple[DroppedPick, ...]:
+    """The per-pick drops of a frame-level failure (issue 14): the error's
+    ``dropped_picks`` attribute when present, else empty."""
+    drops = getattr(exc, "dropped_picks", None)
+    return tuple(drops) if drops else ()
+
+
+def aggregate_pick_skips(drops: Iterable[DroppedPick]) -> dict[str, int]:
+    """Aggregate per-pick drops (issue 14) to ``"pick-<kind>" -> count`` —
+    e.g. ``{"pick-outside-image": 146}`` — so pick-level drops are
+    distinguishable from the frame-level skip reasons (``skip_reasons``)."""
+    counts: dict[str, int] = {}
+    for drop in drops:
+        key = f"pick-{drop.kind or 'error'}"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def aggregate_pick_skips_by_label(
+    drops: Iterable[DroppedPick],
+) -> dict[str, dict[str, int]]:
+    """Aggregate per-pick drops (issue 14) per pick label:
+    ``{label-or-role: {"pick-<kind>": count}}`` — e.g.
+    ``{"Comp C": {"pick-outside-image": 138}}``."""
+    result: dict[str, dict[str, int]] = {}
+    for drop in drops:
+        label = drop.label or drop.role
+        kind = f"pick-{drop.kind or 'error'}"
+        per_label = result.setdefault(label, {})
+        per_label[kind] = per_label.get(kind, 0) + 1
+    return result
+
+
+def format_pick_skip_summary(drops: Iterable[DroppedPick]) -> str:
+    """A human-readable one-line pick-drop summary (issue 14):
+    ``"146 pick drops (pick-outside-image×146 — Comp C×138, Comp D×8)"``, or
+    ``"no pick drops"``."""
+    drops = tuple(drops)
+    if not drops:
+        return "no pick drops"
+    n = len(drops)
+    text = f"{n} pick drop{'s' if n != 1 else ''}"
+    reasons = ", ".join(
+        f"{kind}×{count}"
+        for kind, count in sorted(aggregate_pick_skips(drops).items())
+        if count > 0
+    )
+    if reasons:
+        text += f" ({reasons}"
+        label_counts: dict[str, int] = {}
+        for drop in drops:
+            label = drop.label or drop.role
+            label_counts[label] = label_counts.get(label, 0) + 1
+        labels = ", ".join(
+            f"{label}×{count}"
+            for label, count in sorted(label_counts.items())
+            if count > 0
+        )
+        if labels:
+            text += f" — {labels}"
+        text += ")"
+    return text
 
 
 @dataclass(frozen=True)
@@ -1035,7 +1200,14 @@ class MeasureReport:
       target-minus-check curve (check-star-plot ticket 01) plus the
       ``wcs_reprojected`` count of the per-frame WCS reprojection (issue 09)
       and the ``wcs_refined`` count of the centroid refinement of the
-      reprojected picks on the frame data (issue 12).
+      reprojected picks on the frame data (issue 12) and the per-pick drops
+      of the frame (issue 14, ``dropped_picks``).
+    - issue 14: ``dropped_picks`` / ``pick_skip_reasons`` /
+      ``pick_skip_reasons_by_label`` / ``pick_skip_summary`` aggregate the
+      per-PICK drops (over the measured frames' ``frame_results`` AND the
+      skipped frames' ``dropped_picks``) separately from the frame-level
+      ``skip_reasons`` — keys are prefixed ``pick-`` (e.g.
+      ``{"pick-outside-image": 146}``).
     """
 
     measurements: tuple[Measurement, ...]
@@ -1090,6 +1262,36 @@ class MeasureReport:
         """The measured frames with at least one WCS-reprojected pick
         centroid-refined on the frame data (issue 12)."""
         return sum(1 for fm in self.frame_results if fm.wcs_refined > 0)
+
+    @property
+    def dropped_picks(self) -> tuple[DroppedPick, ...]:
+        """All per-pick drops of the run (issue 14): over the measured
+        frames' ``frame_results`` and the skipped frames' ``dropped_picks``."""
+        return tuple(
+            drop
+            for fm in self.frame_results
+            for drop in fm.dropped_picks
+        ) + tuple(drop for s in self.skipped for drop in s.dropped_picks)
+
+    @property
+    def pick_skip_reasons(self) -> dict[str, int]:
+        """The aggregated per-PICK drop reasons (issue 14), DISTINCT from the
+        frame-level ``skip_reasons``: ``"pick-<kind>" -> count`` over all
+        dropped picks — e.g. ``{"pick-outside-image": 146}``."""
+        return aggregate_pick_skips(self.dropped_picks)
+
+    @property
+    def pick_skip_reasons_by_label(self) -> dict[str, dict[str, int]]:
+        """The per-pick drop reasons broken down per pick label (issue 14):
+        ``{label-or-role: {"pick-<kind>": count}}``."""
+        return aggregate_pick_skips_by_label(self.dropped_picks)
+
+    @property
+    def pick_skip_summary(self) -> str:
+        """A human-readable one-line pick-drop summary (issue 14):
+        ``"146 pick drops (pick-outside-image×146 — Comp C×138, Comp D×8)"``,
+        or ``"no pick drops"``."""
+        return format_pick_skip_summary(self.dropped_picks)
 
 
 def _read_frame_fits(project: Any, frame: Any) -> tuple[Any, dict[str, Any]]:
@@ -1225,10 +1427,11 @@ def measure_frame(
       :func:`seestar_controller.store.measurements.add_measurement` (store
       errors wrapped into :class:`MeasurementError`).
 
-    Raises :class:`FrameSkippedError` when a (possibly reprojected/refined)
-    pick falls outside the image, when its sky annulus is not fully inside
-    the image (kind ``"annulus-outside-image"``, issue 19), or when a flux
-    is non-positive.
+    Raises :class:`FrameSkippedError` when the target pick is unusable (a
+    possibly reprojected/refined target pick falls outside the image, its
+    sky annulus is not fully inside the image (kind
+    ``"annulus-outside-image"``, issue 19), or its flux is non-positive) or
+    when no comp pick remains (issue 14).
     """
     if isinstance(frame_id, bool) or not isinstance(frame_id, int):
         raise MeasurementError(f"frame_id must be an int, got {frame_id!r}")
@@ -1268,12 +1471,18 @@ def measure_project(
       pointing error); the per-frame ``wcs_refined`` count rides on the
       ``frame_results`` and the report aggregates refined frames
       (``refined_frames``);
-    - every sub-frame is measured via :func:`measure_frame`; a frame whose
-      target/comp falls outside the image, whose sky annulus is not fully
-      inside the image (kind ``"annulus-outside-image"``, issue 19), or whose
-      flux is non-positive (or that cannot be read at all) is recorded as a
+    - every sub-frame is measured via :func:`measure_frame`; issue 14
+      (per-PICK skip semantics): a pick that falls outside the image, whose
+      sky annulus is not fully inside the image (kind
+      ``"annulus-outside-image"``, issue 19), or whose flux is non-positive
+      is dropped for that frame only (recorded on the frame result's
+      ``dropped_picks``) and the frame is still measured when the target +
+      at least one comp remain; the frame itself is recorded as a
       :class:`SkippedFrame` (with the skip ``kind``, aggregated on
-      ``skip_reasons``) — never a crash.
+      ``skip_reasons``, and its per-pick drops on ``dropped_picks``,
+      aggregated as ``pick_skip_reasons``) only when the target is unusable
+      or no comp remains — or when the frame cannot be read at all. Never a
+      crash.
     """
     picks = list(picks)  # materialize: validated once, then measured per frame
     _normalize_picks(picks, aperture)  # validate the ensemble up front (raises)
@@ -1286,7 +1495,12 @@ def measure_project(
         except MeasurementError as exc:
             logger.info("skipping sub-frame %s: %s", frame.id, exc)
             skipped.append(
-                SkippedFrame(frame_id=frame.id, reason=str(exc), kind=_skip_kind(exc))
+                SkippedFrame(
+                    frame_id=frame.id,
+                    reason=str(exc),
+                    kind=_skip_kind(exc),
+                    dropped_picks=_skip_drops(exc),  # issue 14
+                )
             )
         else:
             measurements.append(measurement)

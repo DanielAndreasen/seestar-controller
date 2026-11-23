@@ -900,9 +900,13 @@ def test_measure_frame_data_refinement_recovers_the_live_non_positive_flux_skip(
 
 
 def test_measure_frame_data_no_star_frame_still_skips_non_positive_flux():
-    """Issue 12: a no-star frame has no significant local max near the
-    reprojected pick — the predicted pixel is kept and the frame still skips
-    with kind non-positive-flux (the skip semantics are unchanged)."""
+    """Issue 12 + issue 14: a no-star frame has no significant local max near
+    the reprojected pick — the predicted pixel is kept; on the all-zero frame
+    every pick's flux is exactly 0, so the TARGET pick is unusable and the
+    frame still skips with kind non-positive-flux (carrying all 4 per-pick
+    drops). On the noisy no-star frame the target's noise flux can be
+    positive: then the frame is measured on whatever remains and the
+    non-positive picks are dropped per pick (issue 14)."""
     sx, sy = drift(1)
     predicted = drifted_positions(sx, sy)
     rng = np.random.default_rng(51)
@@ -913,10 +917,18 @@ def test_measure_frame_data_no_star_frame_still_skips_non_positive_flux():
     header = {"DATE-OBS": date_obs_str(1)}
     # no significant local maximum near the predicted target pixel
     assert refine_pick_on_frame(data, *predicted["target"]) is None
-    with pytest.raises(FrameSkippedError) as excinfo:
-        measure_frame_data(data, header, make_spec_picks(), APERTURE, wcs=wcs_cards(sx, sy))
-    assert excinfo.value.kind == "non-positive-flux"
-    # ... and an all-zero frame as well
+    # the noisy no-star frame: measured or skipped depending on the target's
+    # noise flux — but never a crash, and the non-positive picks are recorded
+    try:
+        fm = measure_frame_data(data, header, make_spec_picks(), APERTURE, wcs=wcs_cards(sx, sy))
+    except FrameSkippedError as exc:
+        assert exc.kind == "non-positive-flux"
+        assert any(d.role == "target" for d in exc.dropped_picks)
+    else:
+        assert fm.dropped_picks  # the non-positive comps were dropped per pick
+        assert all(d.kind == "non-positive-flux" for d in fm.dropped_picks)
+        assert abs(fm.target.flux) < 1000.0  # noise dust, never a star
+    # ... and an all-zero frame always skips: the target pick is unusable
     with pytest.raises(FrameSkippedError) as excinfo2:
         measure_frame_data(
             np.zeros((SIZE, SIZE), dtype=np.float32),
@@ -926,6 +938,9 @@ def test_measure_frame_data_no_star_frame_still_skips_non_positive_flux():
             wcs=wcs_cards(sx, sy),
         )
     assert excinfo2.value.kind == "non-positive-flux"
+    assert "non-positive" in str(excinfo2.value)
+    assert len(excinfo2.value.dropped_picks) == 4
+    assert all(d.kind == "non-positive-flux" for d in excinfo2.value.dropped_picks)
 
 
 def make_solve_error_session(project, n: int = 4, dx: float = 5.0, amp: float = 0.3):
