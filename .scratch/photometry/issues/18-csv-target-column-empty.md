@@ -1,6 +1,6 @@
 # Issue 18: CSV export `target` column is empty even though star_picks.target is set
 
-**Status:** needs-triage
+**Status:** completed (fixed in 142705f, merged to main; reviewed APPROVE by main agent — subagent name limit reached)
 
 ## Found while
 Headless lightcurve run 2026-11-22 (vw-cep): exported CSV header `jd,utc,mag,mag_err,session,target` had empty target on every row; `project.config["target"]` is null while `store.stars.load_star_picks` has the target pick labeled "VW Cep". The exporter's `_target_name` reads only the config.
