@@ -6,12 +6,12 @@
 
 **Status:** implemented in 1c015c0 (merged 7585e3c)
 
-- [ ] Pure `mosaic/` package, no gi (subprocess boundary test); astropy lazy; reproject optional with fallback
-- [ ] `stitch_session(project, session_id) -> path` — collect tile stacks, read WCS per tile, common grid, reproject/shift, overlap blend (average/feather), write stitched FITS into the project (file-based, e.g. mosaics/<sid>.fits; no store schema bump)
-- [ ] Clear errors: tile without WCS -> MosaicError naming the tile; no overlap -> MosaicError
-- [ ] Tests: synthetic tiles with known WCS offsets + overlapping stars -> stars at right positions in stitched image, seam smooth; missing WCS -> clear error; no-overlap -> clear error; no-gi boundary; no network
-- [ ] Full suite green
+- [x] Pure `mosaic/` package, no gi (subprocess boundary test); astropy lazy; reproject optional with fallback
+- [x] `stitch_session(project, session_id) -> path` — collect tile stacks, read WCS per tile, common grid, reproject/shift, overlap blend (average/feather), write stitched FITS into the project (file-based, e.g. mosaics/<sid>.fits; no store schema bump)
+- [x] Clear errors: tile without WCS -> MosaicError naming the tile; no overlap -> MosaicError
+- [x] Tests: synthetic tiles with known WCS offsets + overlapping stars -> stars at right positions in stitched image, seam smooth; missing WCS -> clear error; no-overlap -> clear error; no-gi boundary; no network
+- [x] Full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `1c015c0 (merged 7585e3c)`; test list: tests/test_mosaic_stitch.py. Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).

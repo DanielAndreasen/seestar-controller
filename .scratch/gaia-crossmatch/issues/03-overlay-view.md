@@ -6,11 +6,11 @@
 
 **Status:** implemented in 4f4b1fc (merged)
 
-- [ ] Overlay rendering in the image-enhance viewer path (PIL draw over the tone-mapped image -> texture): matched stars labeled with G mag, unmatched with a distinct marker
-- [ ] Controls for match radius + G limit; re-query on change (cache-first)
-- [ ] Wired into the app (image viewer toolbar or a crossmatch panel — decide with existing patterns)
-- [ ] Widget tests via the ui harness; full suite green
+- [x] Overlay rendering in the image-enhance viewer path (PIL draw over the tone-mapped image -> texture): matched stars labeled with G mag, unmatched with a distinct marker
+- [x] Controls for match radius + G limit; re-query on change (cache-first)
+- [x] Wired into the app (image viewer toolbar or a crossmatch panel — decide with existing patterns)
+- [x] Widget tests via the ui harness; full suite green
 
 ## Comments
 
-(implementor fills in)
+Retroactive tick (app-improvement issue 17, docs-only): the Status line above already records the merge, so the acceptance boxes are checked to match it. Implementing commit `4f4b1fc`; test list: tests/test_gaia_overlay.py, tests/test_gaia_overlay_widgets.py. Re-verified during the issue-17 audit: all referenced commits exist on main and the listed targeted tests pass (`uv run pytest <files> -q -n auto`).
