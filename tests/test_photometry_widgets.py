@@ -903,6 +903,49 @@ def test_results_panel_solve_button_runs_on_a_worker_thread(gtk, project, monkey
     assert panel.wcs_label.get_label() == "WCS: 4 of 4 subs solved"
 
 
+def test_results_panel_solve_progress_label_shows_the_frame_id(gtk, project, monkeypatch):
+    """Mid-solve, the progress label reads ``solving k/N — frame <id>`` with
+    the attempted sub's numeric db id: the solve progress callback receives
+    a ``Frame`` (``SolveProgressCallback``), so the label must interpolate
+    ``frame.id`` — never the ``Frame`` repr."""
+    from seestar_controller.astrometry import session as astrometry_session
+    from seestar_controller.photometry.results_view import ResultsPanel
+
+    session = _store_subs(project, n=4)
+    frames = list_frames(project, session_id=session, kind=KIND_SUB)
+    calls = _install_mock_solver(monkeypatch)
+    # park the worker inside the LAST sub's solve, so the batch is observed
+    # mid-solve with the first 3 progress updates already marshalled
+    gate = threading.Event()
+    fake_solve = astrometry_session.solve_frame
+
+    def blocking_solve_frame(*, data, header, solver="auto", **kwargs):
+        result = fake_solve(data=data, header=header, solver=solver, **kwargs)
+        if len(calls) == 4:  # 4th sub's solve returned, its progress not yet emitted
+            gate.wait(timeout=30.0)
+        return result
+
+    monkeypatch.setattr(astrometry_session, "solve_frame", blocking_solve_frame)
+    rc = RunController(project=project, invoke_on_main=lambda cb: GLib.idle_add(cb))
+    panel = ResultsPanel(run_controller=rc)
+
+    thread = panel.solve_unsolved_subs()
+    assert thread is not None and thread.name == "photometry-solve"
+    deadline = time.monotonic() + 10.0
+    while len(calls) < 4 and time.monotonic() < deadline:
+        pump_main(0.1)  # drives the marshalled store calls of subs 1-3
+        time.sleep(0.005)
+    assert len(calls) == 4  # the worker is parked in the last solve
+    pump_main()  # render the marshalled "solving 3/4" update
+    label = panel.progress_label.get_label()
+    assert label == f"solving 3/4 — frame {frames[2].id}"
+    assert "Frame(" not in label  # a leaked Frame repr would contain this
+    assert panel.progress_bar.get_fraction() == pytest.approx(3 / 4)
+    gate.set()
+    _drain_run(thread)
+    assert "4 of 4 unsolved subs solved" in panel.progress_label.get_label()
+
+
 def test_results_panel_solve_tolerates_a_failing_sub(gtk, project, monkeypatch):
     from seestar_controller.photometry.results_view import ResultsPanel
     from seestar_controller.store import list_solved_frames

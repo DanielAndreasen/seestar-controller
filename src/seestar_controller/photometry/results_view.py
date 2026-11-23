@@ -89,6 +89,7 @@ gi.require_version("Adw", "1")
 from gi.repository import GLib, Gtk
 
 from seestar_controller.astrometry import SessionSolveReport
+from seestar_controller.store.frames import Frame
 
 from .run import RunController, RunError, RunSnapshot
 
@@ -531,15 +532,15 @@ class ResultsPanel(Gtk.Box):
         )
         self._solve_thread.start()
 
-    def _on_solve_progress(self, done: int, total: int, frame_id: int) -> None:
+    def _on_solve_progress(self, done: int, total: int, frame: Frame) -> None:
         """The batch solve's progress callback — called on the WORKER thread,
         so marshal the UI update onto the GLib main loop."""
-        GLib.idle_add(self._render_solve_progress, done, total, frame_id)
+        GLib.idle_add(self._render_solve_progress, done, total, frame)
 
-    def _render_solve_progress(self, done: int, total: int, frame_id: int) -> bool:
+    def _render_solve_progress(self, done: int, total: int, frame: Frame) -> bool:
         fraction = (done / total) if total else 0.0
         self._progress_bar.set_fraction(fraction)
-        self._progress_label.set_label(f"solving {done}/{total} — frame {frame_id}")
+        self._progress_label.set_label(f"solving {done}/{total} — frame {frame.id}")
         return GLib.SOURCE_REMOVE
 
     def _on_solve_done(self, session_id: str, report: SessionSolveReport) -> bool:
