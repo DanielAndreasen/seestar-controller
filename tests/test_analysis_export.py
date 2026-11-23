@@ -221,6 +221,37 @@ def test_folded_csv_include_excluded_toggles_rows(project, two_session_project, 
         assert float(row[6]) == phase_of(float(row[0]), period, jd0)
 
 
+def test_folded_csv_target_falls_back_to_target_pick_label(project, two_session_project):
+    # issue 18: no config target, but a saved target pick -> the folded CSV
+    # target column carries the pick's label (same rule as the store exporter)
+    from seestar_controller.store import ROLE_TARGET, StarPick, save_star_picks
+
+    assert project.config["target"] is None
+    save_star_picks(
+        project,
+        [
+            StarPick(
+                role=ROLE_TARGET,
+                label="VW Cep",
+                x=100.0,
+                y=200.0,
+                ra_deg=None,
+                dec_deg=None,
+                aperture_radius=4.0,
+                sky_annulus_inner=8.0,
+                sky_annulus_outer=12.0,
+            )
+        ],
+    )
+    rows = read_csv(export_folded_csv(project, 0.1))
+    assert tuple(rows[0]) == FOLDED_CSV_HEADER
+    assert len(rows) - 1 == 4
+    assert all(row[5] == "VW Cep" for row in rows[1:])
+    # the lightcurve export (delegated to the store) carries it too
+    lc_rows = read_csv(export_lightcurve_csv(project))
+    assert all(row[5] == "VW Cep" for row in lc_rows[1:])
+
+
 def test_folded_csv_from_points_iterable_requires_path_and_supports_jd0_and_target(tmp_path):
     t = gapped_sampling()
     points = make_points(t, sinusoid_mags(t), mag_errs=[SIGMA] * len(t))

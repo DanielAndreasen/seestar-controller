@@ -20,12 +20,15 @@ import pytest
 from seestar_controller.store import (
     CSV_FILE,
     CSV_HEADER,
+    ROLE_TARGET,
+    StarPick,
     add_measurement,
     close_session,
     create_project,
     export_csv,
     lightcurve,
     open_project,
+    save_star_picks,
     set_excluded,
     start_session,
 )
@@ -317,6 +320,47 @@ def test_export_target_empty_when_unset(project, three_measurements):
     body = read_csv(export_csv(project))[1:]
     assert len(body) == 2
     assert all(row[5] == "" for row in body)  # target column empty
+
+
+def target_pick(label):
+    """A valid target star pick with the given label (issue 18 fallback)."""
+    return StarPick(
+        role=ROLE_TARGET,
+        label=label,
+        x=100.0,
+        y=200.0,
+        ra_deg=None,
+        dec_deg=None,
+        aperture_radius=4.0,
+        sky_annulus_inner=8.0,
+        sky_annulus_outer=12.0,
+    )
+
+
+def test_export_target_falls_back_to_saved_target_pick_label(project, three_measurements):
+    # issue 18: config target is null, but a target star pick is saved ->
+    # the CSV target column carries the pick's label
+    assert project.config["target"] is None
+    save_star_picks(project, [target_pick("VW Cep")])
+    body = read_csv(export_csv(project))[1:]
+    assert len(body) == 2
+    assert all(row[5] == "VW Cep" for row in body)
+
+
+def test_export_target_config_wins_over_pick_label(project, three_measurements, target):
+    # the config target (when set) takes precedence over the pick label
+    save_star_picks(project, [target_pick("VW Cep")])
+    body = read_csv(export_csv(project))[1:]
+    assert all(row[5] == "M 42" for row in body)
+
+
+def test_export_target_fallback_unnamed_pick_is_empty(project, three_measurements):
+    # an unnamed target pick (label None) falls back to the empty string
+    assert project.config["target"] is None
+    save_star_picks(project, [target_pick(None)])
+    body = read_csv(export_csv(project))[1:]
+    assert len(body) == 2
+    assert all(row[5] == "" for row in body)
 
 
 def test_export_target_name_with_comma_is_quoted_and_roundtrips(project, three_measurements):
