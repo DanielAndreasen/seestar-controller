@@ -15,7 +15,8 @@ API (all take the open :class:`~.project.Project` handle first):
 - :func:`close_session` — record the end of a session, returns the
   :class:`Session`;
 - :func:`list_sessions` — all sessions ordered by ``started_at``;
-- :func:`get_open_session` — the session with ``ended_at IS NULL``, or None.
+- :func:`get_open_session` — the session with ``ended_at IS NULL``, or None;
+- :func:`session_sub_counts` — per-session sub-frame counts (issue 20).
 
 Documented choices:
 
@@ -224,6 +225,18 @@ def list_sessions(project: Project) -> list[Session]:
         "SELECT id, started_at, ended_at FROM sessions ORDER BY started_at, id"
     ).fetchall()
     return [_row_to_session(row) for row in rows]
+
+
+def session_sub_counts(project: Project) -> dict[str, int]:
+    """The number of stored ``sub`` frames per session id (issue 20: a
+    session with zero subs is valid but empty — the Run chooser marks it).
+
+    Sessions without any sub are absent from the mapping; callers use
+    ``counts.get(session_id, 0)``."""
+    rows = project.db.execute(
+        "SELECT session_id, COUNT(*) FROM frames WHERE kind = 'sub' GROUP BY session_id"
+    ).fetchall()
+    return {row[0]: int(row[1]) for row in rows}
 
 
 def get_open_session(project: Project) -> Session | None:

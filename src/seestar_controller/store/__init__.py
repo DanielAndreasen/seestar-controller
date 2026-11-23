@@ -26,7 +26,8 @@ Pure Python, no GTK, no link (module boundary per
   (``~/SeestarProjects/`` default, ``SEESTAR_PROJECT_ROOT`` override)
 - :mod:`.sessions` — the session lifecycle: :func:`~.sessions.start_session`,
   :func:`~.sessions.close_session`, :func:`~.sessions.list_sessions`,
-  :func:`~.sessions.get_open_session`, the :class:`~.sessions.Session` record,
+  :func:`~.sessions.get_open_session`, :func:`~.sessions.session_sub_counts`,
+  the :class:`~.sessions.Session` record,
   and the session errors :class:`~.errors.SessionOpenError`,
   :class:`~.errors.SessionNotFoundError`,
   :class:`~.errors.SessionAlreadyClosedError`
@@ -195,6 +196,7 @@ from .sessions import (
     close_session,
     get_open_session,
     list_sessions,
+    session_sub_counts,
     start_session,
 )
 from .stars import (
@@ -301,6 +303,7 @@ __all__ = [
     "save_preset",
     "save_star_picks",
     "session_quality",
+    "session_sub_counts",
     "set_excluded",
     "set_isochrone_params",
     "slugify",

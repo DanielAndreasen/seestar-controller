@@ -440,8 +440,16 @@ class ResultsPanel(Gtk.Box):
             self._session_dropdown.set_model(Gtk.StringList.new([]))
             return []
         previous = self.selected_session_id()
+        try:
+            counts = self._controller.session_sub_counts()
+        except RunError:
+            counts = {}
         self._session_ids = [s.id for s in sessions]
-        labels = [f"{s.started_at} — {s.id}" for s in sessions]
+        # issue 20: mark zero-sub sessions as empty instead of hiding them
+        labels = [
+            f"{s.started_at} — {s.id}" + (" (empty)" if counts.get(s.id, 0) == 0 else "")
+            for s in sessions
+        ]
         self._session_dropdown.set_model(Gtk.StringList.new(labels))
         if self._session_ids:
             index = self._session_ids.index(previous) if previous in self._session_ids else 0

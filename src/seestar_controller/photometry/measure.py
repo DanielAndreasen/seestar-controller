@@ -744,7 +744,8 @@ def measure_star(
     height, width = int(plane.shape[0]), int(plane.shape[1])
     if not (0.0 <= px < width and 0.0 <= py < height):
         raise FrameSkippedError(
-            f"pick ({px}, {py}) falls outside the {width}x{height} image",
+            # issue 20: unambiguous axis order — height x width in px
+            f"pick ({px}, {py}) falls outside the {height}x{width} px image (height x width)",
             kind="outside-image",
         )
     # issue 19: the sky annulus must be FULLY inside the image too — a

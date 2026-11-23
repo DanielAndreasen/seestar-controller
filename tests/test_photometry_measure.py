@@ -296,6 +296,8 @@ def test_measure_star_annulus_outside_image_skipped():
     with pytest.raises(FrameSkippedError) as excinfo:
         measure_star(data, -1.0, 32.0, APERTURE)
     assert excinfo.value.kind == "outside-image"
+    # issue 20: the message states the axis order unambiguously (height x width)
+    assert "64x64 px image (height x width)" in str(excinfo.value)
     # exactly at the limit the annulus still fits: comp A at (16, 16) with
     # sky_out=16 (16-16=0 >= 0, 16+16=32 <= 63) measures fine ...
     edge = ApertureParams(radius_px=4.0, sky_in_px=12.0, sky_out_px=16.0)

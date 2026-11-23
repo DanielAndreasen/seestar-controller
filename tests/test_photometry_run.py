@@ -956,6 +956,19 @@ def test_sessions_lists_the_project_sessions(project):
     assert ids == [session1, session2] or set(ids) == {session1, session2}
 
 
+def test_session_sub_counts_marks_empty_sessions(project):
+    # issue 20: the controller exposes per-session sub counts; a session
+    # with zero subs is reported as 0 (the chooser marks it "(empty)")
+    session1, _, _ = make_session(project, n=3)
+    close_session(project, session1)
+    empty = start_session(project, clock=frozen(T0 + timedelta(hours=2)))
+    close_session(project, empty)
+    ctrl = RunController(project=project)
+    counts = ctrl.session_sub_counts()
+    assert counts[session1] == 3
+    assert counts.get(empty, 0) == 0
+
+
 def test_set_excluded_flags_outliers_and_is_reflected_in_the_lightcurve(project):
     session, _frames, _inj = make_session(project, n=4)
     store_picks(project)

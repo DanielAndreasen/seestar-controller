@@ -19,6 +19,7 @@ from seestar_controller.store import (
     get_open_session,
     list_sessions,
     open_project,
+    session_sub_counts,
     start_session,
 )
 
@@ -191,6 +192,34 @@ def test_list_sessions_ordered_by_started_at(project):
 
 def test_list_sessions_empty(project):
     assert list_sessions(project) == []
+
+
+def test_session_sub_counts(project):
+    # issue 20: per-session sub counts; stacks do not count; empty session
+    # is absent (callers use .get(id, 0))
+    s1 = start_session(project, clock=frozen(T0))
+    close_session(project, s1)
+    s2 = start_session(project, clock=frozen(T0 + timedelta(hours=1)))
+    close_session(project, s2)
+    assert session_sub_counts(project) == {}
+    with project.db:
+        project.db.execute(
+            "INSERT INTO frames (session_id, kind, path, jd, utc) VALUES (?, 'sub', 'a.fits', 1.0, 't')",
+            (s1,),
+        )
+        project.db.execute(
+            "INSERT INTO frames (session_id, kind, path, jd, utc) VALUES (?, 'sub', 'b.fits', 2.0, 't')",
+            (s1,),
+        )
+        project.db.execute(
+            "INSERT INTO frames (session_id, kind, path, jd, utc) VALUES (?, 'stack', 'c.fits', 3.0, 't')",
+            (s1,),
+        )
+        project.db.execute(
+            "INSERT INTO frames (session_id, kind, path, jd, utc) VALUES (?, 'sub', 'd.fits', 4.0, 't')",
+            (s2,),
+        )
+    assert session_sub_counts(project) == {s1: 2, s2: 1}
 
 
 def test_get_open_session_none_when_all_closed(project):
