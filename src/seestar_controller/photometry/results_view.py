@@ -31,6 +31,19 @@ passes it down via :func:`seestar_controller.ui.views.build_view`):
   **worker thread** and marshals the progress callback (and the listener
   notifications) back to the GLib main loop with :func:`GLib.idle_add` — the
   main loop NEVER blocks on the FITS reads / photutils measuring;
+- issue 10: a **Solve unsolved subs** button next to Run + a **WCS coverage
+  label** in the same row — clicking Solve batch plate-solves every sub-frame
+  of the chosen session that has no stored ``frame_wcs`` row yet, via
+  :meth:`~seestar_controller.photometry.run.RunController.solve_session_unsolved`
+  (the pure
+  :func:`seestar_controller.astrometry.session.solve_session_unsolved`, with
+  the store reads/writes marshalled to the db-owning thread through the
+  controller's ``_call_store`` while the slow solves stay on the worker). It
+  runs on a daemon worker thread like the run, with progress
+  (``solving done/total — frame N``), per-frame solve failures recorded and
+  skipped (never kill the batch), and afterwards the label shows the WCS
+  coverage (``"WCS: 508 of 512 subs solved"``) so a re-Run can reproject the
+  sky picks onto every frame (issue 09);
 - a **progress bar + label** while running (``done/total — frame N``), and
   after a run the summary ``N measured, N skipped, N excluded`` plus a
   dedicated **exclusion label** (frame-quality ticket 03: how many sub-frames
@@ -74,6 +87,9 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from gi.repository import GLib, Gtk
+
+from seestar_controller.astrometry import SessionSolveReport
+from seestar_controller.store.frames import Frame
 
 from .run import RunController, RunError, RunSnapshot
 
@@ -120,6 +136,7 @@ class ResultsPanel(Gtk.Box):
         self._controller = run_controller
         self._main_thread_id = threading.get_ident()
         self._run_thread: threading.Thread | None = None
+        self._solve_thread: threading.Thread | None = None  # issue 10
         self._session_ids: list[str] = []
         self._updating = False  # guard against programmatic signal loops
         self._plot_points: tuple[PlotPoint, ...] = ()
@@ -153,6 +170,25 @@ class ResultsPanel(Gtk.Box):
         )
         self._run_button.connect("clicked", self._on_run_clicked)
         run_row.append(self._run_button)
+        # issue 10: batch plate-solve the session's unsolved subs (no frame_wcs
+        # row yet) so a re-Run can reproject the sky picks onto every frame
+        self._solve_button = Gtk.Button(
+            label="Solve unsolved subs",
+            tooltip_text=(
+                "Plate-solve every sub-frame of the chosen session that has no "
+                "stored WCS yet (worker thread, progress shown below; a frame "
+                "that cannot be solved is skipped) — enables per-frame WCS "
+                "reprojection on the next Run"
+            ),
+        )
+        self._solve_button.connect("clicked", self._on_solve_clicked)
+        run_row.append(self._solve_button)
+        # issue 10: the session's WCS coverage near the Run button
+        # ("WCS: 4 of 512 subs solved")
+        self._wcs_label = Gtk.Label(
+            label="", xalign=0.0, css_classes=["dim-label", "caption"]
+        )
+        run_row.append(self._wcs_label)
         self.append(run_row)
 
         progress_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -281,6 +317,18 @@ class ResultsPanel(Gtk.Box):
         return self._run_button
 
     @property
+    def solve_button(self) -> Gtk.Button:
+        """The Solve unsolved subs button (issue 10: starts the worker-thread
+        batch plate-solve of the session's unsolved subs)."""
+        return self._solve_button
+
+    @property
+    def wcs_label(self) -> Gtk.Label:
+        """The WCS coverage label (issue 10): ``"WCS: 4 of 512 subs solved"``
+        for the chosen session; empty when no session is selected."""
+        return self._wcs_label
+
+    @property
     def refresh_button(self) -> Gtk.Button:
         """The Refresh button (re-lists sessions + lightcurve)."""
         return self._refresh_button
@@ -402,6 +450,14 @@ class ResultsPanel(Gtk.Box):
         self._on_run_clicked()
         return self._run_thread
 
+    def solve_unsolved_subs(self) -> threading.Thread | None:
+        """Start the batch solve of the selected session's unsolved subs on a
+        daemon worker thread (same as clicking Solve unsolved subs); returns
+        the thread, so callers (tests) can ``join()`` it. Re-entrant: a solve
+        (or run) already in progress is not restarted."""
+        self._on_solve_clicked()
+        return self._solve_thread
+
     # -- run (worker thread + GLib.idle_add marshalling) ------------------------------
 
     def _on_run_clicked(self, *_args) -> None:
@@ -442,6 +498,83 @@ class ResultsPanel(Gtk.Box):
         self._set_status(message, error=True)
         self._run_button.set_sensitive(True)
         return GLib.SOURCE_REMOVE
+
+    # -- batch solve of the session's unsolved subs (issue 10) -------------------------------
+
+    def _on_solve_clicked(self, *_args) -> None:
+        if self._run_thread is not None and self._run_thread.is_alive():
+            return  # a run is in progress — no concurrent solve
+        if self._solve_thread is not None and self._solve_thread.is_alive():
+            return
+        session_id = self.selected_session_id()
+        if session_id is None:
+            self._set_status("no session to solve — store some sub-frames first", error=True)
+            return
+        self._set_status(f"solving unsolved subs of session {session_id}…", error=False)
+        self._run_button.set_sensitive(False)
+        self._solve_button.set_sensitive(False)
+
+        def work() -> None:
+            try:
+                # synchronous + GTK-free: safe on this worker thread; the store
+                # reads/writes are marshalled to the db-owning thread by the
+                # controller (_call_store), the solves stay on this thread
+                report = self._controller.solve_session_unsolved(
+                    session_id, on_progress=self._on_solve_progress
+                )
+            except Exception as exc:  # surfaced as a clean status, never a crash  # noqa: BLE001
+                GLib.idle_add(self._on_solve_failed, f"{type(exc).__name__}: {exc}")
+            else:
+                GLib.idle_add(self._on_solve_done, session_id, report)
+
+        self._solve_thread = threading.Thread(
+            target=work, name="photometry-solve", daemon=True
+        )
+        self._solve_thread.start()
+
+    def _on_solve_progress(self, done: int, total: int, frame: Frame) -> None:
+        """The batch solve's progress callback — called on the WORKER thread,
+        so marshal the UI update onto the GLib main loop."""
+        GLib.idle_add(self._render_solve_progress, done, total, frame)
+
+    def _render_solve_progress(self, done: int, total: int, frame: Frame) -> bool:
+        fraction = (done / total) if total else 0.0
+        self._progress_bar.set_fraction(fraction)
+        self._progress_label.set_label(f"solving {done}/{total} — frame {frame.id}")
+        return GLib.SOURCE_REMOVE
+
+    def _on_solve_done(self, session_id: str, report: SessionSolveReport) -> bool:
+        """The batch solve finished (on the GLib main loop): show the report
+        summary, refresh the WCS coverage label, re-enable the buttons."""
+        self._progress_bar.set_fraction(1.0 if report.attempted else 0.0)
+        self._progress_label.set_label(report.summary)
+        self._set_status(f"session {session_id}: {report.summary}", error=False)
+        self._refresh_wcs_label()
+        self._run_button.set_sensitive(True)
+        self._solve_button.set_sensitive(True)
+        return GLib.SOURCE_REMOVE
+
+    def _on_solve_failed(self, message: str) -> bool:
+        self._set_status(message, error=True)
+        self._run_button.set_sensitive(True)
+        self._solve_button.set_sensitive(True)
+        return GLib.SOURCE_REMOVE
+
+    def _refresh_wcs_label(self) -> None:
+        """Re-read the WCS coverage of the chosen session and update the label
+        (issue 10: ``"WCS: 508 of 512 subs solved"``); empty when no session is
+        selected or the coverage cannot be read."""
+        session_id = self.selected_session_id()
+        if session_id is None:
+            self._wcs_label.set_label("")
+            return
+        try:
+            coverage = self._controller.wcs_coverage(session_id)
+        except RunError:
+            self._wcs_label.set_label("")
+            return
+        self._wcs_label.set_label(f"WCS: {coverage.summary}")
+
 
     def _on_refresh_clicked(self, *_args) -> None:
         self.refresh_sessions()
@@ -541,6 +674,12 @@ class ResultsPanel(Gtk.Box):
         else:
             self._skip_label.set_label("")
         self._run_button.set_sensitive(not snapshot.running)
+        # issue 10: the solve button is disabled while a run or a solve batch
+        # is in progress
+        solve_running = self._solve_thread is not None and self._solve_thread.is_alive()
+        self._solve_button.set_sensitive(not snapshot.running and not solve_running)
+        # issue 10: the WCS coverage of the chosen session near the Run button
+        self._refresh_wcs_label()
         if snapshot.error is not None:
             self._set_status(snapshot.error, error=True)
         elif snapshot.report is not None:
