@@ -1,6 +1,6 @@
 # Issue 12: WCS-reprojected picks are not centroid-refined — ~5 px plate-solve pointing error puts the star core outside the r=4 aperture and contaminates the sky annulus, so nearly all frames skip with non-positive flux
 
-**Status:** needs-triage
+**Status:** completed (fixed in fab4d09, merged to main: centroid refinement of WCS-reprojected picks before aperture photometry; reviewed APPROVE)
 
 ## Found while
 Live re-test 2026-11-22 after issues 09+10 (project vw-cep, session 20261122T192149035964Z): all 512 subs now solved (frame_wcs 512/512), but the photometry re-run still measured only a handful (110 measurements total). Probe of `measure_frame` on subs 0/100/250/511: every frame skips `non-positive flux` at the REPROJECTED pick, e.g. frame 1 pick (750.3, 1309.8) with aperture sum 9194 vs sky-annulus background 3127.
