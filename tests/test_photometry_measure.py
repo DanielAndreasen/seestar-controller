@@ -234,7 +234,31 @@ def test_measure_star_aperture_photometry_values():
     assert sm.flux == pytest.approx(expected, rel=0.03)
     assert sm.flux_err > 0.0
     assert sm.mag == pytest.approx(flux_to_mag(sm.flux))
-    assert sm.mag_err == pytest.approx(flux_err_to_mag_err(sm.flux, sm.flux_err))
+    # issue 15: mag_err is the full error model — the photon/read-noise
+    # propagation plus the small-aperture systematics floor (no positional
+    # term here: a fixed pick at an exact center, no pick_offset, no WCS rms).
+    # This r=4 aperture (vs sigma_psf ~ 2 px) misses only ~14% of the light,
+    # so the systematics floor is 0 and mag_err is photon-only ...
+    from seestar_controller.photometry.measure import (
+        _estimate_psf_sigma,
+        aperture_systematics_frac,
+    )
+
+    sigma_psf = _estimate_psf_sigma(np.asarray(data, dtype=np.float64), 40.0, 30.0, APERTURE.radius_px)
+    frac_sys = aperture_systematics_frac(APERTURE.radius_px, sigma_psf)
+    assert frac_sys == 0.0
+    model_err = math.sqrt(sm.flux_err**2 + (frac_sys * sm.flux) ** 2)
+    assert sm.mag_err == pytest.approx(flux_err_to_mag_err(sm.flux, model_err))
+    # ... while a SMALL aperture (r=1.5 px misses ~75% of the light) carries
+    # the systematics floor on top of the photon term
+    small = ApertureParams(radius_px=1.5, sky_in_px=12.0, sky_out_px=16.0)
+    sm_small = measure_star(data, 40.0, 30.0, small, role="target", label="T")
+    sigma_psf_small = _estimate_psf_sigma(np.asarray(data, dtype=np.float64), 40.0, 30.0, small.radius_px)
+    frac_sys_small = aperture_systematics_frac(small.radius_px, sigma_psf_small)
+    assert frac_sys_small > 0.01
+    model_err_small = math.sqrt(sm_small.flux_err**2 + (frac_sys_small * sm_small.flux) ** 2)
+    assert sm_small.mag_err == pytest.approx(flux_err_to_mag_err(sm_small.flux, model_err_small))
+    assert sm_small.mag_err > flux_err_to_mag_err(sm_small.flux, sm_small.flux_err)
     # out-of-image pick -> FrameSkippedError; bad aperture -> MeasurementError
     with pytest.raises(FrameSkippedError, match="outside"):
         measure_star(data, -1.0, 0.0, APERTURE)
