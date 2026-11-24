@@ -390,10 +390,13 @@ class MoverOverlayView(Gtk.Box):
                 index = None
             if self._set_dropdown(sessions, index):
                 return GLib.SOURCE_REMOVE
-        elif snapshot.session_id is None and self._session_ids:
+        elif (
+            snapshot.session_id is None
+            and self._session_ids
             # auto-select the first session so the view shows something
-            if self._set_dropdown(list(self._session_ids), 0):
-                return GLib.SOURCE_REMOVE
+            and self._set_dropdown(list(self._session_ids), 0)
+        ):
+            return GLib.SOURCE_REMOVE
 
         # movers list
         while (row := self._movers_list.get_row_at_index(0)) is not None:

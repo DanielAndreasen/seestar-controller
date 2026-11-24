@@ -176,7 +176,7 @@ def test_notification_defaults_and_coercion():
     n2 = Notification("error", "T", "", "src")  # ty: ignore[invalid-argument-type]
     assert n2.severity is NotificationSeverity.ERROR
     # a naive timestamp is assumed UTC
-    naive = Notification("info", "T", "", "src", datetime(2026, 1, 1, 12, 0, 0))  # ty: ignore[invalid-argument-type]  # noqa: DTZ001
+    naive = Notification("info", "T", "", "src", datetime(2026, 1, 1, 12, 0, 0))  # ty: ignore[invalid-argument-type]
     assert naive.timestamp.tzinfo == UTC
     # invalid severity / fields rejected
     with pytest.raises(ValueError):

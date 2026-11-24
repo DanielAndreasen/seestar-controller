@@ -14,8 +14,11 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
-      - run: uv tool run ruff check
-      - run: uv tool run ty check
+      # Pin ruff: `uv tool run ruff` resolves to the latest release, whose
+      # default rule set drifts (0.17 dropped DTZ from defaults, breaking the
+      # DTZ001 noqa comments; 0.16 flags SIM102/RUF100 differently).
+      - run: uv tool run ruff==0.17.6 check
+      - run: uv tool run ty==0.0.109 check
 
   test:
     runs-on: ubuntu-latest

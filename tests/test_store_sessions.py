@@ -245,7 +245,7 @@ def test_start_accepts_aware_datetime_in_other_timezone(project):
 
 def test_start_accepts_naive_datetime_as_utc(project):
     """Documented choice: a naive datetime is treated as UTC."""
-    session_id = start_session(project, started_at=datetime(2026, 11, 20, 22, 0, 0))  # noqa: DTZ001
+    session_id = start_session(project, started_at=datetime(2026, 11, 20, 22, 0, 0))
     assert list_sessions(project)[0].started_at == "2026-11-20T22:00:00.000+00:00"
     assert session_id == "20261120T220000000000Z"
 

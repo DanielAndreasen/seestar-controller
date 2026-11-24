@@ -445,7 +445,7 @@ def test_normalize_since_variants():
     assert frames.normalize_since(None) is None
     dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     assert frames.normalize_since(dt) == dt.timestamp()
-    assert frames.normalize_since(datetime(2026, 1, 1, 12, 0, 0)) == dt.timestamp()  # noqa: DTZ001
+    assert frames.normalize_since(datetime(2026, 1, 1, 12, 0, 0)) == dt.timestamp()
     assert frames.normalize_since("2026-01-01T12:00:00+00:00") == dt.timestamp()
     assert frames.normalize_since("2026-01-01T12:00:00Z") == dt.timestamp()
     assert frames.normalize_since(dt.timestamp()) == dt.timestamp()
