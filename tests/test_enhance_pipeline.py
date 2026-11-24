@@ -24,8 +24,8 @@ Covers the pure layer added by ticket 02:
   :meth:`~seestar_controller.enhance.pipeline.Pipeline.with_param`,
   ``to_dict``/``from_dict`` round-trip), :func:`default_pipeline`,
   :func:`render_pipeline` (pipeline + tonemap + downscale preview);
-- a golden-hash regression: a fixed synthetic input + the default pipeline ->
-  a hardcoded sha256 of the output bytes;
+- a golden regression: a fixed synthetic input + the default pipeline ->
+  the expected output .npy compared with allclose (raw-byte hash is not CPU-arch portable);
 - NaN handling (mask preserved by every op, all-NaN images don't crash);
 - the package boundary: a subprocess test (no ``gi``, no ``link``, no
   ``ui``) + the source-scan audit in tests/test_enhance_fits.py now covers
@@ -35,7 +35,6 @@ The widget tests live in tests/test_enhance_widgets.py and skip without ``gi``.
 """
 
 import dataclasses
-import hashlib
 import re
 import subprocess
 import sys
@@ -72,13 +71,17 @@ from seestar_controller.enhance import (
 #: Directory of the enhance package (source-scan audit).
 ENHANCE_PACKAGE_DIR = Path(enhance.__file__).resolve().parent
 
-#: The golden-hash regression: sha256 over dtype + shape + raw bytes of
-#: ``default_pipeline().apply(golden_image())`` (computed once, hardcoded).
-GOLDEN_SHA256 = "d6e97c34b431754a230646a8d99a1ad77f7ff6015248868d19a89a8b9b69dd7f"
+#: Golden regression fixture: the expected output of
+#: ``default_pipeline().apply(golden_image())`` as an .npy in tests/fixtures.
+#: Compared with exact dtype/shape + allclose — NOT a raw-byte hash, because
+#: float SIMD reduction order differs across CPU architectures (an exact
+#: sha256 fails on CI runners with a different vector ISA than the machine
+#: the golden was recorded on).
+GOLDEN_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "enhance_golden_default_pipeline.npy"
 
 
 def golden_image(size: int = 64, seed: int = 42) -> np.ndarray:
-    """The fixed synthetic stack image for the golden-hash regression: a
+    """The fixed synthetic stack image for the golden regression: a
     smooth gradient + three star peaks + gaussian noise, float32, with NaN
     at the four corners."""
     rng = np.random.default_rng(seed)
@@ -734,16 +737,15 @@ def test_render_pipeline_grayscale_and_rgb():
         render_pipeline(default_pipeline(), img)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
-# --- golden-hash regression ---------------------------------------------------------------------------
+# --- golden regression -----------------------------------------------------------------------------
 
 
-def test_golden_hash_default_pipeline_on_fixed_input():
+def test_golden_default_pipeline_on_fixed_input():
     out = default_pipeline().apply(golden_image())
-    digest = hashlib.sha256()
-    digest.update(out.dtype.str.encode("ascii"))
-    digest.update(str(out.shape).encode("ascii"))
-    digest.update(out.tobytes())
-    assert digest.hexdigest() == GOLDEN_SHA256
+    expected = np.load(GOLDEN_FIXTURE)
+    assert out.dtype == expected.dtype
+    assert out.shape == expected.shape
+    np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-6, equal_nan=True)
 
 
 # --- package boundary + exports ------------------------------------------------------------------------
