@@ -1,3 +1,5 @@
+[![CI](https://github.com/DanielAndreasen/seestar-controller/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielAndreasen/seestar-controller/actions/workflows/ci.yml)
+
 # seestar-controller
 
 Desktop controller for the Seestar S50 ("the Scope") over the home LAN —
