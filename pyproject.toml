@@ -97,15 +97,22 @@ include = [
     "tests/test_moving_objects_widgets.py",
     "tests/test_offline_analysis_widgets.py",
     "tests/test_offline_mode_widgets.py",
+    "tests/test_observing_first_sub.py",
+    "tests/test_observing_frame_stored_widgets.py",
     "tests/test_observing_widgets.py",
     "tests/test_photometry_widgets.py",
     "tests/test_recent_widgets.py",
     "tests/test_report_widgets.py",
     "tests/test_sub_frames_analysis_widgets.py",
     "tests/test_sub_frames_widgets.py",
+    "tests/test_ui_projects_stack_subs.py",
     "tests/test_ui_widgets.py",
     "tests/test_variable_scan_view_widgets.py",
     "tests/test_visibility_widgets.py",
 ]
 [tool.ty.overrides.rules]
 import-not-found = "ignore"
+# In a gi-present environment those same `gi.repository` imports resolve but
+# have no stubs, so `ty: ignore[missing-module-member]` comments there are used;
+# with import-not-found ignored above they become unused in no-gi environments.
+unused-ignore-comment = "ignore"
