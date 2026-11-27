@@ -9,6 +9,10 @@ CLI and an optional GTK4 GUI.
 Vocabulary lives in `GLOSSARY.md`; decisions and assumptions in `docs/wiki/`;
 work is organised as specs + tickets under `.scratch/`.
 
+Related project: [`seestar-mcp`](https://github.com/DanielAndreasen/seestar-mcp) —
+an MCP server that exposes this project's `link` / `astrometry` /
+`photometry` / `analysis` modules as tools for LLM agents.
+
 ## Quickstart
 
 Requires Python 3.14, managed with [uv](https://docs.astral.sh/uv/):
